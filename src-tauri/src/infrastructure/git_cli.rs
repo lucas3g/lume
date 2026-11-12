@@ -149,7 +149,7 @@ mod tests {
     /// Fluxo completo em um repositório temporário real.
     #[test]
     fn reports_changes_diff_and_commits() {
-        let dir = std::env::temp_dir().join(format!("relay-git-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lume-git-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let root = dir.to_string_lossy().into_owned();
         assert!(!GitCli.status(&root).is_repo, "pasta comum não é repositório");

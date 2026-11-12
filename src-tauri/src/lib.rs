@@ -1,4 +1,4 @@
-//! Relay: cliente desktop do Claude com várias contas.
+//! Lume: cliente desktop do Claude com várias contas.
 //!
 //! Camadas (as dependências apontam sempre para dentro):
 //! `presentation` → `application` → `domain`, com `infrastructure`

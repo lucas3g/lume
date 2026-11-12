@@ -305,7 +305,7 @@ mod tests {
 
     /// Sessão de agente em uma pasta temporária: a edição só acontece conforme a resposta ao pedido.
     async fn edit_note(allow: bool) -> (String, Vec<TurnEvent>) {
-        let dir = std::env::temp_dir().join(format!("relay-agent-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lume-agent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("nota.txt"), "conteudo original\n").unwrap();
         let mut req = request("Edite o arquivo nota.txt trocando 'original' por 'novo'. Seja breve.", None);

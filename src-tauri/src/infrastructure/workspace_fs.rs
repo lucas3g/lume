@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn lists_reads_and_stays_inside_the_folder() {
-        let base = std::env::temp_dir().join(format!("relay-ws-{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!("lume-ws-{}", uuid::Uuid::new_v4()));
         let root = base.join("projeto");
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join(".git")).unwrap();

@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn catalog_joins_personal_skills_with_remembered_names() {
-        let dir = std::env::temp_dir().join(format!("relay-skills-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lume-skills-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(dir.join("revisar")).unwrap();
         fs::create_dir_all(dir.join("sem-arquivo")).unwrap();
         fs::write(dir.join("revisar").join(SKILL_FILE), "---\nname: revisar\ndescription: \"Revisa o código.\"\n---\n# x").unwrap();
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn reads_desktop_mcp_servers() {
-        let file = std::env::temp_dir().join(format!("relay-desktop-{}.json", uuid::Uuid::new_v4()));
+        let file = std::env::temp_dir().join(format!("lume-desktop-{}.json", uuid::Uuid::new_v4()));
         fs::write(&file, r#"{"mcpServers":{"rea":{"command":"rea","args":["serve"]}},"preferences":{}}"#).unwrap();
         let servers = DesktopConnectors::new(file.clone()).servers();
         assert_eq!(servers.len(), 1);

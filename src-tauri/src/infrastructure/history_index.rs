@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn indexes_finds_and_loads_sessions() {
-        let dir = std::env::temp_dir().join(format!("relay-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lume-test-{}", uuid::Uuid::new_v4()));
         let project = dir.join("projects/-tmp-loja");
         let desktop = dir.join("desktop/a/b");
         fs::create_dir_all(&project).unwrap();

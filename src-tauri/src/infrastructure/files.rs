@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn loads_text_and_images_and_rejects_binary_and_missing_files() {
-        let dir = std::env::temp_dir().join(format!("relay-files-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lume-files-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
         fs::write(dir.join("nota.md"), "olá").unwrap();

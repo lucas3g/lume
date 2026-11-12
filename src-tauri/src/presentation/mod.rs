@@ -75,7 +75,7 @@ impl Container {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidGenerator);
         let events: Arc<dyn EventSink> = Arc::new(TauriEvents::new(app.clone()));
-        let store = Arc::new(SqliteStore::open(&data_dir.join("relay.db"), clock.clone())?);
+        let store = Arc::new(SqliteStore::open(&data_dir.join("lume.db"), clock.clone())?);
         let index = Arc::new(SqliteHistoryIndex::new(store.clone(), main_config.join("projects"), desktop_dir));
         let skills = Arc::new(SqliteSkills::new(store.clone(), main_config.join("skills")));
         let files: Arc<dyn FileLoader> = Arc::new(FsFileLoader);
