@@ -189,11 +189,12 @@ mod tests {
         let plugin_skill = plugins.join("cache/m/meu-plugin/1.0/skills/grupo/revisar-pr");
         fs::create_dir_all(&plugin_skill).unwrap();
         fs::write(plugin_skill.join(SKILL_FILE), "---\nname: revisar-pr\ndescription: Revisa PRs.\n---").unwrap();
-        fs::write(
-            plugins.join("installed_plugins.json"),
-            format!(r#"{{"version":2,"plugins":{{"meu-plugin@m":[{{"installPath":"{}"}}]}}}}"#, plugins.join("cache/m/meu-plugin/1.0").display()),
-        )
-        .unwrap();
+        // Serializado como JSON para o caminho valer também no Windows (barras invertidas).
+        let registry = serde_json::json!({
+            "version": 2,
+            "plugins": { "meu-plugin@m": [{ "installPath": plugins.join("cache/m/meu-plugin/1.0").to_string_lossy() }] }
+        });
+        fs::write(plugins.join("installed_plugins.json"), registry.to_string()).unwrap();
         let skills = SqliteSkills::new(Arc::new(SqliteStore::memory()), dir.clone(), plugins);
         skills.remember(&["revisar".into(), "pdf".into(), "pdf".into()]).unwrap();
         let catalog = skills.catalog().unwrap();
