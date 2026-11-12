@@ -41,5 +41,6 @@
     ],
     "shortDescription": "Cliente desktop do Claude com várias contas",
     "category": "Productivity"
-  }
+  },
+  "mainBinaryName": "Lume"
 }
