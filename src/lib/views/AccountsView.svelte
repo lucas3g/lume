@@ -1,0 +1,189 @@
+<script lang="ts">
+  import { api, errorMessage } from "../api";
+  import SettingRow from "../components/SettingRow.svelte";
+  import Toggle from "../components/Toggle.svelte";
+  import { formatTime, formatWhen, percent } from "../format";
+  import { accounts, loadAccounts, moveAccount, stateOf, type AccountState } from "../state/accounts.svelte";
+  import type { Account } from "../types";
+
+  let newName = $state("");
+  let adding = $state(false);
+  let busy = $state(false);
+  let error = $state<string | null>(null);
+
+  const STATE_LABEL: Record<AccountState, string> = {
+    login: "Login necessário",
+    disabled: "Desativada",
+    limited: "Limite atingido",
+    active: "Em uso",
+    available: "Disponível",
+  };
+  const STATE_CLASS: Record<AccountState, string> = {
+    login: "warn",
+    disabled: "",
+    limited: "warn",
+    active: "ok",
+    available: "",
+  };
+
+  function detail(a: Account): string {
+    const state = stateOf(a);
+    if (state === "limited" && a.limited_until) return `Volta às ${formatTime(a.limited_until)}`;
+    if (state === "login") return "Entre novamente para usar";
+    if (state === "active") return "Atende a próxima mensagem";
+    if (state === "available") return "Na fila";
+    return "Fora da fila";
+  }
+
+  /** Executa uma ação de conta mostrando o erro, se houver. */
+  async function run(action: () => Promise<void>) {
+    error = null;
+    busy = true;
+    try {
+      await action();
+      await loadAccounts();
+    } catch (e) {
+      error = errorMessage(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function add(event: SubmitEvent) {
+    event.preventDefault();
+    await run(async () => {
+      await api.addAccount(newName);
+      newName = "";
+      adding = false;
+    });
+  }
+</script>
+
+<div class="page">
+  <div class="page-inner">
+    <header class="page-head">
+      <div>
+        <h1>Contas</h1>
+        <p class="muted">Quando o limite de uma conta acaba, a conversa continua na próxima da lista, sem perder o contexto.</p>
+      </div>
+      <button type="button" class="btn primary" disabled={busy} onclick={() => (adding = !adding)}>Adicionar conta</button>
+    </header>
+
+    {#if adding}
+      <form class="card add" onsubmit={add}>
+        <label for="account-name">Nome da conta</label>
+        <div class="row">
+          <input id="account-name" class="input" placeholder="Ex.: Trabalho" bind:value={newName} disabled={busy} />
+          <button type="submit" class="btn primary" disabled={busy || !newName.trim()}>
+            {busy ? "Aguardando o login…" : "Entrar com o Claude"}
+          </button>
+        </div>
+        <p class="muted small">O login oficial do Claude abre no navegador. Entre com a conta que deseja adicionar e volte para cá.</p>
+      </form>
+    {/if}
+
+    {#if error}<p class="error-text" role="alert">{error}</p>{/if}
+
+    <section class="card" aria-label="Contas cadastradas">
+      {#each accounts.list as a, i (a.id)}
+        {@const state = stateOf(a)}
+        <div class="account">
+          <div class="order">
+            <button type="button" class="btn icon" aria-label={`Subir ${a.name} na prioridade`} disabled={i === 0 || busy} onclick={() => run(() => moveAccount(a.id, -1))}>
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6" /></svg>
+            </button>
+            <span>{i + 1}</span>
+            <button type="button" class="btn icon" aria-label={`Descer ${a.name} na prioridade`} disabled={i === accounts.list.length - 1 || busy} onclick={() => run(() => moveAccount(a.id, 1))}>
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+          </div>
+
+          <div class="identity">
+            <div class="row name">
+              <strong>{a.name}</strong>
+              {#if a.plan}<span class="plan">{a.plan}</span>{/if}
+            </div>
+            <div class="muted small">{a.email ?? "E-mail não informado"}</div>
+          </div>
+
+          <div class="usage">
+            {#if a.util_5h !== null}
+              <div class="usage-label muted"><span>Uso na janela de 5 h</span><span>{percent(a.util_5h)}%</span></div>
+              <div class="bar" role="img" aria-label={`${percent(a.util_5h)}% usado na janela de 5 horas`}>
+                <div class:full={state === "limited"} style:width={`${percent(a.util_5h)}%`}></div>
+              </div>
+              {#if a.util_7d !== null}<div class="muted week">Semana: {percent(a.util_7d)}%</div>{/if}
+            {:else}
+              <div class="muted small">Uso aparece após a primeira mensagem</div>
+            {/if}
+          </div>
+
+          <div class="state">
+            <span class={`pill ${STATE_CLASS[state]}`}>{STATE_LABEL[state]}</span>
+            <span class="muted">{detail(a)}</span>
+          </div>
+
+          <div class="row actions">
+            {#if state === "login" && a.config_dir}
+              <button type="button" class="btn small" disabled={busy} onclick={() => run(() => api.loginAccountAgain(a.id))}>Entrar</button>
+            {/if}
+            <Toggle checked={a.enabled} label={`Usar a conta ${a.name}`} onchange={(v) => run(() => api.setAccountEnabled(a.id, v))} />
+            {#if a.config_dir}
+              <button type="button" class="btn icon" aria-label={`Remover a conta ${a.name}`} disabled={busy} onclick={() => run(() => api.removeAccount(a.id))}>
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            {/if}
+          </div>
+        </div>
+      {:else}
+        <div class="empty muted">Nenhuma conta ainda. Adicione uma para começar.</div>
+      {/each}
+      <div class="foot muted small">A conta 1 é usada primeiro. Use as setas para mudar a ordem.</div>
+    </section>
+
+    <div class="columns">
+      <section class="card panel">
+        <h2 class="section-title">Troca automática</h2>
+        <SettingRow flag="auto_switch" title="Trocar de conta ao atingir o limite" description="Passa para a próxima conta disponível e reenvia a última mensagem." />
+        <SettingRow flag="notify_switch" title="Avisar na conversa" description="Mostra uma linha discreta indicando a conta que assumiu." />
+      </section>
+
+      <section class="card panel">
+        <h2 class="section-title">Trocas recentes</h2>
+        {#each accounts.switches as s (s.at + s.from_name + s.to_name)}
+          <div class="switch small">
+            <span class="muted">{formatWhen(s.at)}</span>
+            <span>{s.from_name} → {s.to_name}, em “{s.conversation_title}”</span>
+          </div>
+        {:else}
+          <p class="muted small">Nenhuma troca até agora.</p>
+        {/each}
+      </section>
+    </div>
+  </div>
+</div>
+
+<style>
+  .add { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
+  .add label { font-weight: 500; }
+  .add .input { flex: 1; }
+  .account { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--hairline); }
+  .order { display: flex; flex-direction: column; align-items: center; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .order .btn { width: 24px; min-height: 20px; }
+  .identity { flex: 1 1 180px; min-width: 0; }
+  .name { gap: 8px; }
+  .plan { padding: 1px 8px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 12px; color: var(--text-2); text-transform: capitalize; }
+  .usage { flex: 1 1 200px; display: flex; flex-direction: column; gap: 6px; }
+  .usage-label { display: flex; justify-content: space-between; font-size: 12px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .bar div { height: 100%; border-radius: 3px; background: var(--bar); }
+  .bar div.full { background: var(--warn); }
+  .week { font-size: 12px; }
+  .state { flex: 0 1 170px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-size: 12px; }
+  .actions { gap: 8px; }
+  .empty, .foot { padding: 14px 20px; }
+  .columns { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+  .panel { flex: 1 1 380px; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+  .switch { display: flex; gap: 12px; }
+  .switch .muted { width: 110px; flex-shrink: 0; }
+</style>

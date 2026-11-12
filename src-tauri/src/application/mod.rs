@@ -1,0 +1,126 @@
+//! Casos de uso. Dependem apenas do domínio e das portas.
+
+pub mod accounts;
+pub mod conversations;
+pub mod extensions;
+pub mod history;
+pub mod ports;
+pub mod projects;
+pub mod send_message;
+pub mod turn_setup;
+pub mod workspace;
+
+#[cfg(test)]
+pub(crate) mod fakes;
+
+use serde::Serialize;
+use std::{collections::HashMap, fmt, sync::{Arc, Mutex}};
+use crate::domain::chat::PermissionDecision;
+use tokio::sync::{mpsc, Notify};
+
+/// Sinal de cancelamento de um turno em andamento.
+pub type Cancel = Arc<Notify>;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AppError(pub String);
+
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AppError {}
+
+pub type AppResult<T> = Result<T, AppError>;
+
+/// Chaves das configurações booleanas.
+pub mod flags {
+    pub const AUTO_SWITCH: &str = "auto_switch";
+    pub const NOTIFY_SWITCH: &str = "notify_switch";
+    pub const USE_HISTORY: &str = "use_history";
+    pub const ALL: [&str; 3] = [AUTO_SWITCH, NOTIFY_SWITCH, USE_HISTORY];
+}
+
+/// Eventos de uma conversa enviados à interface.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatEvent {
+    Title { title: String },
+    Account { id: String, name: String },
+    Context { titles: Vec<String> },
+    Delta { text: String },
+    Thinking { text: String },
+    Tool { name: String },
+    /// Algo foi gravado na conversa (trecho de texto ou uso de ferramenta): recarregue as mensagens.
+    Step,
+    Permission { request_id: String, tool: String, input: String, description: String },
+    /// Descarta o texto parcial: o turno será refeito em outra conta.
+    Reset,
+    Notice { text: String },
+    Done { text: String },
+    Cancelled,
+    Exhausted { resets_at: Option<i64> },
+    Error { message: String },
+}
+
+/// Como o usuário (ou o próprio app) interfere em um turno em andamento.
+pub struct TurnControl {
+    pub cancel: Cancel,
+    /// Respostas aos pedidos de autorização.
+    pub decisions: mpsc::UnboundedReceiver<PermissionDecision>,
+    /// Permite ao caso de uso responder sozinho (ferramenta já liberada).
+    pub answer: mpsc::UnboundedSender<PermissionDecision>,
+}
+
+impl TurnControl {
+    pub fn new() -> (TurnControl, TurnHandle) {
+        let cancel = Cancel::default();
+        let (answer, decisions) = mpsc::unbounded_channel();
+        let handle = TurnHandle { cancel: cancel.clone(), answer: answer.clone() };
+        (TurnControl { cancel, decisions, answer }, handle)
+    }
+}
+
+/// Ponta do controle que fica com quem atende o usuário.
+pub struct TurnHandle {
+    cancel: Cancel,
+    answer: mpsc::UnboundedSender<PermissionDecision>,
+}
+
+/// Turnos em andamento, por conversa, para cancelar e responder autorizações.
+#[derive(Default)]
+pub struct RunningTurns(Mutex<HashMap<String, TurnHandle>>);
+
+impl RunningTurns {
+    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<String, TurnHandle>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Registra o turno; devolve `None` se a conversa já tem um em andamento.
+    pub fn start(&self, conversation_id: &str) -> Option<TurnControl> {
+        let mut map = self.map();
+        if map.contains_key(conversation_id) {
+            return None;
+        }
+        let (control, handle) = TurnControl::new();
+        map.insert(conversation_id.to_owned(), handle);
+        Some(control)
+    }
+
+    pub fn finish(&self, conversation_id: &str) {
+        self.map().remove(conversation_id);
+    }
+
+    pub fn cancel(&self, conversation_id: &str) {
+        if let Some(turn) = self.map().get(conversation_id) {
+            turn.cancel.notify_one();
+        }
+    }
+
+    pub fn decide(&self, conversation_id: &str, decision: PermissionDecision) {
+        if let Some(turn) = self.map().get(conversation_id) {
+            let _ = turn.answer.send(decision);
+        }
+    }
+}

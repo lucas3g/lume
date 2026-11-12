@@ -1,0 +1,243 @@
+// Estado das conversas: lista, mensagens da conversa aberta e respostas em andamento.
+
+import { api, errorMessage } from "../api";
+import { DEFAULT_MODEL, type ChatEvent, type Conversation, type Message } from "../types";
+import { loadProjects } from "./projects.svelte";
+
+/** Resposta em andamento de uma conversa. */
+export interface Turn {
+  text: string;
+  status: string | null;
+  account: string | null;
+  context: string[];
+}
+
+/** Como terminou o último turno, quando não foi com uma resposta. */
+export type Outcome =
+  | { kind: "error"; message: string }
+  | { kind: "exhausted"; resetsAt: number | null }
+  | null;
+
+/** Pedido de autorização do agente aguardando resposta. */
+export interface PermissionRequest {
+  requestId: string;
+  tool: string;
+  input: string;
+}
+
+export const chat = $state({
+  conversations: [] as Conversation[],
+  activeId: null as string | null,
+  messages: [] as Message[],
+  turns: {} as Record<string, Turn>,
+  outcomes: {} as Record<string, Outcome>,
+  permissions: {} as Record<string, PermissionRequest>,
+});
+
+let localId = -1;
+
+function localMessage(role: Message["role"], content: string): Message {
+  return { id: localId--, role, content, account_id: null, meta: null, created_at: Math.floor(Date.now() / 1000) };
+}
+
+export function activeConversation(): Conversation | undefined {
+  return chat.conversations.find((c) => c.id === chat.activeId);
+}
+
+export async function loadConversations(): Promise<void> {
+  chat.conversations = await api.listConversations();
+}
+
+export async function openConversation(id: string | null): Promise<void> {
+  chat.activeId = id;
+  chat.messages = id ? await api.listMessages(id) : [];
+}
+
+export async function removeConversation(id: string): Promise<void> {
+  await api.deleteConversation(id);
+  delete chat.turns[id];
+  delete chat.outcomes[id];
+  delete chat.permissions[id];
+  if (chat.activeId === id) await openConversation(null);
+  await loadConversations();
+}
+
+export async function setAgent(agentId: string | null): Promise<void> {
+  const conversation = activeConversation();
+  if (!conversation) return;
+  conversation.agent_id = agentId;
+  await api.setConversationAgent(conversation.id, agentId);
+}
+
+export async function setEffort(effort: string): Promise<void> {
+  const conversation = activeConversation();
+  if (!conversation) return;
+  conversation.effort = effort;
+  await api.setConversationEffort(conversation.id, effort);
+}
+
+export async function setMode(mode: string): Promise<void> {
+  const conversation = activeConversation();
+  if (!conversation) return;
+  conversation.permission_mode = mode;
+  await api.setConversationMode(conversation.id, mode);
+}
+
+export async function setModel(model: string): Promise<void> {
+  const conversation = activeConversation();
+  if (!conversation) return;
+  conversation.model = model;
+  await api.setConversationModel(conversation.id, model);
+}
+
+/** Envia a mensagem, criando a conversa se ainda não houver uma aberta. */
+/** O que acompanha uma mensagem além do texto. */
+export interface SendOptions {
+  model?: string;
+  /** Agente e projeto de uma conversa nova. */
+  agentId?: string | null;
+  projectId?: string | null;
+  /** Esforço escolhido antes de a conversa existir. */
+  effort?: string;
+  /** Caminhos dos arquivos anexados. */
+  attachments?: string[];
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+
+export async function send(text: string, options: SendOptions = {}): Promise<void> {
+  const { model = DEFAULT_MODEL, agentId = null, projectId = null, effort, attachments = [] } = options;
+  let id = chat.activeId;
+  if (!id) {
+    const created = await api.createConversation(model);
+    if (agentId) {
+      await api.setConversationAgent(created.id, agentId);
+      created.agent_id = agentId;
+    }
+    if (projectId) {
+      await api.setConversationProject(created.id, projectId);
+      created.project_id = projectId;
+    }
+    if (effort && effort !== created.effort) {
+      await api.setConversationEffort(created.id, effort);
+      created.effort = effort;
+    }
+    chat.conversations.unshift(created);
+    chat.activeId = id = created.id;
+    chat.messages = [];
+  }
+  chat.outcomes[id] = null;
+  chat.turns[id] = { text: "", status: null, account: null, context: [] };
+  const sent = localMessage("user", text);
+  if (attachments.length) sent.meta = JSON.stringify({ attachments: attachments.map(fileName) });
+  chat.messages.push(sent);
+  try {
+    await api.sendMessage(id, text, attachments);
+  } catch (e) {
+    delete chat.turns[id];
+    chat.outcomes[id] = { kind: "error", message: errorMessage(e) };
+  }
+}
+
+/** Abre uma sessão de agente na pasta; a pasta vira (ou reutiliza) um projeto. */
+export async function startAgentSession(folder: string, model = DEFAULT_MODEL): Promise<void> {
+  const created = await api.startFolderSession(folder, model);
+  // Sessões antigas da mesma pasta podem ter sido adotadas pelo projeto.
+  await Promise.all([loadConversations(), loadProjects()]);
+  chat.activeId = created.id;
+  chat.messages = [];
+}
+
+/** Responde ao pedido de autorização da conversa aberta. */
+export async function decide(allow: boolean, always: boolean): Promise<void> {
+  const id = chat.activeId;
+  const request = id ? chat.permissions[id] : undefined;
+  if (!id || !request) return;
+  delete chat.permissions[id];
+  await api.decidePermission({ conversationId: id, requestId: request.requestId, tool: request.tool, allow, always });
+}
+
+export function cancel(): void {
+  if (chat.activeId) void api.cancelMessage(chat.activeId);
+}
+
+async function finish(id: string, outcome: Outcome = null): Promise<void> {
+  delete chat.turns[id];
+  delete chat.permissions[id];
+  chat.outcomes[id] = outcome;
+  if (chat.activeId === id) chat.messages = await api.listMessages(id);
+  await loadConversations();
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  WebSearch: "Buscando na web",
+  WebFetch: "Lendo uma página",
+  Skill: "Carregando uma skill",
+};
+
+/** Eventos que indicam um turno em andamento, mesmo que iniciado por outra janela. */
+const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "tool", "step", "permission"]);
+
+/** Aplica ao estado um evento vindo do núcleo. */
+export function handleChatEvent(event: ChatEvent): void {
+  const id = event.conversation_id;
+  if (!chat.turns[id] && TURN_ACTIVITY.has(event.kind)) {
+    chat.turns[id] = { text: "", status: null, account: null, context: [] };
+  }
+  const turn = chat.turns[id];
+  switch (event.kind) {
+    case "title": {
+      const conversation = chat.conversations.find((c) => c.id === id);
+      if (conversation) conversation.title = event.title;
+      break;
+    }
+    case "account":
+      if (turn) turn.account = event.name;
+      break;
+    case "context":
+      if (turn) turn.context = event.titles;
+      break;
+    case "delta":
+      if (turn) {
+        turn.text += event.text;
+        turn.status = null;
+      }
+      break;
+    case "thinking":
+      if (turn && !turn.text) turn.status = "Pensando";
+      break;
+    case "tool":
+      if (turn) turn.status = TOOL_LABELS[event.name] ?? (event.name.startsWith("mcp__") ? "Usando um conector" : `Usando ${event.name}`);
+      break;
+    case "step":
+      // Um trecho de texto ou uso de ferramenta foi gravado: passa a vir da lista de mensagens.
+      if (turn) turn.text = "";
+      if (chat.activeId === id) void api.listMessages(id).then((messages) => (chat.messages = messages));
+      break;
+    case "permission":
+      chat.permissions[id] = { requestId: event.request_id, tool: event.tool, input: event.input };
+      if (turn) turn.status = "Aguardando sua aprovação";
+      break;
+    case "reset":
+      if (turn) {
+        turn.text = "";
+        turn.status = null;
+      }
+      break;
+    case "notice":
+      if (chat.activeId === id) chat.messages.push(localMessage("notice", event.text));
+      break;
+    case "done":
+    case "cancelled":
+      void finish(id);
+      break;
+    case "exhausted":
+      void finish(id, { kind: "exhausted", resetsAt: event.resets_at });
+      break;
+    case "error":
+      void finish(id, { kind: "error", message: event.message });
+      break;
+  }
+}

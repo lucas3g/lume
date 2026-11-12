@@ -1,0 +1,99 @@
+//! Conta do Claude e as regras do pool: qual conta usar e quando ela volta.
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Account {
+    pub id: String,
+    pub name: String,
+    pub email: Option<String>,
+    pub plan: Option<String>,
+    /// Diretório de configuração isolado; `None` é o login padrão do computador.
+    pub config_dir: Option<String>,
+    pub priority: i64,
+    pub enabled: bool,
+    pub auth_ok: bool,
+    pub limited_until: Option<i64>,
+    pub util_5h: Option<f64>,
+    pub util_7d: Option<f64>,
+    pub resets_5h: Option<i64>,
+}
+
+impl Account {
+    pub fn is_usable(&self, now: i64) -> bool {
+        self.enabled && self.auth_ok && self.limited_until.is_none_or(|t| t <= now)
+    }
+}
+
+/// Identidade informada pelo provedor após o login.
+#[derive(Debug, Clone, Default)]
+pub struct Identity {
+    pub logged_in: bool,
+    pub email: Option<String>,
+    pub plan: Option<String>,
+}
+
+/// Primeira conta utilizável na ordem de prioridade, ignorando as já tentadas neste envio.
+pub fn pick_next<'a>(accounts: &'a [Account], now: i64, tried: &[String]) -> Option<&'a Account> {
+    accounts
+        .iter()
+        .filter(|a| a.is_usable(now) && !tried.contains(&a.id))
+        .min_by_key(|a| a.priority)
+}
+
+/// Horário do reset mais próximo entre as contas limitadas.
+pub fn earliest_reset(accounts: &[Account], now: i64) -> Option<i64> {
+    accounts
+        .iter()
+        .filter(|a| a.enabled && a.auth_ok)
+        .filter_map(|a| a.limited_until)
+        .filter(|t| *t > now)
+        .min()
+}
+
+#[cfg(test)]
+pub(crate) fn sample(id: &str, priority: i64) -> Account {
+    Account {
+        id: id.into(),
+        name: id.into(),
+        email: None,
+        plan: None,
+        config_dir: None,
+        priority,
+        enabled: true,
+        auth_ok: true,
+        limited_until: None,
+        util_5h: None,
+        util_7d: None,
+        resets_5h: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_by_priority_and_skips_unusable() {
+        let mut list = vec![sample("b", 2), sample("a", 1), sample("c", 3)];
+        assert_eq!(pick_next(&list, 100, &[]).unwrap().id, "a");
+
+        list[1].limited_until = Some(500); // "a" limitada
+        assert_eq!(pick_next(&list, 100, &[]).unwrap().id, "b");
+        assert_eq!(pick_next(&list, 600, &[]).unwrap().id, "a", "volta após o reset");
+
+        list[0].enabled = false; // "b" desativada
+        assert_eq!(pick_next(&list, 100, &[]).unwrap().id, "c");
+
+        list[2].auth_ok = false;
+        assert!(pick_next(&list, 100, &[]).is_none());
+        assert_eq!(earliest_reset(&list, 100), Some(500));
+    }
+
+    #[test]
+    fn skips_accounts_already_tried() {
+        let list = vec![sample("a", 1), sample("b", 2)];
+        assert_eq!(pick_next(&list, 0, &["a".into()]).unwrap().id, "b");
+        assert!(pick_next(&list, 0, &["a".into(), "b".into()]).is_none());
+    }
+}

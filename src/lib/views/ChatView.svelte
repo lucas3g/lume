@@ -1,0 +1,489 @@
+<script lang="ts">
+  import { open as pickFiles } from "@tauri-apps/plugin-dialog";
+  import { tick } from "svelte";
+  import { extractArtifacts, versionsOf, type Artifact } from "../artifacts";
+  import ArtifactPanel from "../components/ArtifactPanel.svelte";
+  import ContextRing from "../components/composer/ContextRing.svelte";
+  import ModeMenu from "../components/composer/ModeMenu.svelte";
+  import ModelMenu from "../components/composer/ModelMenu.svelte";
+  import ChangesPanel from "../components/panel/ChangesPanel.svelte";
+  import EnvironmentPanel from "../components/panel/EnvironmentPanel.svelte";
+  import FilesPanel from "../components/panel/FilesPanel.svelte";
+  import PermissionCard from "../components/PermissionCard.svelte";
+  import CodeView from "../components/CodeView.svelte";
+  import ToolRow from "../components/ToolRow.svelte";
+  import { describeFile, folderName, formatTime, renderMarkdown } from "../format";
+  import { activeAccount } from "../state/accounts.svelte";
+  import { agents } from "../state/agents.svelte";
+  import { api } from "../api";
+  import { activeConversation, cancel, chat, decide, send, setAgent, setEffort, setMode, setModel } from "../state/chat.svelte";
+  import { projectName, projects } from "../state/projects.svelte";
+  import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
+  import { parseToolUse } from "../tools";
+  import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type View } from "../types";
+  import { onMount } from "svelte";
+
+  interface Props {
+    onnavigate: (view: View) => void;
+  }
+  let { onnavigate }: Props = $props();
+
+  let draft = $state("");
+  let newModel = $state<string>(DEFAULT_MODEL);
+  let newAgent = $state<string | null>(null);
+  let newEffort = $state<string>(DEFAULT_EFFORT);
+  /** Skills que podem ser chamadas com "/" no campo de mensagem. */
+  let commands = $state<{ name: string; description: string | null }[]>([]);
+  let commandIndex = $state(0);
+  /** O usuário fechou a lista de comandos para o texto atual. */
+  let commandsDismissed = $state(false);
+  let openArtifact = $state<Artifact | null>(null);
+  /** Caminhos dos arquivos a enviar com a próxima mensagem. */
+  let attachments = $state<string[]>([]);
+  let scroller = $state<HTMLElement>();
+
+
+  const conversation = $derived(activeConversation());
+  const turn = $derived(chat.activeId ? chat.turns[chat.activeId] : undefined);
+  const outcome = $derived(chat.activeId ? chat.outcomes[chat.activeId] : null);
+  const permission = $derived(chat.activeId ? chat.permissions[chat.activeId] : undefined);
+  const isAgent = $derived(conversation?.kind === "agent");
+  const account = $derived(activeAccount());
+  const model = $derived(conversation?.model ?? newModel);
+  const agentId = $derived(conversation ? conversation.agent_id : newAgent);
+  const projectId = $derived(conversation ? conversation.project_id : projects.pendingId);
+  const agentModel = $derived(agents.list.find((a) => a.id === agentId)?.model ?? null);
+  const effort = $derived(conversation?.effort ?? newEffort);
+  const canSend = $derived(draft.trim().length > 0 && !turn);
+  /** Lista de comandos: aparece enquanto o texto é só "/" seguido do começo de um nome. */
+  const commandQuery = $derived(commandsDismissed ? null : (draft.match(/^\/(\S*)$/)?.[1] ?? null));
+  const commandMatches = $derived(
+    commandQuery === null ? [] : commands.filter((c) => c.name.toLowerCase().includes(commandQuery.toLowerCase())).slice(0, 8),
+  );
+  /** Todos os artifacts da conversa, em ordem, para o histórico de versões e a lista de saídas. */
+  const allArtifacts = $derived(
+    chat.messages.filter((m) => m.role === "assistant").flatMap((m) => extractArtifacts(m.content)),
+  );
+  const openVersions = $derived(openArtifact ? versionsOf(openArtifact, allArtifacts) : []);
+  const openIndex = $derived(
+    openArtifact ? Math.max(0, openVersions.findIndex((a) => a.code === openArtifact?.code)) : 0,
+  );
+  /** Arquivos e Alterações só existem quando a conversa trabalha em uma pasta. */
+  const panel = $derived<Panel | null>(
+    workspace.panel && (isAgent || workspace.panel === "environment") ? workspace.panel : null,
+  );
+
+  const PANELS: { id: Panel; label: string; icon: string; needsFolder: boolean }[] = [
+    { id: "environment", label: "Ambiente", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01", needsFolder: false },
+    { id: "files", label: "Arquivos", icon: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", needsFolder: true },
+    { id: "changes", label: "Alterações", icon: "M12 4v8M8 8h8M8 18h8M5 3h14v18H5z", needsFolder: true },
+  ];
+
+  function meta(message: Message, key: "context" | "attachments"): string[] {
+    if (!message.meta) return [];
+    try {
+      return JSON.parse(message.meta)[key] ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+  function contextLabel(count: number): string {
+    return count === 1 ? "Usou 1 conversa anterior como contexto" : `Usou ${count} conversas anteriores como contexto`;
+  }
+
+  async function attach() {
+    const picked = await pickFiles({ multiple: true, title: "Anexar arquivos" });
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    attachments = [...new Set([...attachments, ...paths])];
+  }
+
+  async function submit() {
+    if (!canSend) return;
+    const text = draft.trim();
+    const files = attachments;
+    draft = "";
+    attachments = [];
+    await send(text, { model, agentId, projectId, effort, attachments: files });
+  }
+
+  function pickCommand(name: string) {
+    draft = `/${name} `;
+    commandsDismissed = true;
+  }
+
+  /** Teclas da lista de comandos; devolve `true` se a tecla foi consumida. */
+  function commandKey(event: KeyboardEvent): boolean {
+    if (!commandMatches.length) return false;
+    const last = commandMatches.length - 1;
+    if (event.key === "ArrowDown") commandIndex = commandIndex >= last ? 0 : commandIndex + 1;
+    else if (event.key === "ArrowUp") commandIndex = commandIndex <= 0 ? last : commandIndex - 1;
+    else if (event.key === "Enter" || event.key === "Tab") pickCommand(commandMatches[Math.min(commandIndex, last)].name);
+    else if (event.key === "Escape") commandsDismissed = true;
+    else return false;
+    event.preventDefault();
+    return true;
+  }
+
+  function onKeydown(event: KeyboardEvent) {
+    if (commandKey(event)) return;
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void submit();
+    }
+  }
+
+  function changeAgent(value: string) {
+    const id = value || null;
+    if (conversation) void setAgent(id);
+    else newAgent = id;
+  }
+
+  function changeModel(value: string) {
+    if (conversation) void setModel(value);
+    else newModel = value;
+  }
+
+  function changeEffort(value: string) {
+    if (conversation) void setEffort(value);
+    else newEffort = value;
+  }
+
+  // A cada mudança no texto, a lista de comandos volta a poder aparecer.
+  $effect(() => {
+    void draft;
+    commandIndex = 0;
+    if (!draft.startsWith("/")) commandsDismissed = false;
+  });
+
+  onMount(async () => {
+    const skills = await api.listSkills(SCOPE_ALL);
+    commands = skills.filter((s) => s.enabled).map((s) => ({ name: s.name, description: s.description }));
+  });
+
+  function openProject() {
+    projects.selectedId = projectId;
+    onnavigate("project");
+  }
+
+  // Ao trocar de conversa, a prévia aberta deixa de fazer sentido.
+  $effect(() => {
+    void chat.activeId;
+    openArtifact = null;
+    workspace.openFile = null;
+  });
+
+  // A situação da pasta acompanha a conversa aberta e cada passo do agente.
+  $effect(() => {
+    void chat.messages.length;
+    void refreshStatus(chat.activeId, isAgent);
+  });
+
+  // Acompanha o fim da conversa enquanto a resposta chega.
+  $effect(() => {
+    void [chat.messages.length, turn?.text, turn?.status, outcome, permission];
+    void tick().then(() => scroller?.scrollTo({ top: scroller.scrollHeight }));
+  });
+</script>
+
+<div class="split">
+  <main>
+    <header>
+      {#if projectId}
+        <button type="button" class="crumb" onclick={openProject}>{projectName(projectId) ?? "Projeto"}</button>
+        <span class="slash" aria-hidden="true">/</span>
+      {/if}
+      <h1>{conversation?.title ?? "Nova conversa"}</h1>
+      <div class="panels" role="group" aria-label="Painel lateral">
+        {#each PANELS as p (p.id)}
+          {#if isAgent || !p.needsFolder}
+            <button type="button" aria-label={p.label} title={p.label} aria-pressed={panel === p.id && !openArtifact} class:on={panel === p.id && !openArtifact} onclick={() => ((openArtifact = null), togglePanel(p.id))}>
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d={p.icon} /></svg>
+            </button>
+          {/if}
+        {/each}
+      </div>
+    </header>
+
+    {#if workspace.openFile}
+      {@const file = workspace.openFile}
+      <section class="viewer" aria-label={`Arquivo ${file.path}`}>
+        <div class="viewer-head">
+          <span class="mono path">{file.path}</span>
+          <span class="muted info">{describeFile(file)}</span>
+          <button type="button" class="btn icon" aria-label="Fechar o arquivo" title="Fechar" onclick={() => (workspace.openFile = null)}>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        {#if file.text !== null}
+          <CodeView text={file.text} path={file.path} large />
+        {:else}
+          <p class="muted no-preview">Este arquivo não é texto ou é grande demais para exibir.</p>
+        {/if}
+      </section>
+    {/if}
+
+    <div class="scroll" class:below={workspace.openFile !== null} bind:this={scroller}>
+      <div class="thread">
+        {#if chat.messages.length === 0 && !turn}
+          <div class="welcome">
+            <h2>{isAgent ? "O que vamos fazer nesta pasta?" : "Como posso ajudar?"}</h2>
+            <p class="muted">Suas conversas anteriores do Claude Code e do Claude Desktop entram como contexto quando ajudam.</p>
+          </div>
+        {/if}
+
+        {#each chat.messages as message (message.id)}
+          {#if message.role === "user"}
+            {@const names = meta(message, "attachments")}
+            <div class="user">
+              {#if names.length}
+                <div class="files">{#each names as n}<span class="file">{n}</span>{/each}</div>
+              {/if}
+              {message.content}
+            </div>
+          {:else if message.role === "tool"}
+            {@const tool = parseToolUse(message.content)}
+            {#if tool}<ToolRow {tool} />{/if}
+          {:else if message.role === "notice"}
+            <div class="notice" role="status"><span></span>{message.content}<span></span></div>
+          {:else}
+            {@const titles = meta(message, "context")}
+            <div class="assistant">
+              {#if titles.length}
+                <div class="context" title={titles.join("\n")}>{contextLabel(titles.length)}</div>
+              {/if}
+              <div class="markdown">{@html renderMarkdown(message.content)}</div>
+              {#each extractArtifacts(message.content) as artifact (artifact.code)}
+                <button type="button" class="artifact" onclick={() => (openArtifact = artifact)}>
+                  <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-text)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5" /></svg>
+                  <span>
+                    <strong>{artifact.title}</strong>
+                    <span class="muted">{artifact.kind === "html" ? "Página" : "Imagem"} · abrir prévia</span>
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        {/each}
+
+        {#if turn}
+          <div class="assistant" aria-live="polite">
+            {#if turn.context.length}
+              <div class="context" title={turn.context.join("\n")}>{contextLabel(turn.context.length)}</div>
+            {/if}
+            {#if turn.text}
+              <div class="markdown">{@html renderMarkdown(turn.text)}</div>
+            {/if}
+            {#if turn.status || !turn.text}
+              <div class="working"><span class="pulse" aria-hidden="true"></span>{turn.status ?? "Respondendo"}…</div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if permission}
+          <PermissionCard request={permission} ondecide={decide} />
+        {/if}
+
+        {#if outcome?.kind === "exhausted"}
+          <div class="card alert" role="alert">
+            <strong>Todas as contas atingiram o limite.</strong>
+            <span class="muted">
+              {outcome.resetsAt ? `A primeira volta às ${formatTime(outcome.resetsAt)}.` : "Nenhuma conta está disponível."}
+              Envie a mensagem de novo quando houver uma conta livre.
+            </span>
+            <button type="button" class="btn small" onclick={() => onnavigate("accounts")}>Ver contas</button>
+          </div>
+        {:else if outcome?.kind === "error"}
+          <div class="card alert" role="alert">
+            <strong>Não foi possível responder.</strong>
+            <span class="muted">{outcome.message}</span>
+          </div>
+        {/if}
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer-area">
+        {#if commandMatches.length}
+          <div class="commands" role="listbox" aria-label="Comandos">
+            {#each commandMatches as c, i (c.name)}
+              <button type="button" role="option" aria-selected={i === commandIndex} class:on={i === commandIndex} onclick={() => pickCommand(c.name)}>
+                <span class="mono">/{c.name}</span>
+                {#if c.description}<span class="muted">{c.description}</span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="composer">
+          {#if attachments.length}
+            <div class="files">
+              {#each attachments as path (path)}
+                <span class="file">
+                  {baseName(path)}
+                  <button type="button" aria-label={`Remover o anexo ${baseName(path)}`} onclick={() => (attachments = attachments.filter((p) => p !== path))}>×</button>
+                </span>
+              {/each}
+            </div>
+          {/if}
+          <div class="entry">
+            <button type="button" class="tool" aria-label="Anexar arquivos" title="Anexar arquivos" onclick={attach}>
+              <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+            <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos" bind:value={draft} onkeydown={onKeydown}></textarea>
+            {#if turn}
+              <button type="button" class="send stop" aria-label="Parar a resposta" title="Parar" onclick={cancel}>
+                <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5" /></svg>
+              </button>
+            {:else if canSend}
+              <button type="button" class="send" aria-label="Enviar" title="Enviar (Enter)" onclick={submit}>
+                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+              </button>
+            {/if}
+          </div>
+        </div>
+
+        <div class="status-line">
+          {#if isAgent && conversation}
+            <span class="info" title={conversation.cwd}>
+              <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+              {folderName(conversation.cwd)}
+            </span>
+            {#if workspace.status?.branch}
+              <span class="info">
+                <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6" cy="6" r="2.2" /><circle cx="6" cy="18" r="2.2" /><circle cx="18" cy="8" r="2.2" /><path d="M6 8.2v7.6M18 10.2c0 4-6 3-11 5" /></svg>
+                {workspace.status.branch}
+              </span>
+            {/if}
+          {/if}
+          <span class="spacer"></span>
+          <button type="button" class="account" title="Conta que atende a próxima mensagem" onclick={() => onnavigate("accounts")}>
+            <span class="dot" class:none={!account}></span>
+            {turn?.account ?? account?.name ?? "Sem conta"}
+          </button>
+          {#if agents.list.length}
+            <select class="pick" aria-label="Agente" title="Agente" value={agentId ?? ""} onchange={(e) => changeAgent(e.currentTarget.value)}>
+              <option value="">Sem agente</option>
+              {#each agents.list as a (a.id)}
+                <option value={a.id}>{a.name}</option>
+              {/each}
+            </select>
+          {/if}
+          <ModelMenu model={agentModel ?? model} {effort} locked={agentModel !== null} onmodel={changeModel} oneffort={changeEffort} />
+          {#if isAgent && conversation}
+            <ModeMenu mode={conversation.permission_mode} onmode={setMode} />
+          {/if}
+          <ContextRing percent={conversation?.context_percent ?? null} />
+        </div>
+      </div>
+    </div>
+  </main>
+
+  {#if openArtifact}
+    <ArtifactPanel versions={openVersions} initial={openIndex} onclose={() => (openArtifact = null)} />
+  {:else if panel}
+    <aside aria-label={PANELS.find((p) => p.id === panel)?.label}>
+      {#if panel === "environment"}
+        <EnvironmentPanel {conversation} artifacts={allArtifacts} onopenartifact={(a) => (openArtifact = a)} {onnavigate} />
+      {:else if conversation && panel === "files"}
+        <FilesPanel {conversation} />
+      {:else if conversation}
+        <ChangesPanel {conversation} />
+      {/if}
+    </aside>
+  {/if}
+</div>
+
+<style>
+  .split { flex: 1; min-height: 0; display: flex; }
+  main { flex: 1 1 420px; min-width: 0; height: 100%; display: flex; flex-direction: column; }
+  aside { flex: 0 0 340px; min-width: 0; height: 100%; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg-side); }
+
+  header { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 4px 16px 4px 20px; border-bottom: 1px solid var(--border); }
+  .crumb { padding: 0; border: 0; background: transparent; color: var(--muted); white-space: nowrap; }
+  .crumb:hover { color: var(--text); }
+  .slash { color: var(--faint); }
+  h1 { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .panels { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-side); }
+  .panels button { width: 32px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+  .panels button:hover { color: var(--text); }
+  .panels button.on { background: var(--hover); color: #fff; }
+
+  .scroll { flex: 1; overflow-y: auto; padding: 28px 20px 20px; }
+  /* Com um arquivo aberto, o chat fica na faixa de baixo. */
+  .scroll.below { flex: 1 1 0; min-height: 120px; padding-top: 16px; }
+  .viewer { flex: 2 1 0; min-height: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--border-strong); }
+  .viewer-head { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 8px 0 20px; border-bottom: 1px solid var(--border); background: var(--bg-side); }
+  .viewer-head .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+  .viewer-head .info { flex-shrink: 0; font-size: 12px; }
+  .no-preview { padding: 20px; }
+  .thread { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .welcome { padding: 96px 0 0; text-align: center; display: flex; flex-direction: column; gap: 8px; }
+  .welcome h2 { font-family: var(--display); font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+
+  .user { align-self: flex-end; max-width: 520px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 14px 14px 4px 14px; background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; color: var(--text-body); }
+  .context { align-self: flex-start; padding: 2px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--muted); }
+  .notice { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
+  .notice span { flex: 1; height: 1px; background: var(--border); }
+  .alert { padding: 14px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; border-color: var(--border-strong); }
+  .working { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-text); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+
+  .artifact { align-self: flex-start; display: flex; align-items: center; gap: 12px; padding: 9px 14px 9px 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); text-align: left; color: var(--text); }
+  .artifact:hover { background: var(--hover); }
+  .artifact span { display: flex; flex-direction: column; }
+  .artifact .muted { font-size: 12px; }
+
+  .markdown { overflow-wrap: anywhere; user-select: text; }
+  .markdown :global(p) { margin: 0 0 12px; }
+  .markdown :global(> :last-child) { margin-bottom: 0; }
+  .markdown :global(pre) { margin: 0 0 12px; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-side); }
+  .markdown :global(pre code) { background: transparent; color: var(--code-text); }
+  .markdown :global(code) { font-family: var(--mono); font-size: 12.5px; }
+  .markdown :global(:not(pre) > code) { padding: 1px 5px; border-radius: 4px; background: var(--surface-2); }
+  .markdown :global(ul), .markdown :global(ol) { margin: 0 0 12px; padding-left: 22px; }
+  .markdown :global(h1), .markdown :global(h2), .markdown :global(h3) { margin: 16px 0 8px; font-size: 15px; font-weight: 600; color: var(--text); }
+  .markdown :global(strong) { color: var(--text); }
+  .markdown :global(table) { border-collapse: collapse; margin-bottom: 12px; display: block; overflow-x: auto; }
+  .markdown :global(th), .markdown :global(td) { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
+  .markdown :global(blockquote) { margin: 0 0 12px; padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--text-2); }
+
+  .composer-wrap { padding: 0 20px 12px; display: flex; justify-content: center; }
+  .composer-area { position: relative; width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 6px; }
+  .composer { padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface-2); display: flex; flex-direction: column; gap: 8px; }
+  .composer:focus-within { border-color: #4a5298; }
+  .composer > .files { padding: 4px 4px 0; }
+  .entry { display: flex; align-items: flex-end; gap: 6px; }
+  textarea { flex: 1; min-width: 0; max-height: 240px; padding: 6px 2px; border: 0; outline: 0; resize: none; background: transparent; font-size: 14px; line-height: 1.45; field-sizing: content; }
+  .spacer { flex: 1; }
+  .tool { width: 32px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--text-2); }
+  .tool:hover, .pick:hover, .account:hover { background: var(--hover); color: var(--text); }
+  .send { width: 30px; height: 30px; margin-bottom: 1px; flex-shrink: 0; display: grid; place-items: center; border: 0; border-radius: 9px; background: var(--accent); color: #fff; }
+  .send:hover { background: var(--accent-hover); }
+  .send.stop { background: var(--hover); border: 1px solid var(--border-strong); color: var(--text); }
+
+  .status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 0 2px; font-size: 12.5px; color: var(--muted); }
+  .info { display: flex; align-items: center; gap: 6px; margin-right: 12px; font-size: 12px; }
+  .account { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--text-2); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+  .dot.none { background: var(--warn); }
+  .pick { appearance: none; min-height: 28px; max-width: 170px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--text-2); text-overflow: ellipsis; }
+
+  .commands { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 20; padding: 6px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-2); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 1px; }
+  .commands button { display: flex; align-items: baseline; gap: 12px; min-height: 32px; padding: 6px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; color: var(--text); }
+  .commands button:hover, .commands button.on { background: var(--hover); }
+  .commands .mono { flex-shrink: 0; font-size: 12.5px; }
+  .commands .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+
+  .files { display: flex; flex-wrap: wrap; gap: 6px; }
+  .user .files { margin-bottom: 8px; }
+  .file { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); font-size: 12px; color: var(--text-2); white-space: nowrap; }
+  .file button { border: 0; padding: 0 2px; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; }
+
+</style>

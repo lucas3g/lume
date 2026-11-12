@@ -1,0 +1,205 @@
+// Tipos espelhados do núcleo Rust (camadas domain e application).
+
+export interface Account {
+  id: string;
+  name: string;
+  email: string | null;
+  plan: string | null;
+  config_dir: string | null;
+  priority: number;
+  enabled: boolean;
+  auth_ok: boolean;
+  limited_until: number | null;
+  util_5h: number | null;
+  util_7d: number | null;
+  resets_5h: number | null;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  cli_session_id: string | null;
+  model: string;
+  cwd: string;
+  agent_id: string | null;
+  project_id: string | null;
+  kind: "chat" | "agent";
+  allowed_tools: string[];
+  /** Percentual do contexto do modelo ocupado no último turno. */
+  context_percent: number | null;
+  effort: string;
+  permission_mode: string;
+  updated_at: number;
+}
+
+export type Role = "user" | "assistant" | "notice" | "tool";
+
+export interface Message {
+  id: number;
+  role: Role;
+  content: string;
+  account_id: string | null;
+  meta: string | null;
+  created_at: number;
+}
+
+export interface Switch {
+  at: number;
+  from_name: string;
+  to_name: string;
+  conversation_title: string;
+}
+
+export interface HistSession {
+  id: string;
+  source: "code" | "desktop";
+  cwd: string | null;
+  title: string | null;
+  mtime: number;
+  msg_count: number;
+}
+
+export interface HistoryStatus {
+  sessions: number;
+  projects: number;
+  desktop_sessions: number;
+}
+
+export type FlagKey = "auto_switch" | "notify_switch" | "use_history";
+export type Flags = Record<FlagKey, boolean>;
+
+export type ChatEvent = { conversation_id: string } & (
+  | { kind: "title"; title: string }
+  | { kind: "account"; id: string; name: string }
+  | { kind: "context"; titles: string[] }
+  | { kind: "delta"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; name: string }
+  | { kind: "step" }
+  | { kind: "permission"; request_id: string; tool: string; input: string; description: string }
+  | { kind: "reset" }
+  | { kind: "notice"; text: string }
+  | { kind: "done"; text: string }
+  | { kind: "cancelled" }
+  | { kind: "exhausted"; resets_at: number | null }
+  | { kind: "error"; message: string }
+);
+
+/** Modelos atuais, pelos apelidos que o Claude Code resolve para a versão mais recente. */
+export const MODELS = [
+  { id: "opus", label: "Opus 5.5" },
+  { id: "sonnet", label: "Sonnet 5.5" },
+  { id: "fable", label: "Fable 5.2" },
+  { id: "haiku", label: "Haiku 5.5" },
+] as const;
+
+export const MORE_MODELS = [
+  { id: "claude-fable-5-1", label: "Fable 5.1" },
+  { id: "claude-haiku-4-5", label: "Haiku 4.5" },
+  { id: "claude-sonnet-5", label: "Sonnet 5" },
+  { id: "claude-opus-5", label: "Opus 5" },
+  { id: "claude-fable-5", label: "Fable 5" },
+  { id: "claude-opus-4-8", label: "Opus 4.8" },
+  { id: "claude-opus-4-7", label: "Opus 4.7" },
+  { id: "claude-opus-4-6", label: "Opus 4.6" },
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+] as const;
+
+export const DEFAULT_MODEL = "opus";
+
+export function modelLabel(id: string): string {
+  return [...MODELS, ...MORE_MODELS].find((m) => m.id === id)?.label ?? id;
+}
+
+/** Níveis de esforço de raciocínio, do menor para o maior. */
+export const EFFORTS: { id: string; label: string; note?: string; warn?: boolean }[] = [
+  { id: "low", label: "Baixo" },
+  { id: "medium", label: "Médio", note: "Recomendado" },
+  { id: "high", label: "Alto" },
+  { id: "xhigh", label: "Extra" },
+  { id: "max", label: "Máx", note: "consome muito mais uso", warn: true },
+];
+
+export const DEFAULT_EFFORT = "medium";
+
+/** Modos de permissão de uma sessão de agente. */
+export const MODES: { id: string; label: string; description: string; isDefault?: boolean; risky?: boolean }[] = [
+  { id: "auto", label: "Automático", description: "O Claude decide quando pedir permissão", isDefault: true },
+  { id: "manual", label: "Manual", description: "Sempre perguntar antes de fazer alterações" },
+  { id: "acceptEdits", label: "Aceitar edições", description: "Aceitar todas as edições de arquivo automaticamente" },
+  { id: "plan", label: "Plano", description: "Criar um plano antes de fazer alterações" },
+  { id: "bypassPermissions", label: "Ignorar permissões", description: "Aceita todas as ações sem perguntar", risky: true },
+];
+
+/** Telas principais do aplicativo. */
+export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts";
+
+export interface Project {
+  id: string;
+  name: string;
+  instructions: string;
+  /** Pasta do projeto; as sessões de agente do projeto trabalham nela. */
+  folder: string | null;
+}
+
+export interface FileEntry {
+  name: string;
+  /** Caminho relativo à pasta da sessão. */
+  path: string;
+  is_dir: boolean;
+}
+
+export interface FileView {
+  path: string;
+  size: number;
+  /** `null` quando o arquivo não é texto ou é grande demais para exibir. */
+  text: string | null;
+}
+
+export interface ChangedFile {
+  path: string;
+  status: string;
+  added: number;
+  removed: number;
+}
+
+export interface WorkspaceStatus {
+  is_repo: boolean;
+  branch: string | null;
+  added: number;
+  removed: number;
+  files: ChangedFile[];
+}
+
+export interface ProjectFile {
+  id: string;
+  name: string;
+  size: number;
+}
+
+export interface Skill {
+  name: string;
+  description: string | null;
+  origin: "personal" | "plugin";
+  enabled: boolean;
+  /** No escopo de um agente: já disponível por estar ligada para todos. */
+  inherited: boolean;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  instructions: string;
+  model: string | null;
+}
+
+export interface Connector {
+  id: string;
+  name: string;
+  config: string;
+  enabled: boolean;
+  status: string | null;
+}
+
+/** Escopo das skills que valem para qualquer conversa e agente. */
+export const SCOPE_ALL = "all";

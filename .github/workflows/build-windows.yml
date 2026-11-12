@@ -1,0 +1,56 @@
+name: Build Windows
+
+# Compila o instalador do Lume para Windows a cada push na main,
+# ou manualmente pela aba Actions.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Instalar dependências do frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Checar tipos do frontend
+        run: pnpm check
+
+      - name: Testes do núcleo
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Compilar o instalador
+        run: pnpm tauri build --bundles nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lume-windows-instalador
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

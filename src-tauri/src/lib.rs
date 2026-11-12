@@ -1,0 +1,96 @@
+//! Relay: cliente desktop do Claude com várias contas.
+//!
+//! Camadas (as dependências apontam sempre para dentro):
+//! `presentation` → `application` → `domain`, com `infrastructure`
+//! implementando as portas definidas em `application::ports`.
+
+mod application;
+mod domain;
+mod infrastructure;
+mod presentation;
+
+use presentation::{commands, start_background_work, windows, Container};
+use std::sync::Arc;
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .on_window_event(windows::on_window_event)
+        .setup(|app| {
+            let container = Arc::new(Container::build(app.handle())?);
+            // Sessões de versões anteriores, criadas sem projeto, entram no projeto da pasta delas.
+            let _ = container.projects.adopt_sessions();
+            app.manage(container.clone());
+            start_background_work(container);
+            windows::setup_tray(app.handle())?;
+            windows::setup_shortcut(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::environment,
+            commands::quick_entry_sent,
+            commands::hide_quick_entry,
+            commands::save_text_file,
+            commands::list_accounts,
+            commands::add_account,
+            commands::remove_account,
+            commands::set_account_enabled,
+            commands::reorder_accounts,
+            commands::refresh_account,
+            commands::login_account_again,
+            commands::list_switches,
+            commands::list_conversations,
+            commands::create_conversation,
+            commands::delete_conversation,
+            commands::list_messages,
+            commands::set_conversation_model,
+            commands::set_conversation_effort,
+            commands::set_conversation_mode,
+            commands::send_message,
+            commands::cancel_message,
+            commands::start_folder_session,
+            commands::decide_permission,
+            commands::get_flags,
+            commands::set_flag,
+            commands::history_status,
+            commands::history_list,
+            commands::history_reindex,
+            commands::history_open,
+            commands::list_skills,
+            commands::set_skill,
+            commands::list_agents,
+            commands::save_agent,
+            commands::delete_agent,
+            commands::set_conversation_agent,
+            commands::list_projects,
+            commands::save_project,
+            commands::delete_project,
+            commands::list_project_files,
+            commands::add_project_files,
+            commands::remove_project_file,
+            commands::set_conversation_project,
+            commands::workspace_entries,
+            commands::workspace_read,
+            commands::workspace_status,
+            commands::workspace_diff,
+            commands::workspace_commit,
+            commands::list_connectors,
+            commands::add_connector,
+            commands::import_desktop_connectors,
+            commands::set_connector_enabled,
+            commands::remove_connector,
+        ])
+        .build(tauri::generate_context!())
+        .expect("erro ao iniciar o aplicativo")
+        .run(|_app, _event| {
+            // No macOS, clicar no ícone do Dock reabre a janela principal escondida.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                windows::show_main(_app);
+            }
+        });
+}
