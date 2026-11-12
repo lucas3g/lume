@@ -1,13 +1,14 @@
 //! Comandos expostos à interface. Só traduzem a chamada para um caso de uso.
 
 use super::{windows, Container};
-use crate::application::{extensions::SkillView, flags, AppError, AppResult, ChatEvent};
+use crate::application::{extensions::SkillView, flags, store::ServerPage, AppError, AppResult, ChatEvent};
 use crate::domain::{
     account::Account,
     chat::{Conversation, Message, PermissionDecision, Switch},
     extension::{Agent, Connector},
     history::{HistSession, HistoryStatus},
     project::{Project, ProjectFile},
+    store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
 use serde::Serialize;
@@ -295,7 +296,7 @@ pub fn list_connectors(app: App<'_>) -> AppResult<Vec<Connector>> {
 
 #[tauri::command]
 pub fn add_connector(app: App<'_>, name: String, config: String) -> AppResult<()> {
-    app.connectors.add(&name, &config)
+    app.connectors.add(&name, &config).map(|_| ())
 }
 
 #[tauri::command]
@@ -311,6 +312,43 @@ pub fn set_connector_enabled(app: App<'_>, id: String, enabled: bool) -> AppResu
 #[tauri::command]
 pub fn remove_connector(app: App<'_>, id: String) -> AppResult<()> {
     app.connectors.remove(&id)
+}
+
+// ---- loja (acessam disco, rede e o CLI: fora da thread da interface)
+
+#[tauri::command(async)]
+pub fn store_plugins(app: App<'_>, query: String, category: Option<String>) -> AppResult<Vec<PluginListing>> {
+    app.store.plugins(&query, category.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn store_categories(app: App<'_>) -> AppResult<Vec<String>> {
+    app.store.categories()
+}
+
+#[tauri::command(async)]
+pub fn store_install_plugin(app: App<'_>, id: String) -> AppResult<()> {
+    app.store.install_plugin(&id)
+}
+
+#[tauri::command(async)]
+pub fn store_uninstall_plugin(app: App<'_>, id: String) -> AppResult<()> {
+    app.store.uninstall_plugin(&id)
+}
+
+#[tauri::command(async)]
+pub fn store_refresh_catalog(app: App<'_>) -> AppResult<()> {
+    app.store.refresh_catalog()
+}
+
+#[tauri::command(async)]
+pub fn store_servers(app: App<'_>, query: String, cursor: Option<String>) -> AppResult<ServerPage> {
+    app.store.servers(&query, cursor.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn store_add_server(app: App<'_>, listing: ServerListing, values: HashMap<String, String>) -> AppResult<()> {
+    app.store.add_server(&listing, &values)
 }
 
 // ---- janelas e arquivos

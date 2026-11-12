@@ -8,6 +8,7 @@ use crate::domain::{
     account::{Account, Identity},
     chat::{Attachment, Conversation, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, KIND_CHAT},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
+    store::{InputPlace, PluginListing, ServerInput, ServerInstall, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
 use crate::infrastructure::{skills::SqliteSkills, sqlite::SqliteStore};
@@ -33,7 +34,7 @@ impl World {
             AccountRepository::insert(&*store, &a.id, &a.name, &Identity::default(), None).unwrap();
         }
         ConversationRepository::insert(&*store, "c1", "Nova conversa", "opus", "/tmp", KIND_CHAT, None).unwrap();
-        let skills = Arc::new(SqliteSkills::new(store.clone(), "/pasta/inexistente".into()));
+        let skills = Arc::new(SqliteSkills::new(store.clone(), "/pasta/inexistente".into(), "/pasta/inexistente".into()));
         World { store, skills, history: Arc::default(), events: Arc::default() }
     }
 }
@@ -237,5 +238,58 @@ impl VersionControl for FakeVcs {
     fn commit(&self, root: &str, message: &str) -> AppResult<()> {
         self.commits.lock().unwrap().push((root.to_owned(), message.to_owned()));
         Ok(())
+    }
+}
+
+/// Catálogo de plugins em memória; instalar e remover só mudam o estado e ficam no registro.
+pub struct FakePluginCatalog {
+    listings: Mutex<Vec<PluginListing>>,
+    pub log: Mutex<Vec<String>>,
+}
+
+impl FakePluginCatalog {
+    pub fn new(listings: Vec<PluginListing>) -> Self {
+        FakePluginCatalog { listings: Mutex::new(listings), log: Mutex::default() }
+    }
+
+    fn mark(&self, id: &str, installed: bool, action: &str) -> AppResult<()> {
+        self.log.lock().unwrap().push(format!("{action} {id}"));
+        let mut list = self.listings.lock().unwrap();
+        let plugin = list.iter_mut().find(|p| p.id == id).ok_or_else(|| AppError("Plugin não encontrado.".into()))?;
+        plugin.installed = installed;
+        plugin.enabled = installed;
+        Ok(())
+    }
+}
+
+impl PluginCatalog for FakePluginCatalog {
+    fn listings(&self) -> AppResult<Vec<PluginListing>> {
+        Ok(self.listings.lock().unwrap().clone())
+    }
+    fn install(&self, id: &str) -> AppResult<()> {
+        self.mark(id, true, "install")
+    }
+    fn uninstall(&self, id: &str) -> AppResult<()> {
+        self.mark(id, false, "uninstall")
+    }
+    fn refresh(&self) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+/// Diretório que responde sempre com um servidor remoto chamado como a busca.
+pub struct FakeServerDirectory;
+
+impl ServerDirectory for FakeServerDirectory {
+    fn search(&self, query: &str, _cursor: Option<&str>) -> AppResult<(Vec<ServerListing>, Option<String>)> {
+        let listing = ServerListing {
+            name: format!("io.github.x/{query}"),
+            title: query.to_owned(),
+            description: String::new(),
+            website: None,
+            install: ServerInstall::Remote { url: format!("https://{query}.exemplo.com/mcp"), sse: false },
+            inputs: vec![ServerInput { name: "Authorization".into(), description: String::new(), secret: true, required: false, place: InputPlace::Header }],
+        };
+        Ok((vec![listing], None))
     }
 }

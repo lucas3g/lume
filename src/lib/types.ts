@@ -201,5 +201,61 @@ export interface Connector {
   status: string | null;
 }
 
+/** Plugin de um marketplace do Claude Code (loja de skills). */
+export interface PluginListing {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  author: string | null;
+  category: string | null;
+  marketplace: string;
+  homepage: string | null;
+  skill_count: number | null;
+  installed: boolean;
+  enabled: boolean;
+}
+
+export type InputPlace = { place: "header" } | { place: "env" } | { place: "positional" } | { place: "named"; flag: string };
+
+export type ServerInput = { name: string; description: string; secret: boolean; required: boolean } & InputPlace;
+
+export type ServerInstall =
+  | { kind: "remote"; url: string; sse: boolean }
+  | { kind: "npm"; package: string; version: string | null; args: string[] }
+  | { kind: "pypi"; package: string; version: string | null; args: string[] }
+  | { kind: "unsupported"; reason: string };
+
+/** Servidor MCP do diretório público (loja de conectores). */
+export interface ServerListing {
+  name: string;
+  title: string;
+  description: string;
+  website: string | null;
+  install: ServerInstall;
+  inputs: ServerInput[];
+}
+
+export interface ServerPage {
+  servers: ServerListing[];
+  next_cursor: string | null;
+}
+
+export const CATEGORY_LABEL: Record<string, string> = {
+  development: "Desenvolvimento",
+  productivity: "Produtividade",
+  database: "Banco de dados",
+  security: "Segurança",
+  monitoring: "Monitoramento",
+  deployment: "Implantação",
+  design: "Design",
+  testing: "Testes",
+  automation: "Automação",
+  learning: "Aprendizado",
+  location: "Localização",
+  migration: "Migração",
+  math: "Matemática",
+};
+
 /** Escopo das skills que valem para qualquer conversa e agente. */
 export const SCOPE_ALL = "all";

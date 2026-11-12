@@ -4,6 +4,7 @@ pub mod claude_cli;
 pub mod files;
 pub mod git_cli;
 pub mod history_index;
+pub mod mcp_registry;
 pub mod skills;
 pub mod sqlite;
 pub mod transcript;

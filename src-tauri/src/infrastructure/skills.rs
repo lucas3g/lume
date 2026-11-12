@@ -1,7 +1,7 @@
 //! Catálogo de skills (pasta pessoal do Claude Code + nomes vistos em uso) e
 //! conectores já configurados no Claude Desktop.
 
-use super::sqlite::SqliteStore;
+use super::{claude_cli::plugins::installed_plugins, sqlite::SqliteStore};
 use crate::application::{
     ports::{ConnectorSource, SkillRepository},
     AppResult,
@@ -9,7 +9,12 @@ use crate::application::{
 use crate::domain::extension::{Skill, SkillRules, ORIGIN_PERSONAL, ORIGIN_PLUGIN};
 use rusqlite::params;
 use serde_json::Value;
-use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 const SKILL_FILE: &str = "SKILL.md";
 
@@ -17,11 +22,33 @@ pub struct SqliteSkills {
     store: Arc<SqliteStore>,
     /// `~/.claude/skills`
     skills_dir: PathBuf,
+    /// `~/.claude/plugins`
+    plugins_dir: PathBuf,
 }
 
 impl SqliteSkills {
-    pub fn new(store: Arc<SqliteStore>, skills_dir: PathBuf) -> Self {
-        SqliteSkills { store, skills_dir }
+    pub fn new(store: Arc<SqliteStore>, skills_dir: PathBuf, plugins_dir: PathBuf) -> Self {
+        SqliteSkills { store, skills_dir, plugins_dir }
+    }
+
+    /// Skills dos plugins instalados, nomeadas como o Claude Code as expõe: `plugin:skill`.
+    fn plugin_skills(&self) -> Vec<Skill> {
+        let mut skills = vec![];
+        for plugin in installed_plugins(&self.plugins_dir) {
+            let mut files = vec![];
+            collect_skill_files(&plugin.install_path.join("skills"), 0, &mut files);
+            for file in files {
+                let Ok(text) = fs::read_to_string(&file) else { continue };
+                let folder = file.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let (name, description) = front_matter(&text);
+                skills.push(Skill {
+                    name: format!("{}:{}", plugin.name, name.unwrap_or(folder)),
+                    description,
+                    origin: ORIGIN_PLUGIN.into(),
+                });
+            }
+        }
+        skills
     }
 
     fn personal(&self) -> Vec<Skill> {
@@ -42,6 +69,23 @@ impl SqliteSkills {
         let mut st = conn.prepare("SELECT name FROM skill_catalog ORDER BY name")?;
         let rows = st.query_map([], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+const MAX_SKILL_DEPTH: u8 = 4;
+
+/// Procura `SKILL.md` em subpastas (plugins podem agrupar skills em categorias).
+fn collect_skill_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for path in entries.flatten().map(|e| e.path()) {
+        if path.is_dir() {
+            let skill = path.join(SKILL_FILE);
+            if skill.is_file() {
+                out.push(skill);
+            } else if depth < MAX_SKILL_DEPTH {
+                collect_skill_files(&path, depth + 1, out);
+            }
+        }
     }
 }
 
@@ -68,6 +112,9 @@ impl SkillRepository for SqliteSkills {
     fn catalog(&self) -> AppResult<Vec<Skill>> {
         let mut skills = self.personal();
         skills.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut plugin_skills = self.plugin_skills();
+        plugin_skills.sort_by(|a, b| a.name.cmp(&b.name));
+        skills.extend(plugin_skills);
         let known: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
         let plugins = self
             .remembered()?
@@ -138,12 +185,22 @@ mod tests {
         fs::create_dir_all(dir.join("sem-arquivo")).unwrap();
         fs::write(dir.join("revisar").join(SKILL_FILE), "---\nname: revisar\ndescription: \"Revisa o código.\"\n---\n# x").unwrap();
 
-        let skills = SqliteSkills::new(Arc::new(SqliteStore::memory()), dir.clone());
+        let plugins = dir.join("plugins");
+        let plugin_skill = plugins.join("cache/m/meu-plugin/1.0/skills/grupo/revisar-pr");
+        fs::create_dir_all(&plugin_skill).unwrap();
+        fs::write(plugin_skill.join(SKILL_FILE), "---\nname: revisar-pr\ndescription: Revisa PRs.\n---").unwrap();
+        fs::write(
+            plugins.join("installed_plugins.json"),
+            format!(r#"{{"version":2,"plugins":{{"meu-plugin@m":[{{"installPath":"{}"}}]}}}}"#, plugins.join("cache/m/meu-plugin/1.0").display()),
+        )
+        .unwrap();
+        let skills = SqliteSkills::new(Arc::new(SqliteStore::memory()), dir.clone(), plugins);
         skills.remember(&["revisar".into(), "pdf".into(), "pdf".into()]).unwrap();
         let catalog = skills.catalog().unwrap();
-        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.len(), 3);
         assert_eq!((catalog[0].name.as_str(), catalog[0].description.as_deref(), catalog[0].origin.as_str()), ("revisar", Some("Revisa o código."), "personal"));
-        assert_eq!((catalog[1].name.as_str(), catalog[1].origin.as_str()), ("pdf", "plugin"));
+        assert_eq!((catalog[1].name.as_str(), catalog[1].description.as_deref(), catalog[1].origin.as_str()), ("meu-plugin:revisar-pr", Some("Revisa PRs."), "plugin"));
+        assert_eq!((catalog[2].name.as_str(), catalog[2].origin.as_str()), ("pdf", "plugin"));
         fs::remove_dir_all(dir).unwrap();
     }
 

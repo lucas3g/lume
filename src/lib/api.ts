@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Account, Agent, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  Message, Project, ProjectFile, Skill, Switch, WorkspaceStatus,
+  Message, PluginListing, Project, ProjectFile, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -78,6 +78,15 @@ export const api = {
   importDesktopConnectors: () => invoke<number>("import_desktop_connectors"),
   setConnectorEnabled: (id: string, enabled: boolean) => invoke<void>("set_connector_enabled", { id, enabled }),
   removeConnector: (id: string) => invoke<void>("remove_connector", { id }),
+
+  storePlugins: (query: string, category: string | null) => invoke<PluginListing[]>("store_plugins", { query, category }),
+  storeCategories: () => invoke<string[]>("store_categories"),
+  storeInstallPlugin: (id: string) => invoke<void>("store_install_plugin", { id }),
+  storeUninstallPlugin: (id: string) => invoke<void>("store_uninstall_plugin", { id }),
+  storeRefreshCatalog: () => invoke<void>("store_refresh_catalog"),
+  storeServers: (query: string, cursor: string | null) => invoke<ServerPage>("store_servers", { query, cursor }),
+  storeAddServer: (listing: ServerListing, values: Record<string, string>) =>
+    invoke<void>("store_add_server", { listing, values }),
 
   quickEntrySent: (conversationId: string) => invoke<void>("quick_entry_sent", { conversationId }),
   hideQuickEntry: () => invoke<void>("hide_quick_entry"),

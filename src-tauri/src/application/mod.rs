@@ -7,6 +7,7 @@ pub mod history;
 pub mod ports;
 pub mod projects;
 pub mod send_message;
+pub mod store;
 pub mod turn_setup;
 pub mod workspace;
 

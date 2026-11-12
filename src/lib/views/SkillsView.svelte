@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
+  import SkillStore from "../components/store/SkillStore.svelte";
   import Toggle from "../components/Toggle.svelte";
   import { agents, loadAgents } from "../state/agents.svelte";
   import { MODELS, MORE_MODELS, SCOPE_ALL, modelLabel, type Agent, type Skill } from "../types";
 
+  let tab = $state<"installed" | "store">("installed");
   let scope = $state<string>(SCOPE_ALL);
   let skills = $state<Skill[]>([]);
   let filter = $state("");
@@ -65,8 +67,18 @@
         <h1>Skills</h1>
         <p class="muted">Instruções prontas que o assistente carrega quando a tarefa pede. Escolha quais valem para todos e quais cada agente pode usar.</p>
       </div>
-      <button type="button" class="btn primary" onclick={() => edit(null)}>Novo agente</button>
+      <div class="tabs" role="tablist" aria-label="Skills">
+        <button type="button" role="tab" aria-selected={tab === "installed"} class:on={tab === "installed"} onclick={() => (tab = "installed")}>Instaladas</button>
+        <button type="button" role="tab" aria-selected={tab === "store"} class:on={tab === "store"} onclick={() => (tab = "store")}>Loja</button>
+      </div>
+      {#if tab === "installed"}
+        <button type="button" class="btn primary" onclick={() => edit(null)}>Novo agente</button>
+      {/if}
     </header>
+
+    {#if tab === "store"}
+      <SkillStore onchange={loadSkills} />
+    {:else}
 
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
@@ -144,11 +156,15 @@
         </section>
       </div>
     </div>
+    {/if}
   </div>
 </div>
 
 <style>
   .wide { max-width: 980px; }
+  .tabs { display: flex; padding: 3px; border-radius: 9px; background: var(--bg-side); border: 1px solid var(--border); }
+  .tabs button { min-height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: transparent; font-size: 13px; color: var(--text-2); }
+  .tabs button.on { background: var(--hover); color: #fff; font-weight: 500; }
   .columns { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
   .scopes { flex: 1 1 240px; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
   .heading { padding: 8px 10px 6px; font-size: 12px; font-weight: 600; color: var(--muted); }

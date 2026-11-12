@@ -13,15 +13,17 @@ use crate::application::{
     ports::{Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings, SwitchLog},
     projects::ManageProjects,
     send_message::SendMessage,
+    store::BrowseStore,
     turn_setup::PrepareTurn,
     workspace::ManageWorkspace,
     AppError, AppResult, RunningTurns,
 };
 use crate::infrastructure::{
-    claude_cli::{accounts::ClaudeCliAccounts, engine::ClaudeCliEngine, find_cli},
+    claude_cli::{accounts::ClaudeCliAccounts, engine::ClaudeCliEngine, find_cli, plugins::ClaudeCliPlugins},
     files::FsFileLoader,
     git_cli::GitCli,
     history_index::SqliteHistoryIndex,
+    mcp_registry::McpRegistry,
     skills::{DesktopConnectors, SqliteSkills},
     sqlite::SqliteStore,
     workspace_fs::FsWorkspace,
@@ -40,7 +42,8 @@ pub struct Container {
     pub history: ManageHistory,
     pub skills: ManageSkills,
     pub agents: ManageAgents,
-    pub connectors: ManageConnectors,
+    pub connectors: Arc<ManageConnectors>,
+    pub store: BrowseStore,
     pub projects: ManageProjects,
     pub workspace: ManageWorkspace,
     pub send_message: SendMessage,
@@ -77,13 +80,18 @@ impl Container {
         let events: Arc<dyn EventSink> = Arc::new(TauriEvents::new(app.clone()));
         let store = Arc::new(SqliteStore::open(&data_dir.join("lume.db"), clock.clone())?);
         let index = Arc::new(SqliteHistoryIndex::new(store.clone(), main_config.join("projects"), desktop_dir));
-        let skills = Arc::new(SqliteSkills::new(store.clone(), main_config.join("skills")));
+        let skills = Arc::new(SqliteSkills::new(store.clone(), main_config.join("skills"), main_config.join("plugins")));
+        let connectors = Arc::new(ManageConnectors {
+            connectors: store.clone(),
+            desktop: Arc::new(DesktopConnectors::new(app_support.join(DESKTOP_CONFIG_FILE))),
+            ids: ids.clone(),
+        });
         let files: Arc<dyn FileLoader> = Arc::new(FsFileLoader);
 
         Ok(Container {
             accounts: ManageAccounts {
                 accounts: store.clone(),
-                gateway: Arc::new(ClaudeCliAccounts::new(cli.clone(), profiles_dir, main_config)),
+                gateway: Arc::new(ClaudeCliAccounts::new(cli.clone(), profiles_dir, main_config.clone())),
                 events: events.clone(),
                 ids: ids.clone(),
             },
@@ -106,10 +114,11 @@ impl Container {
                 files: files.clone(),
                 ids: ids.clone(),
             },
-            connectors: ManageConnectors {
-                connectors: store.clone(),
-                desktop: Arc::new(DesktopConnectors::new(app_support.join(DESKTOP_CONFIG_FILE))),
-                ids,
+            connectors: connectors.clone(),
+            store: BrowseStore {
+                plugins: Arc::new(ClaudeCliPlugins::new(cli.clone(), main_config.clone())),
+                directory: Arc::new(McpRegistry),
+                connectors,
             },
             workspace: ManageWorkspace {
                 conversations: store.clone(),

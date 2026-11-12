@@ -97,7 +97,8 @@ impl ManageConnectors {
         self.connectors.list()
     }
 
-    pub fn add(&self, name: &str, config: &str) -> AppResult<()> {
+    /// Devolve o id do conector criado.
+    pub fn add(&self, name: &str, config: &str) -> AppResult<String> {
         let name = name.trim();
         if connector_key(name).is_empty() {
             return Err(AppError("Dê um nome para o conector, com letras ou números.".into()));
@@ -106,7 +107,9 @@ impl ManageConnectors {
         if self.exists(name)? {
             return Err(AppError("Já existe um conector com este nome.".into()));
         }
-        self.connectors.insert(&self.ids.new_id(), name, config.trim())
+        let id = self.ids.new_id();
+        self.connectors.insert(&id, name, config.trim())?;
+        Ok(id)
     }
 
     /// Traz os conectores do Claude Desktop que ainda não existem aqui; entram desligados.

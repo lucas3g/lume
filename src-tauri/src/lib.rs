@@ -32,6 +32,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::environment,
+            commands::store_plugins,
+            commands::store_categories,
+            commands::store_install_plugin,
+            commands::store_uninstall_plugin,
+            commands::store_refresh_catalog,
+            commands::store_servers,
+            commands::store_add_server,
             commands::quick_entry_sent,
             commands::hide_quick_entry,
             commands::save_text_file,

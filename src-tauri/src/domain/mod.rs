@@ -5,4 +5,5 @@ pub mod chat;
 pub mod extension;
 pub mod history;
 pub mod project;
+pub mod store;
 pub mod workspace;

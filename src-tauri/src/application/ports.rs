@@ -8,6 +8,7 @@ use crate::domain::{
     extension::{Agent, Connector, Skill, SkillRules},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
     project::{Project, ProjectFile},
+    store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
 use async_trait::async_trait;
@@ -109,6 +110,20 @@ pub trait ConnectorRepository: Send + Sync {
     /// Situação informada pelo provedor, pela chave MCP do conector.
     fn set_status(&self, key: &str, status: &str) -> AppResult<()>;
     fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+/// Catálogo de plugins (skills) dos marketplaces configurados no Claude Code.
+pub trait PluginCatalog: Send + Sync {
+    fn listings(&self) -> AppResult<Vec<PluginListing>>;
+    fn install(&self, id: &str) -> AppResult<()>;
+    fn uninstall(&self, id: &str) -> AppResult<()>;
+    /// Atualiza os marketplaces a partir das fontes.
+    fn refresh(&self) -> AppResult<()>;
+}
+
+/// Diretório público de servidores MCP, paginado por cursor.
+pub trait ServerDirectory: Send + Sync {
+    fn search(&self, query: &str, cursor: Option<&str>) -> AppResult<(Vec<ServerListing>, Option<String>)>;
 }
 
 /// Conectores já configurados em outro aplicativo deste computador: (nome, configuração JSON).

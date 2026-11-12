@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
+  import ServerDirectory from "../components/store/ServerDirectory.svelte";
   import Toggle from "../components/Toggle.svelte";
   import type { Connector } from "../types";
 
+  let tab = $state<"mine" | "directory">("mine");
   let connectors = $state<Connector[]>([]);
   let adding = $state(false);
   let name = $state("");
@@ -75,9 +77,19 @@
         <h1>Conectores</h1>
         <p class="muted">Servidores MCP que dão ferramentas ao assistente. Valem para todas as contas.</p>
       </div>
-      <button type="button" class="btn" onclick={importDesktop}>Importar do Claude Desktop</button>
-      <button type="button" class="btn primary" onclick={() => (adding = !adding)}>Adicionar conector</button>
+      <div class="tabs" role="tablist" aria-label="Conectores">
+        <button type="button" role="tab" aria-selected={tab === "mine"} class:on={tab === "mine"} onclick={() => (tab = "mine")}>Meus conectores</button>
+        <button type="button" role="tab" aria-selected={tab === "directory"} class:on={tab === "directory"} onclick={() => (tab = "directory")}>Diretório</button>
+      </div>
+      {#if tab === "mine"}
+        <button type="button" class="btn" onclick={importDesktop}>Importar do Claude Desktop</button>
+        <button type="button" class="btn primary" onclick={() => (adding = !adding)}>Adicionar manualmente</button>
+      {/if}
     </header>
+
+    {#if tab === "directory"}
+      <ServerDirectory onchange={() => void run(async () => {})} />
+    {:else}
 
     <p class="card warning small">
       As ferramentas de um conector ligado são executadas sem pedir confirmação. Ligue apenas os conectores em que você confia.
@@ -117,10 +129,14 @@
         <div class="empty muted">Nenhum conector ainda. Importe os do Claude Desktop ou adicione um.</div>
       {/each}
     </section>
+    {/if}
   </div>
 </div>
 
 <style>
+  .tabs { display: flex; padding: 3px; border-radius: 9px; background: var(--bg-side); border: 1px solid var(--border); }
+  .tabs button { min-height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: transparent; font-size: 13px; color: var(--text-2); }
+  .tabs button.on { background: var(--hover); color: #fff; font-weight: 500; }
   .warning { padding: 10px 16px; border-color: var(--border-strong); color: var(--warn-text); background: var(--warn-bg); }
   .form { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
   .form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
