@@ -34,6 +34,100 @@ pub struct Connector {
     pub status: Option<String>,
 }
 
+/// Situação de um conector carregado pelo Claude Code.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorStatus {
+    Connected,
+    NeedsAuth,
+    Failed,
+    Pending,
+}
+
+/// De onde vem um conector carregado pelo Claude Code.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorSource {
+    /// Conector da conta claude.ai (serviço web vinculado por login).
+    Account,
+    /// Configurado pelo usuário no Claude Code.
+    User,
+    Plugin,
+}
+
+/// Conector que o Claude Code carrega sozinho para a conta em uso.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AccountConnector {
+    /// Nome completo, como o Claude Code o chama (ex.: "claude.ai Asana").
+    pub name: String,
+    pub display_name: String,
+    /// Prefixo das ferramentas do servidor (ex.: `claude_ai_Asana`).
+    pub key: String,
+    pub endpoint: String,
+    pub status: ConnectorStatus,
+    pub source: ConnectorSource,
+    pub enabled: bool,
+}
+
+const ACCOUNT_PREFIX: &str = "claude.ai ";
+const PLUGIN_PREFIX: &str = "plugin:";
+
+/// Prefixo das configurações que desligam um conector carregado pelo Claude Code.
+pub const SERVER_OFF_PREFIX: &str = "server_off:";
+
+/// Regras que bloqueiam, nos turnos, os conectores desligados (configurações `server_off:<nome>`).
+pub fn denied_server_rules(flags: &[(String, bool)]) -> Vec<String> {
+    flags
+        .iter()
+        .filter(|(key, off)| *off && key.starts_with(SERVER_OFF_PREFIX))
+        .map(|(key, _)| server_deny_rule(&key[SERVER_OFF_PREFIX.len()..]))
+        .collect()
+}
+
+/// Como o Claude Code transforma o nome de um servidor no prefixo das suas ferramentas.
+pub fn cli_server_key(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
+}
+
+/// Regra de permissão que bloqueia todas as ferramentas de um servidor.
+pub fn server_deny_rule(name: &str) -> String {
+    format!("mcp__{}", cli_server_key(name))
+}
+
+/// Lê a saída de `claude mcp list`: uma linha `nome: endereço - situação` por servidor.
+pub fn parse_mcp_list(text: &str) -> Vec<AccountConnector> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, rest) = line.split_once(": ")?;
+            let (endpoint, state) = rest.rsplit_once(" - ")?;
+            let status = match state.trim() {
+                s if s.contains("Connected") => ConnectorStatus::Connected,
+                s if s.contains("authentication") => ConnectorStatus::NeedsAuth,
+                s if s.contains("Pending") => ConnectorStatus::Pending,
+                s if s.contains("Failed") || s.starts_with('✘') => ConnectorStatus::Failed,
+                _ => return None,
+            };
+            let name = name.trim();
+            let (source, display_name) = if let Some(short) = name.strip_prefix(ACCOUNT_PREFIX) {
+                (ConnectorSource::Account, short.to_owned())
+            } else if let Some(rest) = name.strip_prefix(PLUGIN_PREFIX) {
+                (ConnectorSource::Plugin, rest.rsplit(':').next().unwrap_or(rest).to_owned())
+            } else {
+                (ConnectorSource::User, name.to_owned())
+            };
+            Some(AccountConnector {
+                key: cli_server_key(name),
+                name: name.to_owned(),
+                display_name,
+                endpoint: endpoint.trim().to_owned(),
+                status,
+                source,
+                enabled: true,
+            })
+        })
+        .collect()
+}
+
 /// Regras de skills de um escopo: nome da skill → ligada ou desligada.
 pub type SkillRules = HashMap<String, bool>;
 
@@ -112,6 +206,21 @@ mod tests {
         let agent = SkillRules::from([("pdf".into(), true)]);
         assert_eq!(denied_skills(&catalog, &all, Some(&agent)), ["planilha"]);
         assert!(denied_skills(&catalog, &SkillRules::new(), None).is_empty(), "sem regras, tudo liberado");
+    }
+
+    #[test]
+    fn parses_claude_code_server_list() {
+        let text = "Checking MCP server health…\n\nclaude.ai Claude Data: https://api.anthropic.com/mcp - ✔ Connected\nclaude.ai monday.com: https://mcp.monday.com/mcp - ! Needs authentication\nplugin:context7:context7: https://mcp.context7.com/mcp?client=x (HTTP) - ! Needs authentication\nrea: npx -y rea-agents@6.4.0 mcp - ✔ Connected\nquebrado: https://x - ✘ Failed to connect\nlinha sem formato\n";
+        let list = parse_mcp_list(text);
+        assert_eq!(list.len(), 5);
+        assert_eq!((list[0].display_name.as_str(), list[0].source, list[0].status, list[0].key.as_str()), ("Claude Data", ConnectorSource::Account, ConnectorStatus::Connected, "claude_ai_Claude_Data"));
+        assert_eq!((list[1].display_name.as_str(), list[1].status, list[1].key.as_str()), ("monday.com", ConnectorStatus::NeedsAuth, "claude_ai_monday_com"));
+        assert_eq!((list[2].display_name.as_str(), list[2].source), ("context7", ConnectorSource::Plugin));
+        assert_eq!((list[3].source, list[3].endpoint.as_str()), (ConnectorSource::User, "npx -y rea-agents@6.4.0 mcp"));
+        assert_eq!(list[4].status, ConnectorStatus::Failed);
+        assert_eq!(server_deny_rule("claude.ai Asana"), "mcp__claude_ai_Asana");
+        let flags = vec![("server_off:claude.ai Asana".to_owned(), true), ("server_off:rea".to_owned(), false), ("auto_switch".to_owned(), true)];
+        assert_eq!(denied_server_rules(&flags), ["mcp__claude_ai_Asana"]);
     }
 
     #[test]

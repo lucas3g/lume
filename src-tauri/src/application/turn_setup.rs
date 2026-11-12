@@ -8,7 +8,7 @@ use super::{
 };
 use crate::domain::{
     chat::Conversation,
-    extension::{denied_skills, mcp_setup, SCOPE_ALL},
+    extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
     history::context_prompt,
     project::project_prompt,
 };
@@ -37,6 +37,7 @@ pub struct TurnSetup {
     /// Títulos das conversas anteriores usadas como contexto.
     pub context_titles: Vec<String>,
     pub denied_skills: Vec<String>,
+    pub denied_tools: Vec<String>,
     pub mcp_config: Option<String>,
     pub allowed_tools: Vec<String>,
 }
@@ -62,6 +63,7 @@ impl PrepareTurn {
         };
         let denied = denied_skills(&self.skills.catalog()?, &self.skills.rules(SCOPE_ALL)?, agent_rules.as_ref());
         let (mcp_config, connector_tools) = mcp_setup(&self.connectors.list()?);
+        let denied_tools = denied_server_rules(&self.settings.flags_with_prefix(SERVER_OFF_PREFIX)?);
         let (tools, own_tools): (String, Vec<String>) = if conversation.is_agent() {
             (AGENT_TOOLS.into(), conversation.allowed_tools.clone())
         } else {
@@ -97,9 +99,11 @@ impl PrepareTurn {
             tools,
             effort: conversation.effort.clone(),
             permission_mode: conversation.permission_mode.clone(),
-            interactive: conversation.is_agent(),
+            // Conectores da conta pedem aprovação em qualquer conversa; o resto já está liberado.
+            interactive: true,
             context_titles: snippets.into_iter().map(|s| s.title).collect(),
             denied_skills: denied,
+            denied_tools,
             mcp_config,
             allowed_tools,
         })
@@ -130,7 +134,8 @@ mod tests {
         let conversation = world.conversation("c1");
         let setup = prepare(&world).prepare(&conversation, "olá").unwrap();
         assert_eq!(setup.model, "opus");
-        assert_eq!((setup.tools.as_str(), setup.interactive), ("WebSearch,WebFetch,Skill", false));
+        assert_eq!((setup.tools.as_str(), setup.interactive), ("WebSearch,WebFetch,Skill", true));
+        assert!(setup.denied_tools.is_empty());
         assert_eq!(setup.allowed_tools, ["WebSearch", "WebFetch", "Skill"]);
         assert!(setup.denied_skills.is_empty() && setup.mcp_config.is_none() && setup.context_titles.is_empty());
         assert!(setup.extra_system.unwrap().contains("```html"));
@@ -154,6 +159,10 @@ mod tests {
         assert_eq!(setup.model, "sonnet");
         assert_eq!(setup.denied_skills, ["planilha"]);
         assert_eq!(setup.allowed_tools, ["WebSearch", "WebFetch", "Skill", "mcp__arquivos"]);
+        world.store.set_flag("server_off:claude.ai Asana", true).unwrap();
+        world.store.set_flag("server_off:rea", false).unwrap();
+        let setup = prepare(&world).prepare(&conversation, "olá").unwrap();
+        assert_eq!(setup.denied_tools, ["mcp__claude_ai_Asana"]);
         assert!(setup.mcp_config.unwrap().contains("\"arquivos\""));
         assert_eq!(setup.context_titles, ["Índices"]);
         let system = setup.extra_system.unwrap();

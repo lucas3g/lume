@@ -1,6 +1,7 @@
 //! Adaptadores do Claude Code CLI oficial.
 
 pub mod accounts;
+pub mod connectors;
 pub mod engine;
 pub mod plugins;
 pub mod stream;

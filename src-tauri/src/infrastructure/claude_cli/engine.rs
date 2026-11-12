@@ -32,7 +32,6 @@ impl ClaudeCliEngine {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--strict-mcp-config",
             "--model",
             &request.model,
             "--tools",
@@ -47,8 +46,13 @@ impl ClaudeCliEngine {
         if !request.allowed_tools.is_empty() {
             cmd.arg("--allowedTools").arg(request.allowed_tools.join(","));
         }
-        if !request.denied_skills.is_empty() {
-            let denied: Vec<String> = request.denied_skills.iter().map(|s| format!("Skill({s})")).collect();
+        let denied: Vec<String> = request
+            .denied_skills
+            .iter()
+            .map(|s| format!("Skill({s})"))
+            .chain(request.denied_tools.iter().cloned())
+            .collect();
+        if !denied.is_empty() {
             cmd.arg("--disallowedTools").arg(denied.join(","));
         }
         if let Some(config) = &request.mcp_config {
@@ -200,6 +204,7 @@ mod tests {
             permission_mode: "manual".into(),
             interactive: false,
             denied_skills: vec![],
+            denied_tools: vec![],
             mcp_config: None,
             allowed_tools: vec![],
         }

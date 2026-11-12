@@ -147,6 +147,8 @@ pub struct TurnRequest {
     /// Pede autorização ao usuário para o que não estiver liberado.
     pub interactive: bool,
     pub denied_skills: Vec<String>,
+    /// Regras de permissão que bloqueiam ferramentas inteiras (ex.: `mcp__servidor`).
+    pub denied_tools: Vec<String>,
     /// Configuração MCP (JSON) dos conectores ligados.
     pub mcp_config: Option<String>,
     /// Regras que liberam as ferramentas dos conectores.

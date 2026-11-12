@@ -19,7 +19,10 @@ use crate::application::{
     AppError, AppResult, RunningTurns,
 };
 use crate::infrastructure::{
-    claude_cli::{accounts::ClaudeCliAccounts, engine::ClaudeCliEngine, find_cli, plugins::ClaudeCliPlugins},
+    claude_cli::{
+        accounts::ClaudeCliAccounts, connectors::ClaudeCliConnectors, engine::ClaudeCliEngine, find_cli,
+        plugins::ClaudeCliPlugins,
+    },
     files::FsFileLoader,
     git_cli::GitCli,
     history_index::SqliteHistoryIndex,
@@ -85,6 +88,10 @@ impl Container {
             connectors: store.clone(),
             desktop: Arc::new(DesktopConnectors::new(app_support.join(DESKTOP_CONFIG_FILE))),
             ids: ids.clone(),
+            account_connectors: Arc::new(ClaudeCliConnectors::new(cli.clone())),
+            accounts: store.clone(),
+            settings: store.clone(),
+            clock: clock.clone(),
         });
         let files: Arc<dyn FileLoader> = Arc::new(FsFileLoader);
 

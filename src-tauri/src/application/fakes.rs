@@ -9,6 +9,7 @@ use crate::domain::{
     chat::{Attachment, Conversation, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, KIND_CHAT},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
     store::{InputPlace, PluginListing, ServerInput, ServerInstall, ServerListing},
+    extension::{AccountConnector, ConnectorSource as Origin, ConnectorStatus},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
 use crate::infrastructure::{skills::SqliteSkills, sqlite::SqliteStore};
@@ -190,6 +191,11 @@ impl ConnectorSource for FixedConnectors {
 }
 
 impl SqliteStore {
+    /// Atalho de teste: dá um perfil isolado a uma conta.
+    pub fn set_account_config_dir(&self, id: &str, config_dir: &str) {
+        self.conn().execute("UPDATE accounts SET config_dir=? WHERE id=?", rusqlite::params![config_dir, id]).unwrap();
+    }
+
     /// Atalho de teste: cria um conector já ligado ou desligado.
     pub fn insert_connector(&self, id: &str, name: &str, config: &str, enabled: bool) {
         ConnectorRepository::insert(self, id, name, config).unwrap();
@@ -291,5 +297,38 @@ impl ServerDirectory for FakeServerDirectory {
             inputs: vec![ServerInput { name: "Authorization".into(), description: String::new(), secret: true, required: false, place: InputPlace::Header }],
         };
         Ok((vec![listing], None))
+    }
+}
+
+/// Conectores da conta: dois fixos; registra cada chamada com o perfil usado.
+#[derive(Default)]
+pub struct FakeAccountConnectors {
+    pub log: Mutex<Vec<String>>,
+}
+
+impl AccountConnectors for FakeAccountConnectors {
+    fn list(&self, config_dir: Option<&str>) -> AppResult<Vec<AccountConnector>> {
+        self.log.lock().unwrap().push(format!("list {}", config_dir.unwrap_or("-")));
+        let make = |name: &str, display: &str, source: Origin, status: ConnectorStatus| AccountConnector {
+            name: name.into(),
+            display_name: display.into(),
+            key: crate::domain::extension::cli_server_key(name),
+            endpoint: "https://x".into(),
+            status,
+            source,
+            enabled: true,
+        };
+        Ok(vec![
+            make("claude.ai Asana", "Asana", Origin::Account, ConnectorStatus::NeedsAuth),
+            make("rea", "rea", Origin::User, ConnectorStatus::Connected),
+        ])
+    }
+    fn login(&self, config_dir: Option<&str>, name: &str) -> AppResult<()> {
+        self.log.lock().unwrap().push(format!("login {} {name}", config_dir.unwrap_or("-")));
+        Ok(())
+    }
+    fn logout(&self, config_dir: Option<&str>, name: &str) -> AppResult<()> {
+        self.log.lock().unwrap().push(format!("logout {} {name}", config_dir.unwrap_or("-")));
+        Ok(())
     }
 }

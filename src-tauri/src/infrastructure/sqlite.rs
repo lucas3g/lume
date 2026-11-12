@@ -528,6 +528,13 @@ impl Settings for SqliteStore {
             .unwrap_or(default)
     }
 
+    fn flags_with_prefix(&self, prefix: &str) -> AppResult<Vec<(String, bool)>> {
+        let c = self.conn();
+        let mut st = c.prepare("SELECT key, value FROM settings WHERE key LIKE ? || '%'")?;
+        let rows = st.query_map([prefix], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)? == "1")))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     fn set_flag(&self, key: &str, value: bool) -> AppResult<()> {
         self.conn().execute(
             "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",

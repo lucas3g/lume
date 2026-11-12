@@ -201,6 +201,17 @@ export interface Connector {
   status: string | null;
 }
 
+/** Conector que o Claude Code carrega para a conta ativa. */
+export interface AccountConnector {
+  name: string;
+  display_name: string;
+  key: string;
+  endpoint: string;
+  status: "connected" | "needs_auth" | "failed" | "pending";
+  source: "account" | "user" | "plugin";
+  enabled: boolean;
+}
+
 /** Plugin de um marketplace do Claude Code (loja de skills). */
 export interface PluginListing {
   id: string;

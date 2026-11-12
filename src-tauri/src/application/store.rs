@@ -107,6 +107,10 @@ mod tests {
                 connectors: world.store.clone(),
                 desktop: Arc::new(FixedConnectors(vec![])),
                 ids: Arc::new(SequentialIds::default()),
+                account_connectors: Arc::new(FakeAccountConnectors::default()),
+                accounts: world.store.clone(),
+                settings: world.store.clone(),
+                clock: Arc::new(FixedClock(1000)),
             }),
         }
     }

@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  Account, Agent, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
+  Account, AccountConnector, Agent, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
   Message, PluginListing, Project, ProjectFile, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
 } from "./types";
 
@@ -73,6 +73,10 @@ export const api = {
   workspaceCommit: (conversationId: string, message: string) =>
     invoke<void>("workspace_commit", { conversationId, message }),
 
+  listAccountConnectors: () => invoke<AccountConnector[]>("list_account_connectors"),
+  linkConnector: (name: string) => invoke<void>("link_connector", { name }),
+  unlinkConnector: (name: string) => invoke<void>("unlink_connector", { name }),
+  setServerEnabled: (name: string, enabled: boolean) => invoke<void>("set_server_enabled", { name, enabled }),
   listConnectors: () => invoke<Connector[]>("list_connectors"),
   addConnector: (name: string, config: string) => invoke<void>("add_connector", { name, config }),
   importDesktopConnectors: () => invoke<number>("import_desktop_connectors"),

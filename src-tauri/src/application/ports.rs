@@ -5,7 +5,7 @@ use super::{AppResult, ChatEvent, TurnControl};
 use crate::domain::{
     account::{Account, Identity},
     chat::{Attachment, Conversation, Message, Switch, TurnEnd, TurnEvent, TurnRequest},
-    extension::{Agent, Connector, Skill, SkillRules},
+    extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
     project::{Project, ProjectFile},
     store::{PluginListing, ServerListing},
@@ -126,6 +126,13 @@ pub trait ServerDirectory: Send + Sync {
     fn search(&self, query: &str, cursor: Option<&str>) -> AppResult<(Vec<ServerListing>, Option<String>)>;
 }
 
+/// Conectores que o Claude Code carrega para uma conta (`config_dir` é o perfil dela).
+pub trait AccountConnectors: Send + Sync {
+    fn list(&self, config_dir: Option<&str>) -> AppResult<Vec<AccountConnector>>;
+    fn login(&self, config_dir: Option<&str>, name: &str) -> AppResult<()>;
+    fn logout(&self, config_dir: Option<&str>, name: &str) -> AppResult<()>;
+}
+
 /// Conectores já configurados em outro aplicativo deste computador: (nome, configuração JSON).
 pub trait ConnectorSource: Send + Sync {
     fn servers(&self) -> Vec<(String, String)>;
@@ -140,6 +147,8 @@ pub trait Settings: Send + Sync {
     /// Configuração booleana; ausente vale `default`.
     fn flag(&self, key: &str, default: bool) -> bool;
     fn set_flag(&self, key: &str, value: bool) -> AppResult<()>;
+    /// Configurações cujo nome começa com o prefixo: (nome, valor).
+    fn flags_with_prefix(&self, prefix: &str) -> AppResult<Vec<(String, bool)>>;
 }
 
 /// Ouvinte dos eventos emitidos durante um turno.

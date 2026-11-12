@@ -1,8 +1,15 @@
 //! Gestão de skills, agentes e conectores.
 
 use super::{
-    ports::{AgentRepository, ConnectorRepository, ConnectorSource, ConversationRepository, IdGenerator, SkillRepository},
+    ports::{
+        AccountConnectors, AccountRepository, AgentRepository, Clock, ConnectorRepository, ConnectorSource,
+        ConversationRepository, IdGenerator, Settings, SkillRepository,
+    },
     AppError, AppResult,
+};
+use crate::domain::{
+    account::pick_next,
+    extension::{AccountConnector, SERVER_OFF_PREFIX},
 };
 use crate::domain::extension::{
     connector_key, is_enabled_for_all, is_granted_to_agent, validate_connector_config, Agent, Connector, Skill,
@@ -90,6 +97,10 @@ pub struct ManageConnectors {
     pub connectors: Arc<dyn ConnectorRepository>,
     pub desktop: Arc<dyn ConnectorSource>,
     pub ids: Arc<dyn IdGenerator>,
+    pub account_connectors: Arc<dyn AccountConnectors>,
+    pub accounts: Arc<dyn AccountRepository>,
+    pub settings: Arc<dyn Settings>,
+    pub clock: Arc<dyn Clock>,
 }
 
 impl ManageConnectors {
@@ -133,6 +144,37 @@ impl ManageConnectors {
         self.connectors.delete(id)
     }
 
+    /// Conectores que o Claude Code carrega para a conta que atende a próxima mensagem.
+    pub fn account_list(&self) -> AppResult<Vec<AccountConnector>> {
+        let config_dir = self.active_config_dir()?;
+        let mut list = self.account_connectors.list(config_dir.as_deref())?;
+        for c in &mut list {
+            c.enabled = !self.settings.flag(&format!("{SERVER_OFF_PREFIX}{}", c.name), false);
+        }
+        Ok(list)
+    }
+
+    /// Abre o login do conector no navegador, para a conta ativa.
+    pub fn link(&self, name: &str) -> AppResult<()> {
+        let config_dir = self.active_config_dir()?;
+        self.account_connectors.login(config_dir.as_deref(), name)
+    }
+
+    pub fn unlink(&self, name: &str) -> AppResult<()> {
+        let config_dir = self.active_config_dir()?;
+        self.account_connectors.logout(config_dir.as_deref(), name)
+    }
+
+    pub fn set_server_enabled(&self, name: &str, enabled: bool) -> AppResult<()> {
+        self.settings.set_flag(&format!("{SERVER_OFF_PREFIX}{name}"), !enabled)
+    }
+
+    /// Perfil da conta que atende a próxima mensagem (sem conta: o login do computador).
+    fn active_config_dir(&self) -> AppResult<Option<String>> {
+        let all = self.accounts.all()?;
+        Ok(pick_next(&all, self.clock.now(), &[]).and_then(|a| a.config_dir.clone()))
+    }
+
     fn exists(&self, name: &str) -> AppResult<bool> {
         let key = connector_key(name);
         Ok(self.connectors.list()?.iter().any(|c| connector_key(&c.name) == key))
@@ -143,6 +185,7 @@ impl ManageConnectors {
 mod tests {
     use super::*;
     use crate::application::fakes::*;
+    use crate::domain::account::sample;
 
     #[test]
     fn skill_is_on_for_all_by_default_and_off_for_agents() {
@@ -179,6 +222,39 @@ mod tests {
         assert_eq!(world.conversation("c1").agent_id, None, "a conversa volta a ficar sem agente");
     }
 
+    fn connectors_use_case(world: &World, desktop: FixedConnectors) -> ManageConnectors {
+        ManageConnectors {
+            connectors: world.store.clone(),
+            desktop: Arc::new(desktop),
+            ids: Arc::new(SequentialIds::default()),
+            account_connectors: Arc::new(FakeAccountConnectors::default()),
+            accounts: world.store.clone(),
+            settings: world.store.clone(),
+            clock: Arc::new(FixedClock(1000)),
+        }
+    }
+
+    #[test]
+    fn lists_account_connectors_for_the_active_account_and_blocks_disabled_ones() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        world.store.set_account_config_dir("a", "/perfis/a");
+        let gateway = Arc::new(FakeAccountConnectors::default());
+        let mut uc = connectors_use_case(&world, FixedConnectors(vec![]));
+        uc.account_connectors = gateway.clone();
+
+        let list = uc.account_list().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|c| c.enabled));
+
+        uc.set_server_enabled("claude.ai Asana", false).unwrap();
+        let list = uc.account_list().unwrap();
+        assert!(!list.iter().find(|c| c.name == "claude.ai Asana").unwrap().enabled);
+
+        uc.link("claude.ai Asana").unwrap();
+        uc.unlink("rea").unwrap();
+        assert_eq!(*gateway.log.lock().unwrap(), ["list /perfis/a", "list /perfis/a", "login /perfis/a claude.ai Asana", "logout /perfis/a rea"]);
+    }
+
     #[test]
     fn imports_desktop_connectors_once_and_disabled() {
         let world = World::with_accounts(vec![]);
@@ -186,7 +262,7 @@ mod tests {
             ("rea".into(), r#"{"command":"rea","args":[]}"#.into()),
             ("quebrado".into(), r#"{"args":[]}"#.into()),
         ]);
-        let uc = ManageConnectors { connectors: world.store.clone(), desktop: Arc::new(desktop), ids: Arc::new(SequentialIds::default()) };
+        let uc = connectors_use_case(&world, desktop);
         assert_eq!(uc.import_from_desktop().unwrap(), 1);
         assert_eq!(uc.import_from_desktop().unwrap(), 0);
         let all = uc.list().unwrap();

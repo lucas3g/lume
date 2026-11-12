@@ -5,7 +5,7 @@ use crate::application::{extensions::SkillView, flags, store::ServerPage, AppErr
 use crate::domain::{
     account::Account,
     chat::{Conversation, Message, PermissionDecision, Switch},
-    extension::{Agent, Connector},
+    extension::{AccountConnector, Agent, Connector},
     history::{HistSession, HistoryStatus},
     project::{Project, ProjectFile},
     store::{PluginListing, ServerListing},
@@ -288,6 +288,28 @@ pub fn workspace_commit(app: App<'_>, conversation_id: String, message: String) 
 }
 
 // ---- conectores
+
+/// Conectores carregados pelo Claude Code para a conta ativa (consulta a situação de cada um).
+#[tauri::command(async)]
+pub fn list_account_connectors(app: App<'_>) -> AppResult<Vec<AccountConnector>> {
+    app.connectors.account_list()
+}
+
+/// Abre o login do conector no navegador e espera a conclusão.
+#[tauri::command(async)]
+pub fn link_connector(app: App<'_>, name: String) -> AppResult<()> {
+    app.connectors.link(&name)
+}
+
+#[tauri::command(async)]
+pub fn unlink_connector(app: App<'_>, name: String) -> AppResult<()> {
+    app.connectors.unlink(&name)
+}
+
+#[tauri::command]
+pub fn set_server_enabled(app: App<'_>, name: String, enabled: bool) -> AppResult<()> {
+    app.connectors.set_server_enabled(&name, enabled)
+}
 
 #[tauri::command]
 pub fn list_connectors(app: App<'_>) -> AppResult<Vec<Connector>> {
