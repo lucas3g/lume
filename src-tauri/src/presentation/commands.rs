@@ -306,6 +306,12 @@ pub fn unlink_connector(app: App<'_>, name: String) -> AppResult<()> {
     app.connectors.unlink(&name)
 }
 
+/// Ícone do serviço de um conector (data URL), buscado na primeira vez e guardado em disco.
+#[tauri::command(async)]
+pub fn connector_icon(app: App<'_>, endpoint: String) -> AppResult<Option<String>> {
+    app.connectors.icon(&endpoint)
+}
+
 #[tauri::command]
 pub fn set_server_enabled(app: App<'_>, name: String, enabled: bool) -> AppResult<()> {
     app.connectors.set_server_enabled(&name, enabled)

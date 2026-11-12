@@ -126,6 +126,11 @@ pub trait ServerDirectory: Send + Sync {
     fn search(&self, query: &str, cursor: Option<&str>) -> AppResult<(Vec<ServerListing>, Option<String>)>;
 }
 
+/// Ícone (favicon) do serviço de um domínio; `None` quando não há.
+pub trait IconSource: Send + Sync {
+    fn icon(&self, domain: &str) -> AppResult<Option<Vec<u8>>>;
+}
+
 /// Conectores que o Claude Code carrega para uma conta (`config_dir` é o perfil dela).
 pub trait AccountConnectors: Send + Sync {
     fn list(&self, config_dir: Option<&str>) -> AppResult<Vec<AccountConnector>>;

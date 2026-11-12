@@ -111,6 +111,7 @@ mod tests {
                 accounts: world.store.clone(),
                 settings: world.store.clone(),
                 clock: Arc::new(FixedClock(1000)),
+                icons: Arc::new(FakeIcons),
             }),
         }
     }

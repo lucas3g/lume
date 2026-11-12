@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
+  import ConnectorIcon from "../components/ConnectorIcon.svelte";
   import ServerDirectory from "../components/store/ServerDirectory.svelte";
   import Toggle from "../components/Toggle.svelte";
   import type { AccountConnector, Connector } from "../types";
@@ -32,6 +33,16 @@
       return typeof JSON.parse(c.config).url === "string";
     } catch {
       return false;
+    }
+  }
+
+  /** Endereço do conector do Lume, para o ícone; comandos locais não têm. */
+  function mineEndpoint(c: Connector): string {
+    try {
+      const url = JSON.parse(c.config).url;
+      return typeof url === "string" ? url : "";
+    } catch {
+      return "";
     }
   }
 
@@ -159,8 +170,11 @@
         {#each accountRows as c (c.name)}
           <div class="grid item" class:off={!c.enabled}>
             <span class="cell name">
-              <strong>{c.display_name}</strong>
-              {#if c.source === "plugin"}<span class="muted small">Fornecido por plugin</span>{/if}
+              <ConnectorIcon endpoint={c.endpoint} name={c.display_name} />
+              <span class="name-text">
+                <strong>{c.display_name}</strong>
+                {#if c.source === "plugin"}<span class="muted small">Fornecido por plugin</span>{/if}
+              </span>
             </span>
             <span class="cell">
               {c.source === "account" || c.endpoint.startsWith("http") ? "Web" : "Desktop"}
@@ -190,7 +204,10 @@
 
         {#each mineRows as c (c.id)}
           <div class="grid item" class:off={!c.enabled}>
-            <span class="cell name"><strong>{c.name}</strong></span>
+            <span class="cell name">
+              <ConnectorIcon endpoint={mineEndpoint(c)} name={c.name} />
+              <span class="name-text"><strong>{c.name}</strong></span>
+            </span>
             <span class="cell">{isRemote(c) ? "Web" : "Desktop"}<span class="tag">Lume</span></span>
             <span class="cell status">
               {#if c.enabled && c.status === "connected"}
@@ -234,11 +251,12 @@
 
   .grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.9fr) auto; align-items: center; gap: 12px; padding: 0 16px; }
   .head { min-height: 36px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: var(--muted); }
-  .item { min-height: 46px; border-bottom: 1px solid var(--hairline); }
+  .item { min-height: 52px; border-bottom: 1px solid var(--hairline); }
   .item:last-of-type { border-bottom: 0; }
   .item.off .name, .item.off .cell:not(.actions) { opacity: 0.55; }
   .cell { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-2); }
-  .name { flex-direction: column; align-items: flex-start; gap: 0; color: var(--text); }
+  .name { gap: 12px; color: var(--text); }
+  .name-text { display: flex; flex-direction: column; min-width: 0; }
   .name strong { font-weight: 500; }
   .tag { padding: 0 7px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 11px; color: var(--muted); white-space: nowrap; }
   .actions { justify-content: flex-end; gap: 6px; }

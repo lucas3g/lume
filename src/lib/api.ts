@@ -76,6 +76,7 @@ export const api = {
   listAccountConnectors: () => invoke<AccountConnector[]>("list_account_connectors"),
   linkConnector: (name: string) => invoke<void>("link_connector", { name }),
   unlinkConnector: (name: string) => invoke<void>("unlink_connector", { name }),
+  connectorIcon: (endpoint: string) => invoke<string | null>("connector_icon", { endpoint }),
   setServerEnabled: (name: string, enabled: boolean) => invoke<void>("set_server_enabled", { name, enabled }),
   listConnectors: () => invoke<Connector[]>("list_connectors"),
   addConnector: (name: string, config: string) => invoke<void>("add_connector", { name, config }),

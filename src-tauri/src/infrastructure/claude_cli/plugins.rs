@@ -1,7 +1,7 @@
 //! Catálogo de plugins do Claude Code: marketplaces já configurados na máquina,
 //! plugins instalados e instalação pelo CLI oficial.
 
-use super::command;
+use super::run_cli;
 use crate::application::{ports::PluginCatalog, AppError, AppResult};
 use crate::domain::store::PluginListing;
 use serde_json::Value;
@@ -9,6 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 const MARKETPLACE_FILE: &str = ".claude-plugin/marketplace.json";
@@ -69,22 +70,8 @@ impl ClaudeCliPlugins {
     }
 
     fn run(&self, args: &[&str]) -> AppResult<String> {
-        let output = command(&self.cli, None)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .output();
-        let output = tauri::async_runtime::block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(INSTALL_TIMEOUT_SECS), output).await
-        })
-        .map_err(|_| AppError("O Claude Code demorou demais para responder.".into()))?
-        .map_err(|e| AppError(format!("Não foi possível executar o Claude Code: {e}")))?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        if output.status.success() {
-            return Ok(stdout);
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = cli_message(&stdout).unwrap_or_else(|| stderr.trim().to_owned());
-        Err(AppError(if detail.is_empty() { "O Claude Code recusou a operação.".into() } else { detail }))
+        run_cli(&self.cli, None, args, Duration::from_secs(INSTALL_TIMEOUT_SECS), "O Claude Code demorou demais para responder.")
+            .map_err(|e| AppError(cli_message(&e.0).unwrap_or(e.0)))
     }
 }
 

@@ -89,6 +89,7 @@ pub fn run() {
             commands::link_connector,
             commands::unlink_connector,
             commands::set_server_enabled,
+            commands::connector_icon,
             commands::list_connectors,
             commands::add_connector,
             commands::import_desktop_connectors,

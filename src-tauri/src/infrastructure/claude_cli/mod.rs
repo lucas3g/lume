@@ -11,6 +11,9 @@ use std::{
     process::Stdio,
     sync::OnceLock,
 };
+
+use crate::application::{AppError, AppResult};
+use std::{io::Read, time::{Duration, Instant}};
 use tokio::process::Command;
 
 /// Variáveis herdadas que fariam o CLI se comportar como sessão aninhada.
@@ -30,6 +33,58 @@ fn command(cli: &Path, config_dir: Option<&str>) -> Command {
     }
     cmd.kill_on_drop(true);
     cmd
+}
+
+/// Versão bloqueante de `command`, para chamadas curtas feitas fora do runtime assíncrono.
+fn blocking_command(cli: &Path, config_dir: Option<&str>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(cli);
+    for key in INHERITED_ENV {
+        cmd.env_remove(key);
+    }
+    if let Some(dir) = config_dir {
+        cmd.env("CLAUDE_CONFIG_DIR", dir);
+    }
+    if let Some(path) = shell_path() {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+/// Executa um comando do CLI e devolve a saída padrão; falha com a mensagem do CLI
+/// ou com `slow` se estourar o tempo (o processo é encerrado).
+pub(crate) fn run_cli(cli: &Path, config_dir: Option<&str>, args: &[&str], timeout: Duration, slow: &str) -> AppResult<String> {
+    let mut child = blocking_command(cli, config_dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError(format!("Não foi possível executar o Claude Code: {e}")))?;
+    // Lê as saídas em paralelo para o processo nunca bloquear com o buffer cheio.
+    let reader = |pipe: Option<std::process::ChildStdout>| pipe.map(|mut p| std::thread::spawn(move || { let mut b = Vec::new(); let _ = p.read_to_end(&mut b); b }));
+    let err_reader = |pipe: Option<std::process::ChildStderr>| pipe.map(|mut p| std::thread::spawn(move || { let mut b = Vec::new(); let _ = p.read_to_end(&mut b); b }));
+    let out = reader(child.stdout.take());
+    let err = err_reader(child.stderr.take());
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError(slow.into()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(AppError(format!("Falha ao aguardar o Claude Code: {e}"))),
+        }
+    };
+    let stdout = String::from_utf8_lossy(&out.and_then(|t| t.join().ok()).unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&err.and_then(|t| t.join().ok()).unwrap_or_default()).into_owned();
+    if status.success() {
+        return Ok(stdout);
+    }
+    let detail = if stderr.trim().is_empty() { stdout.trim().to_owned() } else { stderr.trim().to_owned() };
+    Err(AppError(if detail.is_empty() { "O Claude Code recusou a operação.".into() } else { detail }))
 }
 
 /// PATH do shell de login do usuário. Um app aberto pelo Finder herda um PATH

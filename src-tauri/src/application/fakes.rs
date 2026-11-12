@@ -332,3 +332,12 @@ impl AccountConnectors for FakeAccountConnectors {
         Ok(())
     }
 }
+
+/// Ícones: um PNG mínimo para qualquer domínio.
+pub struct FakeIcons;
+
+impl IconSource for FakeIcons {
+    fn icon(&self, _domain: &str) -> AppResult<Option<Vec<u8>>> {
+        Ok(Some(b"\x89PNG\r\n\x1a\n".to_vec()))
+    }
+}

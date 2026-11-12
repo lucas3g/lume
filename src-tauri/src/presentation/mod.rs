@@ -26,6 +26,7 @@ use crate::infrastructure::{
     files::FsFileLoader,
     git_cli::GitCli,
     history_index::SqliteHistoryIndex,
+    icons::FaviconFetcher,
     mcp_registry::McpRegistry,
     skills::{DesktopConnectors, SqliteSkills},
     sqlite::SqliteStore,
@@ -92,6 +93,7 @@ impl Container {
             accounts: store.clone(),
             settings: store.clone(),
             clock: clock.clone(),
+            icons: Arc::new(FaviconFetcher::new(data_dir.join("icons"))),
         });
         let files: Arc<dyn FileLoader> = Arc::new(FsFileLoader);
 

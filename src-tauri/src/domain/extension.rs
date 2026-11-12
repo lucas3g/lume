@@ -84,6 +84,34 @@ pub fn denied_server_rules(flags: &[(String, bool)]) -> Vec<String> {
         .collect()
 }
 
+/// Domínio raiz de um endereço (`https://mcp.asana.com/v2` → `asana.com`); `None` para comandos locais.
+pub fn root_domain(endpoint: &str) -> Option<String> {
+    let rest = endpoint.trim().strip_prefix("https://").or_else(|| endpoint.trim().strip_prefix("http://"))?;
+    let host = rest.split(['/', '?', ':']).next()?.to_lowercase();
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    if labels.len() < 2 || host.parse::<std::net::IpAddr>().is_ok() || host == "localhost" {
+        return None;
+    }
+    // Sufixos de dois níveis (com.br, co.uk): o domínio raiz tem três rótulos.
+    let keep = if labels.len() >= 3 && labels[labels.len() - 2].len() <= 3 && labels[labels.len() - 1].len() == 2 { 3 } else { 2 };
+    Some(labels[labels.len() - keep..].join("."))
+}
+
+/// Tipo MIME de um ícone pelo conteúdo.
+pub fn icon_media_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else if bytes.starts_with(b"<") || bytes.starts_with(b"\xEF\xBB\xBF<") {
+        "image/svg+xml"
+    } else if bytes.starts_with(b"\xFF\xD8") {
+        "image/jpeg"
+    } else if bytes.starts_with(b"RIFF") {
+        "image/webp"
+    } else {
+        "image/x-icon"
+    }
+}
+
 /// Como o Claude Code transforma o nome de um servidor no prefixo das suas ferramentas.
 pub fn cli_server_key(name: &str) -> String {
     name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
@@ -219,6 +247,14 @@ mod tests {
         assert_eq!((list[3].source, list[3].endpoint.as_str()), (ConnectorSource::User, "npx -y rea-agents@6.4.0 mcp"));
         assert_eq!(list[4].status, ConnectorStatus::Failed);
         assert_eq!(server_deny_rule("claude.ai Asana"), "mcp__claude_ai_Asana");
+        assert_eq!(root_domain("https://mcp.asana.com/v2/mcp").as_deref(), Some("asana.com"));
+        assert_eq!(root_domain("https://slidesmcp.googleapis.com/mcp/v1").as_deref(), Some("googleapis.com"));
+        assert_eq!(root_domain("https://api.empresa.com.br:8443/x").as_deref(), Some("empresa.com.br"));
+        assert_eq!(root_domain("npx -y rea-agents mcp"), None);
+        assert_eq!(root_domain("http://localhost:3000/mcp"), None);
+        assert_eq!(icon_media_type(b"\x89PNG\r\n"), "image/png");
+        assert_eq!(icon_media_type(b"<svg/>"), "image/svg+xml");
+        assert_eq!(icon_media_type(b"\x00\x00\x01\x00"), "image/x-icon");
         let flags = vec![("server_off:claude.ai Asana".to_owned(), true), ("server_off:rea".to_owned(), false), ("auto_switch".to_owned(), true)];
         assert_eq!(denied_server_rules(&flags), ["mcp__claude_ai_Asana"]);
     }

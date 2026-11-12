@@ -3,13 +3,13 @@
 use super::{
     ports::{
         AccountConnectors, AccountRepository, AgentRepository, Clock, ConnectorRepository, ConnectorSource,
-        ConversationRepository, IdGenerator, Settings, SkillRepository,
+        ConversationRepository, IconSource, IdGenerator, Settings, SkillRepository,
     },
     AppError, AppResult,
 };
 use crate::domain::{
     account::pick_next,
-    extension::{AccountConnector, SERVER_OFF_PREFIX},
+    extension::{icon_media_type, root_domain, AccountConnector, SERVER_OFF_PREFIX},
 };
 use crate::domain::extension::{
     connector_key, is_enabled_for_all, is_granted_to_agent, validate_connector_config, Agent, Connector, Skill,
@@ -101,6 +101,7 @@ pub struct ManageConnectors {
     pub accounts: Arc<dyn AccountRepository>,
     pub settings: Arc<dyn Settings>,
     pub clock: Arc<dyn Clock>,
+    pub icons: Arc<dyn IconSource>,
 }
 
 impl ManageConnectors {
@@ -169,6 +170,15 @@ impl ManageConnectors {
         self.settings.set_flag(&format!("{SERVER_OFF_PREFIX}{name}"), !enabled)
     }
 
+    /// Ícone do serviço de um endereço, como data URL; `None` para comandos locais ou sem ícone.
+    pub fn icon(&self, endpoint: &str) -> AppResult<Option<String>> {
+        let Some(domain) = root_domain(endpoint) else { return Ok(None) };
+        let Some(bytes) = self.icons.icon(&domain)? else { return Ok(None) };
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(Some(format!("data:{};base64,{encoded}", icon_media_type(&bytes))))
+    }
+
     /// Perfil da conta que atende a próxima mensagem (sem conta: o login do computador).
     fn active_config_dir(&self) -> AppResult<Option<String>> {
         let all = self.accounts.all()?;
@@ -231,6 +241,7 @@ mod tests {
             accounts: world.store.clone(),
             settings: world.store.clone(),
             clock: Arc::new(FixedClock(1000)),
+            icons: Arc::new(FakeIcons),
         }
     }
 
@@ -250,6 +261,8 @@ mod tests {
         let list = uc.account_list().unwrap();
         assert!(!list.iter().find(|c| c.name == "claude.ai Asana").unwrap().enabled);
 
+        assert_eq!(uc.icon("https://mcp.asana.com/v2").unwrap().as_deref(), Some("data:image/png;base64,iVBORw0KGgo="));
+        assert_eq!(uc.icon("npx -y x").unwrap(), None);
         uc.link("claude.ai Asana").unwrap();
         uc.unlink("rea").unwrap();
         assert_eq!(*gateway.log.lock().unwrap(), ["list /perfis/a", "list /perfis/a", "login /perfis/a claude.ai Asana", "logout /perfis/a rea"]);
