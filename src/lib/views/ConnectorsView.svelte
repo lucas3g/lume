@@ -29,6 +29,8 @@
   const query = $derived(filter.trim().toLowerCase());
   const accountRows = $derived(account.filter((c) => c.display_name.toLowerCase().includes(query)));
   const mineRows = $derived(mine.filter((c) => c.name.toLowerCase().includes(query)));
+  /** Conector do Lume que repete um servidor já configurado no Claude Code: os dois chegariam ao assistente. */
+  const duplicated = (c: Connector) => account.some((a) => a.source === "user" && a.name.toLowerCase() === c.name.toLowerCase());
 
   function isRemote(c: Connector): boolean {
     try {
@@ -97,7 +99,8 @@
 
   const importDesktop = () =>
     run(async () => {
-      const count = await api.importDesktopConnectors();
+      // Servidores que o Claude Code já carrega não entram de novo.
+      const count = await api.importDesktopConnectors(account.filter((c) => c.source === "user").map((c) => c.name));
       notice = count ? `${count} conector(es) importado(s), desligado(s). Ligue os que quiser usar.` : "Nenhum conector novo encontrado no Claude Desktop.";
     });
 
@@ -204,7 +207,10 @@
           <div class="grid item" class:off={!c.enabled}>
             <span class="cell name">
               <ConnectorIcon endpoint={mineEndpoint(c)} name={c.name} />
-              <span class="name-text"><strong>{c.name}</strong></span>
+              <span class="name-text">
+                <strong>{c.name}</strong>
+                {#if duplicated(c)}<span class="warn small">Repetido: o Claude Code já carrega este servidor. Remova um dos dois.</span>{/if}
+              </span>
             </span>
             <span class="cell">{isRemote(c) ? "Web" : "Desktop"}<span class="tag">Lume</span></span>
             <span class="cell status">

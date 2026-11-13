@@ -114,7 +114,7 @@ export const api = {
   setServerEnabled: (name: string, enabled: boolean) => invoke<void>("set_server_enabled", { name, enabled }),
   listConnectors: () => invoke<Connector[]>("list_connectors"),
   addConnector: (name: string, config: string) => invoke<void>("add_connector", { name, config }),
-  importDesktopConnectors: () => invoke<number>("import_desktop_connectors"),
+  importDesktopConnectors: (taken: string[]) => invoke<number>("import_desktop_connectors", { taken }),
   setConnectorEnabled: (id: string, enabled: boolean) => invoke<void>("set_connector_enabled", { id, enabled }),
   removeConnector: (id: string) => invoke<void>("remove_connector", { id }),
 

@@ -187,6 +187,20 @@ pub fn parse_mcp_list(text: &str) -> Vec<AccountConnector> {
         .collect()
 }
 
+/// Tira os conectores de plugin que repetem um serviço já oferecido pela conta
+/// claude.ai (ex.: o plugin `context7` ao lado do conector "Context7" da conta):
+/// o da conta é o que o usuário vincula e gerencia.
+pub fn without_shadowed_plugins(list: Vec<AccountConnector>) -> Vec<AccountConnector> {
+    let account: Vec<String> = list
+        .iter()
+        .filter(|c| c.source == ConnectorSource::Account)
+        .map(|c| c.display_name.to_lowercase())
+        .collect();
+    list.into_iter()
+        .filter(|c| c.source != ConnectorSource::Plugin || !account.contains(&c.display_name.to_lowercase()))
+        .collect()
+}
+
 /// Regras de skills de um escopo: nome da skill → ligada ou desligada.
 pub type SkillRules = HashMap<String, bool>;
 
@@ -250,6 +264,27 @@ pub fn mcp_setup(connectors: &[Connector]) -> (Option<String>, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plugin_duplicating_an_account_connector_is_hidden() {
+        let mk = |name: &str, source: super::ConnectorSource| super::AccountConnector {
+            key: super::cli_server_key(name),
+            name: name.into(),
+            display_name: name.rsplit(':').next().unwrap().trim_start_matches("claude.ai ").into(),
+            endpoint: "https://x".into(),
+            status: super::ConnectorStatus::Connected,
+            source,
+            enabled: true,
+        };
+        let list = vec![
+            mk("claude.ai Context7", super::ConnectorSource::Account),
+            mk("plugin:context7:context7", super::ConnectorSource::Plugin),
+            mk("plugin:outro:outro", super::ConnectorSource::Plugin),
+            mk("rea", super::ConnectorSource::User),
+        ];
+        let names: Vec<String> = super::without_shadowed_plugins(list).into_iter().map(|c| c.name).collect();
+        assert_eq!(names, ["claude.ai Context7", "plugin:outro:outro", "rea"]);
+    }
+
     use super::*;
 
     fn skill(name: &str) -> Skill {

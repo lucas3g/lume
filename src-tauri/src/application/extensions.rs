@@ -12,7 +12,7 @@ use crate::domain::{
     extension::{icon_media_type, root_domain, AccountConnector, SERVER_OFF_PREFIX},
 };
 use crate::domain::extension::{
-    connector_key, is_enabled_for_all, is_granted_to_agent, validate_connector_config, Agent, Connector, Skill,
+    connector_key, is_enabled_for_all, is_granted_to_agent, validate_connector_config, without_shadowed_plugins, Agent, Connector, Skill,
     SCOPE_ALL,
 };
 use serde::Serialize;
@@ -125,10 +125,12 @@ impl ManageConnectors {
     }
 
     /// Traz os conectores do Claude Desktop que ainda não existem aqui; entram desligados.
-    pub fn import_from_desktop(&self) -> AppResult<usize> {
+    /// `taken` são nomes que o Claude Code já carrega sozinho: importá-los duplicaria o servidor.
+    pub fn import_from_desktop(&self, taken: &[String]) -> AppResult<usize> {
         let mut imported = 0;
+        let taken: Vec<String> = taken.iter().map(|n| connector_key(n)).collect();
         for (name, config) in self.desktop.servers() {
-            if validate_connector_config(&config).is_err() || self.exists(&name)? {
+            if validate_connector_config(&config).is_err() || self.exists(&name)? || taken.contains(&connector_key(&name)) {
                 continue;
             }
             self.connectors.insert(&self.ids.new_id(), &name, &config)?;
@@ -148,7 +150,7 @@ impl ManageConnectors {
     /// Conectores que o Claude Code carrega para a conta que atende a próxima mensagem.
     pub fn account_list(&self) -> AppResult<Vec<AccountConnector>> {
         let config_dir = self.active_config_dir()?;
-        let mut list = self.account_connectors.list(config_dir.as_deref())?;
+        let mut list = without_shadowed_plugins(self.account_connectors.list(config_dir.as_deref())?);
         for c in &mut list {
             c.enabled = !self.settings.flag(&format!("{SERVER_OFF_PREFIX}{}", c.name), false);
         }
@@ -276,8 +278,9 @@ mod tests {
             ("quebrado".into(), r#"{"args":[]}"#.into()),
         ]);
         let uc = connectors_use_case(&world, desktop);
-        assert_eq!(uc.import_from_desktop().unwrap(), 1);
-        assert_eq!(uc.import_from_desktop().unwrap(), 0);
+        assert_eq!(uc.import_from_desktop(&["REA".into()]).unwrap(), 0, "já carregado pelo Claude Code");
+        assert_eq!(uc.import_from_desktop(&[]).unwrap(), 1);
+        assert_eq!(uc.import_from_desktop(&[]).unwrap(), 0);
         let all = uc.list().unwrap();
         assert_eq!((all.len(), all[0].name.as_str(), all[0].enabled), (1, "rea", false));
 

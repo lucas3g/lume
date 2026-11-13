@@ -459,8 +459,8 @@ pub fn add_connector(app: App<'_>, name: String, config: String) -> AppResult<()
 }
 
 #[tauri::command]
-pub fn import_desktop_connectors(app: App<'_>) -> AppResult<usize> {
-    app.connectors.import_from_desktop()
+pub fn import_desktop_connectors(app: App<'_>, taken: Vec<String>) -> AppResult<usize> {
+    app.connectors.import_from_desktop(&taken)
 }
 
 #[tauri::command]
