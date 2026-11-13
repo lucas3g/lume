@@ -39,9 +39,10 @@ fn link_dir(target: &Path, link: &Path) {
     let _ = std::os::windows::fs::symlink_dir(target, link);
 }
 
-/// Instante Unix de uma data ISO 8601 em UTC ("2026-12-12T03:41:12.461Z").
-fn parse_iso_utc(text: &str) -> Option<i64> {
+/// Instante Unix de uma data ISO 8601 em UTC ("2026-12-12T03:41:12.461Z" ou "...+00:00").
+pub(crate) fn parse_iso_utc(text: &str) -> Option<i64> {
     let (date, time) = text.split_once('T')?;
+    let time = time.split_once('+').map_or(time, |(t, _)| t);
     let mut date = date.split('-').map(|n| n.parse::<i64>().ok());
     let (year, month, day) = (date.next()??, date.next()??, date.next()??);
     let time = time.trim_end_matches('Z');

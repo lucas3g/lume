@@ -31,6 +31,7 @@ tokio = { version = "1.54.1", features = ["process", "io-util", "sync", "rt", "m
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 uuid = { version = "1.29.2", features = ["v4"] }
 dirs = "7.0.0"
+sha2 = "0.10"
 async-trait = "0.1.92"
 tauri-plugin-dialog = "2.8.4"
 base64 = "0.23.1"

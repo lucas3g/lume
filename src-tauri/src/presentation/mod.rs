@@ -24,7 +24,7 @@ use crate::application::{
 use crate::infrastructure::{
     claude_cli::{
         accounts::ClaudeCliAccounts, connectors::ClaudeCliConnectors, engine::ClaudeCliEngine, find_cli,
-        plugins::ClaudeCliPlugins, usage::ClaudeCliUsage,
+        plugins::ClaudeCliPlugins, usage::OauthUsage,
     },
     files::FsFileLoader,
     git_cli::GitCli,
@@ -114,7 +114,7 @@ impl Container {
                 gateway: Arc::new(ClaudeCliAccounts::new(cli.clone(), profiles_dir, main_config.clone())),
                 events: events.clone(),
                 ids: ids.clone(),
-                usage: Arc::new(ClaudeCliUsage::new(cli.clone())),
+                usage: Arc::new(OauthUsage::new(cli.clone(), main_config.clone())),
             },
             conversations: ManageConversations {
                 conversations: store.clone(),

@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod connectors;
+pub mod credentials;
 pub mod engine;
 pub mod plugins;
 pub mod stream;
