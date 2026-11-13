@@ -1,6 +1,6 @@
 //! Leitura das transcrições (.jsonl) do Claude Code: extrai só o diálogo.
 
-use crate::domain::history::{DialogueTurn, ImportedSession};
+use crate::domain::{chat::without_app_note, history::{DialogueTurn, ImportedSession}};
 use serde_json::Value;
 use std::io::BufRead;
 
@@ -55,7 +55,8 @@ pub fn parse_transcript(reader: impl BufRead) -> ImportedSession {
             continue;
         }
         let text = message_text(&record["message"]["content"]);
-        let text = text.trim();
+        // Instruções que o Lume pôs na frente da mensagem não são fala do usuário.
+        let text = if kind == "user" { without_app_note(&text) } else { &text }.trim();
         // Entradas do usuário que começam com "<" são avisos do sistema e comandos.
         if text.is_empty() || (kind == "user" && text.starts_with('<')) {
             continue;
@@ -93,6 +94,13 @@ mod tests {
         assert_eq!(s.turns.len(), 2);
         assert_eq!(s.turns[0].role, "user");
         assert_eq!(s.turns[1].text, "Use CREATE INDEX em cliente_id e criado_em.");
+    }
+
+    #[test]
+    fn drops_the_app_note_in_front_of_the_user_message() {
+        let line = r#"{"type":"user","message":{"content":"<lume-aviso>\nInstruções do projeto \"Loja\": segredo\n</lume-aviso>\n\nComo indexar?"}}"#;
+        let s = parse_transcript(line.as_bytes());
+        assert_eq!((s.turns[0].text.as_str(), s.title.as_deref()), ("Como indexar?", Some("Como indexar?")));
     }
 
     #[test]

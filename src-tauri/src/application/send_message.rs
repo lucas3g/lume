@@ -16,7 +16,7 @@ use crate::domain::{
     account::{earliest_reset, pick_next, Account},
     workspace::context_percent,
     chat::{
-        tool_message, Attachment, Conversation, Injection, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
+        tool_message, Attachment, APP_NOTE_CLOSE, APP_NOTE_OPEN, Conversation, Injection, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
         ROLE_TOOL, ROLE_USER,
     },
 };
@@ -26,8 +26,9 @@ use tokio::sync::mpsc::UnboundedSender;
 const TITLE_MAX_CHARS: usize = 48;
 /// Usado quando o provedor não informa o horário do reset.
 const DEFAULT_LIMIT_SECONDS: i64 = 3600;
-/// Configuração com as instruções de projeto e agente que a sessão da conversa já conhece.
-const STANDING_PREFIX: &str = "standing_sent:";
+/// Configurações com o resumo das instruções e dos arquivos de conhecimento que a sessão já conhece.
+const RULES_PREFIX: &str = "rules_sent:";
+const KNOWLEDGE_PREFIX: &str = "knowledge_sent:";
 
 pub struct SendMessage {
     pub accounts: Arc<dyn AccountRepository>,
@@ -113,13 +114,20 @@ impl SendMessage {
 
         let mut tried: Vec<String> = vec![];
         let mut previous: Option<(Account, Handoff)> = None;
-        // Instruções de projeto e agente que a sessão já recebeu, para só reenviá-las quando mudarem.
-        let standing_key = format!("{STANDING_PREFIX}{conversation_id}");
-        let standing_print = fingerprint(setup.standing.as_deref());
-        let standing_changed = self.settings.text(&standing_key).unwrap_or_default() != standing_print;
-        // A sessão gravou a mensagem (e as instruções que foram junto); falhar aqui só faz reenviá-las.
+        // Instruções e conhecimento que a sessão já recebeu: cada parte só é reenviada quando muda.
+        let standing = [(RULES_PREFIX, setup.rules.as_deref()), (KNOWLEDGE_PREFIX, setup.knowledge.as_deref())]
+            .map(|(prefix, text)| {
+                let key = format!("{prefix}{conversation_id}");
+                let print = fingerprint(text);
+                let changed = self.settings.text(&key).unwrap_or_default() != print;
+                (key, print, changed)
+            });
+        let [rules_changed, knowledge_changed] = [standing[0].2, standing[1].2];
+        // A sessão gravou a mensagem (e o que foi junto); falhar aqui só faz reenviar.
         let remember_standing = || {
-            let _ = self.settings.set_text(&standing_key, &standing_print);
+            for (key, print, _) in &standing {
+                let _ = self.settings.set_text(key, print);
+            }
         };
 
         loop {
@@ -153,7 +161,11 @@ impl SendMessage {
             };
             let resume = conversation.cli_session_id.clone().filter(|_| !foreign_session);
             let prompt = match &resume {
-                Some(_) if standing_changed => updated_instructions(setup.standing.as_deref().unwrap_or_default(), text),
+                Some(_) if rules_changed || knowledge_changed => updated_instructions(
+                    rules_changed.then(|| setup.rules.as_deref().unwrap_or_default()),
+                    knowledge_changed.then(|| setup.knowledge.as_deref().unwrap_or_default()),
+                    text,
+                ),
                 _ => text.to_owned(),
             };
             let request = TurnRequest {
@@ -477,14 +489,22 @@ fn fingerprint(standing: Option<&str>) -> String {
     }
 }
 
-/// Mensagem de uma sessão retomada cujas instruções de projeto ou agente mudaram depois
-/// que ela abriu: as novas vão na frente, valendo daqui em diante.
-fn updated_instructions(standing: &str, text: &str) -> String {
-    let rules = if standing.is_empty() { "Nenhuma instrução de projeto ou de agente está em vigor." } else { standing };
-    format!(
-        "[Aviso do aplicativo: as instruções desta conversa foram atualizadas e valem a partir desta mensagem, \
-         substituindo as anteriores de projeto e de agente.]\n{rules}\n\n[Mensagem do usuário]\n{text}"
-    )
+/// Mensagem de uma sessão retomada cujas instruções ou arquivos de conhecimento mudaram
+/// depois que ela abriu: só a parte que mudou vai na frente, marcada como aviso do aplicativo.
+fn updated_instructions(rules: Option<&str>, knowledge: Option<&str>, text: &str) -> String {
+    let mut note = String::new();
+    if let Some(rules) = rules {
+        let rules = if rules.is_empty() { "Nenhuma instrução de projeto ou de agente está em vigor." } else { rules };
+        note.push_str(&format!(
+            "As instruções de projeto e de agente desta conversa foram atualizadas; valem a partir desta mensagem \
+             e substituem as anteriores:\n{rules}\n"
+        ));
+    }
+    if let Some(knowledge) = knowledge {
+        let knowledge = if knowledge.is_empty() { "O projeto não tem mais arquivos de conhecimento." } else { knowledge };
+        note.push_str(&format!("Os arquivos de conhecimento do projeto foram atualizados e substituem os anteriores:\n{knowledge}\n"));
+    }
+    format!("{APP_NOTE_OPEN}\n{note}{APP_NOTE_CLOSE}\n\n{text}")
 }
 
 pub fn make_title(text: &str) -> String {
@@ -691,6 +711,7 @@ mod tests {
         let mut project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: None };
         ProjectRepository::save(&*world.store, &project).unwrap();
         world.store.set_project("c1", Some("p1")).unwrap();
+        world.store.add_file("f1", "p1", "glossario.md", "SKU é o código.").unwrap();
         let engine = ScriptedEngine::new(|req, call| {
             match call {
                 1 => assert_eq!(req.prompt, "oi", "sessão nova: as instruções vão no prompt de sistema"),
@@ -698,6 +719,8 @@ mod tests {
                 3 => {
                     assert_eq!(req.resume.as_deref(), Some("s1"));
                     assert!(req.prompt.contains("Responda em português.") && req.prompt.ends_with("e agora?"));
+                    assert!(!req.prompt.contains("SKU"), "o conhecimento não mudou e não é reenviado");
+                    assert_eq!(crate::domain::chat::without_app_note(&req.prompt), "e agora?");
                 }
                 _ => assert_eq!(req.prompt, "de novo", "a sessão já recebeu as instruções novas"),
             }

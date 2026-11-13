@@ -10,7 +10,7 @@ use crate::domain::{
     chat::{transcript_prompt, Conversation},
     extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
     history::context_prompt,
-    project::project_prompt,
+    project::{project_knowledge, project_rules},
 };
 use std::sync::Arc;
 
@@ -33,7 +33,9 @@ pub struct TurnSetup {
     /// Instruções do projeto e do agente, parte de `extra_system` que pode mudar no meio
     /// da conversa. O CLI fixa o prompt de sistema quando a sessão abre e ignora o novo
     /// ao retomá-la; quando ela muda, segue junto da mensagem.
-    pub standing: Option<String>,
+    pub rules: Option<String>,
+    /// Arquivos de conhecimento do projeto; como `rules`, mas reenviados à parte por serem grandes.
+    pub knowledge: Option<String>,
     pub tools: String,
     pub effort: String,
     pub permission_mode: String,
@@ -107,14 +109,14 @@ impl PrepareTurn {
             Some(id) => self.projects.get(id)?,
             None => None,
         };
-        let project_section = match &project {
-            Some(p) => project_prompt(p, &self.projects.knowledge(&p.id)?),
+        let knowledge = match &project {
+            Some(p) => project_knowledge(&self.projects.knowledge(&p.id)?),
             None => None,
         };
         let earlier = self.earlier_dialogue(conversation)?;
-        let standing = [project_section, instructions].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
-        let standing = (!standing.is_empty()).then_some(standing);
-        let sections: Vec<String> = [Some(ARTIFACT_GUIDE.to_owned()), standing.clone(), earlier, context_prompt(&snippets)]
+        let rules = [project.as_ref().and_then(project_rules), instructions].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
+        let rules = (!rules.is_empty()).then_some(rules);
+        let sections: Vec<String> = [Some(ARTIFACT_GUIDE.to_owned()), rules.clone(), knowledge.clone(), earlier, context_prompt(&snippets)]
             .into_iter()
             .flatten()
             .collect();
@@ -122,7 +124,8 @@ impl PrepareTurn {
         Ok(TurnSetup {
             model: agent.and_then(|a| a.model).unwrap_or_else(|| conversation.model.clone()),
             extra_system: Some(sections.join("\n\n")),
-            standing,
+            rules,
+            knowledge,
             tools,
             effort: conversation.effort.clone(),
             permission_mode: conversation.permission_mode.clone(),

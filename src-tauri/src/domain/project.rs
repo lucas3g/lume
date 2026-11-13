@@ -57,13 +57,15 @@ pub fn folder_name(folder: &str) -> String {
     normalized.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or(&normalized).to_owned()
 }
 
-/// Texto anexado ao prompt de sistema: instruções do projeto e seus arquivos.
-/// Arquivos que não cabem no limite ficam de fora, inteiros.
-pub fn project_prompt(project: &Project, files: &[(String, String)]) -> Option<String> {
+/// Instruções do projeto, quando há.
+pub fn project_rules(project: &Project) -> Option<String> {
+    let rules = project.instructions.trim();
+    (!rules.is_empty()).then(|| format!("Instruções do projeto \"{}\":\n{rules}\n", project.name))
+}
+
+/// Arquivos de conhecimento do projeto até o limite; os que não cabem ficam de fora, inteiros.
+pub fn project_knowledge(files: &[(String, String)]) -> Option<String> {
     let mut out = String::new();
-    if !project.instructions.trim().is_empty() {
-        out.push_str(&format!("Instruções do projeto \"{}\":\n{}\n", project.name, project.instructions.trim()));
-    }
     let mut used = 0;
     for (name, content) in files {
         let size = content.chars().count();
@@ -71,7 +73,7 @@ pub fn project_prompt(project: &Project, files: &[(String, String)]) -> Option<S
             continue;
         }
         used += size;
-        out.push_str(&format!("\nArquivo de conhecimento do projeto — {name}:\n{content}\n"));
+        out.push_str(&format!("Arquivo de conhecimento do projeto — {name}:\n{content}\n"));
     }
     (!out.is_empty()).then_some(out)
 }
@@ -86,10 +88,10 @@ mod tests {
 
     #[test]
     fn joins_instructions_and_files() {
-        let prompt = project_prompt(&project("Responda em português."), &[("regras.md".into(), "Use REST.".into())]).unwrap();
-        assert!(prompt.contains("Instruções do projeto \"Portal\":\nResponda em português."));
-        assert!(prompt.contains("regras.md:\nUse REST."));
-        assert_eq!(project_prompt(&project("  "), &[]), None);
+        let rules = project_rules(&project("Responda em português.")).unwrap();
+        assert!(rules.contains("Instruções do projeto \"Portal\":\nResponda em português."));
+        assert!(project_knowledge(&[("regras.md".into(), "Use REST.".into())]).unwrap().contains("regras.md:\nUse REST."));
+        assert_eq!((project_rules(&project("  ")), project_knowledge(&[])), (None, None));
     }
 
     #[test]
@@ -112,7 +114,7 @@ mod tests {
     fn skips_files_beyond_the_limit() {
         let big = "x".repeat(MAX_KNOWLEDGE_CHARS);
         let files = [("grande.txt".into(), big), ("extra.txt".into(), "y".into())];
-        let prompt = project_prompt(&project(""), &files).unwrap();
+        let prompt = project_knowledge(&files).unwrap();
         assert!(prompt.contains("grande.txt") && !prompt.contains("extra.txt"));
     }
 }

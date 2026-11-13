@@ -4,6 +4,18 @@ use serde::Serialize;
 use super::account::Provider;
 
 pub const ROLE_USER: &str = "user";
+/// Marca o trecho que o aplicativo põe na frente da mensagem do usuário (ex.: instruções
+/// atualizadas). Não é do usuário: a leitura do histórico o descarta.
+pub const APP_NOTE_OPEN: &str = "<lume-aviso>";
+pub const APP_NOTE_CLOSE: &str = "</lume-aviso>";
+
+/// A mensagem sem o trecho do aplicativo na frente.
+pub fn without_app_note(text: &str) -> &str {
+    match text.trim_start().strip_prefix(APP_NOTE_OPEN).and_then(|rest| rest.split_once(APP_NOTE_CLOSE)) {
+        Some((_, user)) => user.trim_start(),
+        None => text,
+    }
+}
 pub const ROLE_ASSISTANT: &str = "assistant";
 /// Aviso do próprio app dentro da conversa (ex.: troca de conta).
 pub const ROLE_NOTICE: &str = "notice";
