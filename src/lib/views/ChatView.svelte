@@ -16,7 +16,7 @@
   import CodeView from "../components/CodeView.svelte";
   import SubagentPanel from "../components/SubagentPanel.svelte";
   import ToolRow from "../components/ToolRow.svelte";
-  import { describeFile, folderName, formatTime, renderMarkdown } from "../format";
+  import { describeFile, folderName, formatTime, formatWhen, fullDate, renderMarkdown } from "../format";
   import { activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
   import { api } from "../api";
@@ -539,6 +539,9 @@
                   <button type="button" onclick={() => regenerate(message)}>Regenerar</button>
                   <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
                 {/if}
+                {#if message.created_at}
+                  <time class="when" datetime={new Date(message.created_at * 1000).toISOString()} title={fullDate(message.created_at)}>{formatWhen(message.created_at)}</time>
+                {/if}
               </div>
               {#each extractArtifacts(message.content) as artifact (artifact.code)}
                 <button type="button" class="artifact" onclick={() => (openArtifact = artifact)}>
@@ -808,6 +811,7 @@
   .user-wrap:hover .msg-actions, .user-wrap:focus-within .msg-actions, .assistant:hover .msg-actions, .assistant:focus-within .msg-actions, .msg-actions.shown { opacity: 1; }
   .msg-actions button { min-height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; font-size: 12px; color: var(--muted); }
   .msg-actions button:hover { background: var(--hover); color: var(--text); }
+  .msg-actions .when { align-self: center; padding: 0 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .editing { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--muted); }
   .editing span { flex: 1; }
   @media (prefers-reduced-motion: reduce) { .msg-actions { transition: none; } }

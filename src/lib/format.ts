@@ -40,6 +40,13 @@ export function formatWhen(seconds: number): string {
   return `${day}, ${timeFormat.format(date)}`;
 }
 
+const fullFormat = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full", timeStyle: "medium" });
+
+/** Data e hora completas, para a dica ao passar o mouse. */
+export function fullDate(seconds: number): string {
+  return fullFormat.format(new Date(seconds * 1000));
+}
+
 const weekdayFormat = new Intl.DateTimeFormat("pt-BR", { weekday: "short" });
 
 /** Quando um limite zera: "às 13:50" se for hoje, senão "qua., 07:00". */
