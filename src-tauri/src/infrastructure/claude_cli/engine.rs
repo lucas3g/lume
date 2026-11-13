@@ -2,7 +2,7 @@
 
 use super::{command, stream::{parse_line, Observed}};
 use crate::application::{ports::{ChatEngine, TurnListener}, TurnControl};
-use crate::domain::chat::{Attachment, AttachmentKind, Injection, PermissionDecision, TurnEnd, TurnEvent, TurnRequest};
+use crate::domain::chat::{Attachment, AttachmentKind, Injection, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio};
@@ -12,6 +12,10 @@ use tokio::{
 };
 
 const DENIED_MESSAGE: &str = "O usuário não autorizou esta ação.";
+/// Esperando agentes em segundo plano, tanto tempo sem nenhuma saída do CLI fecha a entrada
+/// de mensagens: se o aviso de fim de um agente se perder, o processo não fica preso esperando
+/// o usuário. Fechar a entrada não interrompe agentes que ainda trabalham.
+const BACKGROUND_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 pub struct ClaudeCliEngine {
     cli: PathBuf,
@@ -176,11 +180,20 @@ impl ChatEngine for ClaudeCliEngine {
         let mut pending: HashMap<String, String> = HashMap::new();
         // Mensagens mandadas durante o turno que o CLI ainda não leu.
         let mut unread: HashSet<String> = HashSet::new();
+        // Subagentes em segundo plano ainda trabalhando: com eles, o processo segue vivo
+        // depois da resposta e continua aceitando mensagens do usuário.
+        let mut background: HashSet<String> = HashSet::new();
+        // A resposta terminou e o processo segue vivo só pelos agentes em segundo plano.
+        let mut awaiting = false;
         loop {
             tokio::select! {
                 _ = control.cancel.notified() => {
                     let _ = child.kill().await;
                     return TurnEnd::Cancelled;
+                }
+                // Reinicia a cada volta do laço: conta o tempo desde a última atividade.
+                _ = tokio::time::sleep(BACKGROUND_IDLE), if awaiting && stdin.is_some() && unread.is_empty() => {
+                    stdin = None;
                 }
                 Some(decision) = control.decisions.recv() => {
                     if let Some(input) = pending.remove(&decision.request_id) {
@@ -205,12 +218,32 @@ impl ChatEngine for ClaudeCliEngine {
                             }
                             // Só interessa o eco das mensagens mandadas no meio do turno.
                             TurnEvent::UserRead(id) if !unread.remove(id) => continue,
-                            // Uma mensagem que chegou no fim vira mais uma resposta no mesmo processo.
-                            TurnEvent::Result { .. } if unread.is_empty() => stdin = None,
+                            TurnEvent::Subagent { parent, step: SubagentStep::Started { background: true, .. } } => {
+                                background.insert(parent.clone());
+                            }
+                            TurnEvent::Subagent { parent, step: SubagentStep::Finished { .. } } => {
+                                background.remove(parent);
+                            }
                             _ => {}
+                        }
+                        // Uma mensagem que chegou no fim vira mais uma resposta no mesmo processo; e,
+                        // com agentes em segundo plano, o usuário segue conversando enquanto eles trabalham.
+                        // Quando o último termina, o CLI responde ao aviso dele e o turno fecha nesse resultado.
+                        let answered = matches!(event, TurnEvent::Result { .. }) && unread.is_empty();
+                        let waiting = answered && !background.is_empty();
+                        if answered {
+                            awaiting = waiting;
+                            if !waiting {
+                                stdin = None;
+                            }
                         }
                         observed.record(&event);
                         on_event(&event);
+                        if waiting {
+                            // O que veio até aqui já foi gravado; o fim do turno traz só o que vier depois.
+                            observed.streamed.clear();
+                            on_event(&TurnEvent::AwaitingBackground);
+                        }
                     }
                 }
             }

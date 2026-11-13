@@ -11,6 +11,8 @@ export interface Turn {
   status: string | null;
   account: string | null;
   context: string[];
+  /** A resposta terminou; só subagentes em segundo plano seguem trabalhando, e dá para conversar. */
+  waiting: boolean;
 }
 
 /** Como terminou o último turno, quando não foi com uma resposta. */
@@ -211,7 +213,7 @@ export async function send(text: string, options: SendOptions = {}): Promise<voi
 /** Inicia o turno de uma conversa que já existe (aberta ou não). */
 async function deliver(id: string, text: string, attachments: string[], images: PastedImage[]): Promise<void> {
   chat.outcomes[id] = null;
-  chat.turns[id] = { text: "", status: null, account: null, context: [] };
+  chat.turns[id] = { text: "", status: null, account: null, context: [], waiting: false };
   if (chat.activeId === id) {
     const sent = localMessage("user", text || "Veja as imagens anexadas.");
     const names = [...attachments.map(fileName), ...images.map((i) => i.name)];
@@ -230,9 +232,10 @@ const imagesOnly = (images: QueuedMessage["images"]): PastedImage[] =>
   images.map(({ name, media_type, data }) => ({ name, media_type, data }));
 
 /** Põe a mensagem na fila da conversa enquanto o agente trabalha. */
-export function enqueue(id: string, text: string, attachments: string[], images: QueuedMessage["images"]): void {
+export function enqueue(id: string, text: string, attachments: string[], images: QueuedMessage["images"]): string {
   const item: QueuedMessage = { id: crypto.randomUUID(), text, attachments, images, sending: false, waitsForEnd: false };
   chat.queued[id] = [...(chat.queued[id] ?? []), item];
+  return item.id;
 }
 
 export function unqueue(id: string, messageId: string): void {
@@ -317,7 +320,10 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 /** Eventos que indicam um turno em andamento, mesmo que iniciado por outra janela. */
-const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "agent_step", "tool", "step", "permission"]);
+const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "agent_step", "tool", "step", "permission", "waiting"]);
+
+/** Eventos do agente principal: um deles depois da espera significa que ele voltou a trabalhar. */
+const MAIN_ACTIVITY = new Set<ChatEvent["kind"]>(["delta", "thinking", "tool", "permission", "injected"]);
 
 const SUBAGENT_PREFIX = "Subagente: ";
 const SUBAGENT_MAX = 90;
@@ -329,13 +335,25 @@ function subagentStatus(current: string | null, delta: string): string {
   return SUBAGENT_PREFIX + (text.length > SUBAGENT_MAX ? "…" + text.slice(-SUBAGENT_MAX) : text);
 }
 
+/** O texto em andamento foi gravado: some do turno e passa a vir da lista de mensagens. */
+function takeRecorded(id: string): void {
+  const turn = chat.turns[id];
+  if (turn) turn.text = "";
+  if (chat.activeId !== id) return;
+  void api.listMessages(id).then((messages) => {
+    // A resposta de uma conversa que o usuário já deixou não substitui a aberta.
+    if (chat.activeId === id) chat.messages = messages;
+  });
+}
+
 /** Aplica ao estado um evento vindo do núcleo. */
 export function handleChatEvent(event: ChatEvent): void {
   const id = event.conversation_id;
   if (!chat.turns[id] && TURN_ACTIVITY.has(event.kind)) {
-    chat.turns[id] = { text: "", status: null, account: null, context: [] };
+    chat.turns[id] = { text: "", status: null, account: null, context: [], waiting: false };
   }
   const turn = chat.turns[id];
+  if (turn?.waiting && MAIN_ACTIVITY.has(event.kind)) turn.waiting = false;
   switch (event.kind) {
     case "title": {
       const conversation = chat.conversations.find((c) => c.id === id);
@@ -360,6 +378,14 @@ export function handleChatEvent(event: ChatEvent): void {
     case "subagent":
       if (turn) turn.status = subagentStatus(turn.status, event.text);
       break;
+    case "waiting":
+      // A resposta foi gravada; só os agentes em segundo plano seguem trabalhando.
+      if (turn) {
+        turn.waiting = true;
+        turn.status = null;
+      }
+      takeRecorded(id);
+      break;
     case "agent_step":
       applySubagentStep(id, event.parent, event.step);
       break;
@@ -368,14 +394,12 @@ export function handleChatEvent(event: ChatEvent): void {
       break;
     case "step":
       // Um trecho de texto ou uso de ferramenta foi gravado: passa a vir da lista de mensagens.
-      if (turn) turn.text = "";
-      if (chat.activeId === id) void api.listMessages(id).then((messages) => (chat.messages = messages));
+      takeRecorded(id);
       break;
     case "injected":
       // O agente leu a mensagem: ela sai da fila e passa a vir da lista de mensagens.
       chat.queued[id] = (chat.queued[id] ?? []).filter((m) => m.id !== event.id);
-      if (turn) turn.text = "";
-      if (chat.activeId === id) void api.listMessages(id).then((messages) => (chat.messages = messages));
+      takeRecorded(id);
       break;
     case "permission":
       chat.permissions[id] = { requestId: event.request_id, tool: event.tool, input: event.input };

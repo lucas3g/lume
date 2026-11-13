@@ -61,6 +61,8 @@ pub enum ChatEvent {
     Thinking { text: String },
     /// Andamento de um subagente (texto que ele produziu).
     Subagent { text: String },
+    /// Resposta pronta; só subagentes em segundo plano seguem trabalhando, e o usuário pode escrever.
+    Waiting { text: String },
     /// Passo de um subagente, para acompanhar o que ele faz; `parent` é a chamada que o criou.
     AgentStep { parent: String, step: SubagentStep },
     Tool { name: String },

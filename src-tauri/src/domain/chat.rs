@@ -102,6 +102,9 @@ pub enum TurnEvent {
     Thinking(String),
     /// Texto produzido por um subagente, para acompanhar o andamento.
     SubagentDelta(String),
+    /// A resposta terminou, mas subagentes em segundo plano seguem trabalhando no mesmo
+    /// processo, que continua aceitando mensagens do usuário.
+    AwaitingBackground,
     /// Passo de um subagente; `parent` é o id da chamada da ferramenta que o criou.
     Subagent {
         parent: String,

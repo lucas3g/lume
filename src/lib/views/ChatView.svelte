@@ -260,13 +260,31 @@
     draft = "";
   }
 
-  async function copyText(text: string) {
+  /** Resposta copiada há pouco, para o botão confirmar. */
+  let copiedId = $state<number | null>(null);
+  let answerCopiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function copyText(text: string, messageId?: number) {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      /* sem área de transferência disponível */
+      return; // sem área de transferência disponível
     }
+    if (messageId === undefined) return;
+    copiedId = messageId;
+    clearTimeout(answerCopiedTimer);
+    answerCopiedTimer = setTimeout(() => (copiedId = null), 1500);
   }
+
+  /** Por que uma mensagem ainda está na fila. */
+  function queueNote(waitsForEnd: boolean): string {
+    if (!turn) return "Na fila";
+    if (turn.waiting) return waitsForEnd ? "Este serviço só lê quando os agentes em segundo plano terminarem" : "Na fila · vai quando os agentes em segundo plano terminarem";
+    return waitsForEnd ? "Este serviço só lê ao fim da resposta" : "Na fila · vai quando a resposta terminar";
+  }
+
+  /** A última resposta mostra as ações sempre; as anteriores, ao passar o mouse. */
+  const lastAssistantId = $derived(chat.messages.findLast((m) => m.role === "assistant")?.id ?? null);
 
   /** Ramo com tudo até esta mensagem, inclusive. */
   const branchAfter = (message: Message) => branchAt(message.id + 1);
@@ -301,12 +319,16 @@
     const text = draft.trim();
     const files = attachments;
     const images = pasted.map(({ name, media_type, data }) => ({ name, media_type, data }));
-    // Com o agente trabalhando, a mensagem entra na fila e sai quando ele terminar (ou em "Enviar agora").
+    // Com o agente trabalhando, a mensagem é entregue já e ele a lê no próximo passo, como no
+    // Claude Desktop. Serviços que só leem ao fim da resposta a deixam na fila até lá.
     if (turn && chat.activeId) {
-      enqueue(chat.activeId, text, files, pasted);
+      const id = chat.activeId;
+      const queuedId = enqueue(id, text, files, pasted);
       draft = "";
       attachments = [];
       pasted = [];
+      saveDraft(draftKey, { text: "", attachments: [], pasted: [] });
+      await sendNow(id, queuedId);
       return;
     }
     draft = "";
@@ -511,15 +533,13 @@
                 <div class="context" title={titles.join("\n")}>{contextLabel(titles.length)}</div>
               {/if}
               <div class="markdown">{@html renderMarkdown(message.content)}</div>
-              {#if !turn}
-                <div class="msg-actions">
-                  <button type="button" onclick={() => copyText(message.content)}>Copiar</button>
-                  {#if message.id > 0}
-                    <button type="button" onclick={() => regenerate(message)}>Regenerar</button>
-                    <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
-                  {/if}
-                </div>
-              {/if}
+              <div class="msg-actions" class:shown={message.id === lastAssistantId && (!turn || turn.waiting)}>
+                <button type="button" onclick={() => copyText(message.content, message.id)}>{copiedId === message.id ? "Copiado" : "Copiar"}</button>
+                {#if !turn && message.id > 0}
+                  <button type="button" onclick={() => regenerate(message)}>Regenerar</button>
+                  <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
+                {/if}
+              </div>
               {#each extractArtifacts(message.content) as artifact (artifact.code)}
                 <button type="button" class="artifact" onclick={() => (openArtifact = artifact)}>
                   <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-text)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5" /></svg>
@@ -541,7 +561,7 @@
             {#if turn.text}
               <div class="markdown">{@html renderMarkdown(turn.text)}</div>
             {/if}
-            {#if turn.status || !turn.text}
+            {#if !turn.waiting && (turn.status || !turn.text)}
               <div class="working"><span class="pulse" aria-hidden="true"></span>{turn.status ?? "Respondendo"}…</div>
             {/if}
           </div>
@@ -576,7 +596,7 @@
               {#if item.sending}
                 <span class="muted small">Entregue · o agente lê no próximo passo</span>
               {:else}
-                <span class="muted small">{item.waitsForEnd ? "Este serviço só lê ao fim da resposta" : turn ? "Na fila · vai quando a resposta terminar" : "Na fila"}</span>
+                <span class="muted small">{queueNote(item.waitsForEnd)}</span>
                 <button type="button" class="btn small" title="Remover da fila" onclick={() => chat.activeId && unqueue(chat.activeId, item.id)}>Remover</button>
                 {#if !item.waitsForEnd || !turn}
                   <button type="button" class="btn small primary" title="O agente lê esta mensagem já, sem parar o que está fazendo" onclick={() => chat.activeId && sendNow(chat.activeId, item.id)}>Enviar agora</button>
@@ -657,17 +677,14 @@
               <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
             <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos · cole imagens aqui" bind:value={draft} onkeydown={onKeydown} onpaste={onPaste}></textarea>
-            {#if turn && canSend}
-              <button type="button" class="send" aria-label="Pôr na fila" title="Pôr na fila (Enter): vai quando a resposta terminar" onclick={submit}>
-                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
-              </button>
-            {/if}
+            <!-- Parar fica sempre à mão durante o trabalho; com texto digitado, Enviar aparece ao lado. -->
             {#if turn}
-              <button type="button" class="send stop" aria-label="Parar a resposta" title="Parar" onclick={cancel}>
+              <button type="button" class="send stop" aria-label="Parar a resposta" title={turn.waiting ? "Parar os agentes em segundo plano" : "Parar"} onclick={cancel}>
                 <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5" /></svg>
               </button>
-            {:else if canSend}
-              <button type="button" class="send" aria-label="Enviar" title="Enviar (Enter)" onclick={submit}>
+            {/if}
+            {#if canSend}
+              <button type="button" class="send" aria-label="Enviar" title={turn ? "Enviar (Enter) · o agente lê no próximo passo" : "Enviar (Enter)"} onclick={submit}>
                 <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
               </button>
             {/if}
@@ -788,7 +805,7 @@
   .lightbox-bar button { min-height: 28px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 8px; background: rgba(255, 255, 255, 0.1); color: #fff; font-size: 12.5px; }
   .lightbox-bar button:hover { background: rgba(255, 255, 255, 0.2); }
   .msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
-  .user-wrap:hover .msg-actions, .user-wrap:focus-within .msg-actions, .assistant:hover .msg-actions, .assistant:focus-within .msg-actions { opacity: 1; }
+  .user-wrap:hover .msg-actions, .user-wrap:focus-within .msg-actions, .assistant:hover .msg-actions, .assistant:focus-within .msg-actions, .msg-actions.shown { opacity: 1; }
   .msg-actions button { min-height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; font-size: 12px; color: var(--muted); }
   .msg-actions button:hover { background: var(--hover); color: var(--text); }
   .editing { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--muted); }

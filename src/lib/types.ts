@@ -122,6 +122,7 @@ export type ChatEvent = { conversation_id: string } & (
   | { kind: "thinking"; text: string }
   | { kind: "subagent"; text: string }
   | { kind: "agent_step"; parent: string; step: SubagentStep }
+  | { kind: "waiting"; text: string }
   | { kind: "tool"; name: string }
   | { kind: "step" }
   | { kind: "injected"; id: string }

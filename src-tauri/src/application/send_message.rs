@@ -53,6 +53,10 @@ struct Journal {
     /// Chamadas que criaram subagentes neste turno; as demais tarefas (ex.: comandos
     /// em segundo plano) também mandam andamento e fim, que não interessam.
     subagents: HashSet<String>,
+    /// Sessão aberta pelo provedor neste turno.
+    session: Option<String>,
+    /// A resposta já foi entregue e gravada; o processo segue só pelos agentes em segundo plano.
+    answered: bool,
 }
 
 impl Journal {
@@ -161,10 +165,30 @@ impl SendMessage {
             let end = self
                 .engine
                 .run_turn(&request, &mut control, &mut |event| {
-                    self.forward(conversation_id, &account.id, &mut journal, &answer, &pending_users, event)
+                    self.forward(conversation_id, &account, &mut journal, &answer, &pending_users, event)
                 })
                 .await;
 
+            // Com a resposta já entregue, um limite ou login vencido no fim (enquanto os agentes
+            // em segundo plano terminavam) não refaz a pergunta em outra conta: ela já foi respondida.
+            if journal.answered && matches!(end, TurnEnd::Limited { .. } | TurnEnd::AuthError(_)) {
+                let notice = match end {
+                    TurnEnd::Limited { resets_at } => {
+                        self.accounts.set_limited(&account.id, Some(resets_at.unwrap_or(now + DEFAULT_LIMIT_SECONDS)))?;
+                        format!("A conta {} atingiu o limite antes de os agentes em segundo plano terminarem.", account.name)
+                    }
+                    _ => {
+                        self.accounts.set_auth(&account.id, false)?;
+                        format!("A conta {} precisa de novo login; os agentes em segundo plano não terminaram.", account.name)
+                    }
+                };
+                self.events.accounts_changed();
+                self.record_segment(conversation_id, &account.id, &mut journal);
+                self.conversations.add_message(conversation_id, ROLE_NOTICE, &notice, None, None)?;
+                self.emit(conversation_id, ChatEvent::Notice { text: notice });
+                self.emit(conversation_id, ChatEvent::Done { text: String::new() });
+                return Ok(());
+            }
             match end {
                 TurnEnd::Done { session_id, text } => {
                     self.record_unanswered_calls(conversation_id, &account.id, &mut journal);
@@ -304,12 +328,13 @@ impl SendMessage {
     fn forward(
         &self,
         conversation_id: &str,
-        account_id: &str,
+        account: &Account,
         journal: &mut Journal,
         answer: &UnboundedSender<PermissionDecision>,
         pending_users: &PendingUsers,
         event: &TurnEvent,
     ) {
+        let account_id = account.id.as_str();
         match event {
             TurnEvent::Delta(text) => {
                 journal.segment.push_str(text);
@@ -354,6 +379,19 @@ impl SendMessage {
                 }
                 self.emit(conversation_id, ChatEvent::AgentStep { parent: parent.clone(), step });
             }
+            TurnEvent::AwaitingBackground => {
+                // A resposta já está completa: vira mensagem (copiável) enquanto os agentes trabalham.
+                let text = journal.segment.clone();
+                self.record_unanswered_calls(conversation_id, account_id, journal);
+                self.record_segment(conversation_id, account_id, journal);
+                // A sessão fica guardada já: parar os agentes ou fechar o app não a perde.
+                if let Some(session) = &journal.session {
+                    let _ = self.conversations.update(conversation_id, None, Some(session), None);
+                    let _ = self.conversations.set_session_provider(conversation_id, account.provider);
+                }
+                journal.answered = true;
+                self.emit(conversation_id, ChatEvent::Waiting { text });
+            }
             TurnEvent::Tool(name) => self.emit(conversation_id, ChatEvent::Tool { name: name.clone() }),
             TurnEvent::Rate(rate) => {
                 if self.accounts.set_usage(account_id, rate).is_ok() {
@@ -382,7 +420,8 @@ impl SendMessage {
                     }
                 }
             }
-            TurnEvent::Session(_) | TurnEvent::ApiError(_) | TurnEvent::Result { .. } => {}
+            TurnEvent::Session(id) => journal.session = Some(id.clone()),
+            TurnEvent::ApiError(_) | TurnEvent::Result { .. } => {}
         }
     }
 }
@@ -501,6 +540,32 @@ mod tests {
         let shown: Vec<(&str, &str)> = messages.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect();
         assert_eq!(shown, [("user", "olá"), ("assistant", "Vou começar."), ("user", "diga BANANA"), ("assistant", "Feito, com BANANA.")]);
         assert!(world.events.chat_events().contains(&ChatEvent::Injected { id: "primeira".into() }));
+    }
+
+    #[tokio::test]
+    async fn answer_with_background_agents_is_kept_even_if_the_account_runs_out() {
+        let world = World::with_accounts(vec![sample("pessoal", 1), sample("trabalho", 2)]);
+        let engine = ScriptedEngine::new(|_, call| {
+            assert_eq!(call, 1, "a pergunta já respondida não vai para outra conta");
+            let events = vec![
+                TurnEvent::Session("s1".into()),
+                TurnEvent::Delta("Agente lançado.".into()),
+                TurnEvent::AwaitingBackground,
+            ];
+            (events, TurnEnd::Limited { resets_at: Some(5000) })
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
+
+        let messages = world.store.messages("c1").unwrap();
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "notice"]);
+        assert_eq!(messages[1].content, "Agente lançado.");
+        assert_eq!(world.conversation("c1").cli_session_id.as_deref(), Some("s1"), "a sessão foi guardada na espera");
+        assert_eq!(world.store.all().unwrap()[0].limited_until, Some(5000));
+        let events = world.events.chat_events();
+        assert!(events.contains(&ChatEvent::Waiting { text: "Agente lançado.".into() }));
+        assert!(events.contains(&ChatEvent::Done { text: String::new() }));
     }
 
     #[tokio::test]

@@ -55,6 +55,8 @@ fn notice_for(event: &ChatEvent) -> Option<(&'static str, String)> {
     };
     match event {
         ChatEvent::Done { text } => Some(("Resposta pronta", short(text))),
+        // A resposta já pode ser lida e respondida, mesmo com agentes ainda trabalhando.
+        ChatEvent::Waiting { text } => Some(("Resposta pronta · agentes seguem em segundo plano", short(text))),
         ChatEvent::Permission { tool, description, .. } if tool == "AskUserQuestion" => {
             Some(("O agente tem uma pergunta", short(description)))
         }
