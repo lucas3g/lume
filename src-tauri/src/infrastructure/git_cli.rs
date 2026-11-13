@@ -133,6 +133,11 @@ impl VersionControl for GitCli {
         }
         git_or_error(root, &["worktree", "add", "-b", branch, path]).map(|_| ())
     }
+
+    fn worktrees(&self, root: &str) -> AppResult<Vec<String>> {
+        let listing = git(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+        Ok(listing.lines().filter_map(|l| l.strip_prefix("worktree ")).map(str::to_owned).collect())
+    }
 }
 
 #[cfg(test)]
@@ -179,6 +184,13 @@ mod tests {
         assert!(GitCli.diff(&root, "a.txt").unwrap().contains("+três"));
         assert!(GitCli.commit(&root, "Segundo").is_ok());
         assert!(GitCli.commit(&root, "Nada a registrar").is_err());
+
+        assert_eq!(GitCli.worktrees(&root).unwrap().len(), 1, "só a cópia principal");
+        let branch_dir = dir.with_file_name(format!("{}-ramo", dir.file_name().unwrap().to_string_lossy()));
+        GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo").unwrap();
+        assert_eq!(GitCli.worktrees(&root).unwrap().len(), 2);
+        assert!(GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo").is_err(), "nome repetido é recusado");
+        fs::remove_dir_all(&branch_dir).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 }

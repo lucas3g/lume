@@ -10,7 +10,7 @@ use crate::domain::{
 };
 use std::sync::Arc;
 
-const NEW_SESSION_TITLE: &str = "Nova sessão";
+pub const NEW_SESSION_TITLE: &str = "Nova sessão";
 
 pub struct ManageProjects {
     pub projects: Arc<dyn ProjectRepository>,
@@ -27,10 +27,21 @@ impl ManageProjects {
     pub fn start_isolated_session(&self, project_id: &str, model: &str) -> AppResult<Conversation> {
         let project = self.projects.get(project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
         let folder = project.folder.ok_or_else(|| AppError("Só projetos com pasta têm sessões isoladas.".into()))?;
-        let existing = self.conversations.list()?.iter().filter(|c| c.project_id.as_deref() == Some(project_id) && normalize_folder(&c.cwd) != folder).count();
-        let name = format!("{}-ramo-{}", folder_name(&folder), existing + 1);
+        // Nomes já usados: pastas de outras sessões e cópias que ainda existem em disco
+        // (a conversa pode ter sido apagada sem a cópia ter sido removida).
+        let mut taken: Vec<String> = self.conversations.list()?.iter().map(|c| normalize_folder(&c.cwd)).collect();
+        taken.extend(self.vcs.worktrees(&folder)?.iter().map(|w| normalize_folder(w)));
         let parent = normalize_folder(&folder).rsplit_once(['/', '\\']).map(|(p, _)| p.to_owned()).unwrap_or_default();
-        let path = format!("{parent}/{name}");
+        let base = folder_name(&folder);
+        let mut n = 1;
+        let (name, path) = loop {
+            let name = format!("{base}-ramo-{n}");
+            let path = format!("{parent}/{name}");
+            if !taken.contains(&path) {
+                break (name, path);
+            }
+            n += 1;
+        };
         self.vcs.add_worktree(&folder, &path, &format!("lume/{name}"))?;
         let id = self.ids.new_id();
         self.conversations.insert(&id, &format!("Sessão isolada · {name}"), model, &path, KIND_AGENT, None)?;
@@ -208,6 +219,10 @@ mod tests {
         assert_eq!(second.cwd, "/tmp/loja-ramo-2");
         let asked = vcs.commits.lock().unwrap().clone();
         assert_eq!(asked[0], ("/tmp/loja".to_owned(), "worktree /tmp/loja-ramo-1 lume/loja-ramo-1".to_owned()));
+
+        // Apagar a conversa não apaga a cópia em disco: o nome dela não pode ser reutilizado.
+        ConversationRepository::delete(&*world.store, &session.id).unwrap();
+        assert_eq!(uc.start_isolated_session(&project.id, "opus").unwrap().cwd, "/tmp/loja-ramo-3");
     }
 
     #[test]

@@ -30,7 +30,8 @@
   const WEEKDAYS = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
 
   function repeatFromForm(): Repeat {
-    const [h, m] = time.split(":").map(Number);
+    // Campo de hora vazio: o núcleo recusa a cadência com uma mensagem clara em vez de receber NaN.
+    const [h = -1, m = -1] = time ? time.split(":").map(Number) : [];
     if (kind === "every_minutes") return { kind, minutes: Number(minutes) };
     if (kind === "daily") return { kind, hour: h, minute: m };
     return { kind, weekday: Number(weekday), hour: h, minute: m };

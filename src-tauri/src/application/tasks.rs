@@ -50,13 +50,19 @@ impl ManageTasks {
             Some(id) => self.tasks.get(id)?,
             None => None,
         };
+        // Mudar nome, prompt ou modelo não reinicia a contagem até a próxima rodada.
+        let same_cadence = existing.as_ref().filter(|t| t.repeat == input.repeat && t.tz_offset_minutes == input.tz_offset_minutes);
+        let next_run_at = match same_cadence {
+            Some(t) => t.next_run_at,
+            None => next_run(&input.repeat, now, input.tz_offset_minutes),
+        };
         let task = Task {
             id: input.id.unwrap_or_else(|| self.ids.new_id()),
             name: name.to_owned(),
             prompt: input.prompt.trim().to_owned(),
             project_id: input.project_id,
             model: input.model,
-            next_run_at: next_run(&input.repeat, now, input.tz_offset_minutes),
+            next_run_at,
             repeat: input.repeat,
             tz_offset_minutes: input.tz_offset_minutes,
             enabled: existing.as_ref().is_none_or(|t| t.enabled),
@@ -172,6 +178,11 @@ mod tests {
         assert_eq!(prompt, "Resuma o dia.");
         let saved = uc.list().unwrap().remove(0);
         assert_eq!((saved.last_run_at, saved.next_run_at), (Some(1000), 2800));
+
+        let renamed = uc.save(TaskInput { id: Some(task.id.clone()), name: "Resumo do dia".into(), ..input(None) }).unwrap();
+        assert_eq!((renamed.next_run_at, renamed.last_run_at), (2800, Some(1000)), "editar sem mudar a cadência mantém a próxima rodada");
+        let hourly = uc.save(TaskInput { id: Some(task.id.clone()), repeat: Repeat::EveryMinutes { minutes: 60 }, ..input(None) }).unwrap();
+        assert_eq!(hourly.next_run_at, 1000 + 3600, "mudar a cadência reagenda");
 
         uc.delete(&task.id).unwrap();
         assert!(uc.list().unwrap().is_empty());

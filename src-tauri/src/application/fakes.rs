@@ -276,6 +276,13 @@ impl VersionControl for FakeVcs {
         self.commits.lock().unwrap().push((root.to_owned(), format!("worktree {path} {branch}")));
         Ok(())
     }
+    /// As cópias pedidas continuam em disco mesmo depois de a conversa delas sumir.
+    fn worktrees(&self, root: &str) -> AppResult<Vec<String>> {
+        let asked = self.commits.lock().unwrap();
+        Ok(std::iter::once(root.to_owned())
+            .chain(asked.iter().filter_map(|(_, m)| m.strip_prefix("worktree ")).filter_map(|m| m.split(' ').next()).map(str::to_owned))
+            .collect())
+    }
 }
 
 /// Catálogo de plugins em memória; instalar e remover só mudam o estado e ficam no registro.

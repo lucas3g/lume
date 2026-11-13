@@ -57,19 +57,6 @@ fn parse_iso_utc(text: &str) -> Option<i64> {
     Some(days * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_iso_utc;
-
-    #[test]
-    fn parses_iso_dates_from_auth_status() {
-        assert_eq!(parse_iso_utc("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_iso_utc("2026-12-12T03:41:12.461Z"), Some(1_797_046_872));
-        assert_eq!(parse_iso_utc("2026-11-13T01:27:24Z"), Some(1_794_533_244));
-        assert_eq!(parse_iso_utc("ontem"), None);
-    }
-}
-
 #[async_trait]
 impl AccountGateway for ClaudeCliAccounts {
     fn prepare_profile(&self, account_id: &str) -> AppResult<String> {
@@ -121,5 +108,18 @@ impl AccountGateway for ClaudeCliAccounts {
         }
         let detail = String::from_utf8_lossy(&output.stderr);
         Err(AppError(format!("O login não foi concluído. {}", detail.trim())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_iso_utc;
+
+    #[test]
+    fn parses_iso_dates_from_auth_status() {
+        assert_eq!(parse_iso_utc("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_iso_utc("2026-12-12T03:41:12.461Z"), Some(1_797_046_872));
+        assert_eq!(parse_iso_utc("2026-11-13T01:27:24Z"), Some(1_794_533_244));
+        assert_eq!(parse_iso_utc("ontem"), None);
     }
 }

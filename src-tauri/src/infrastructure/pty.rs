@@ -1,6 +1,6 @@
 //! Terminais interativos com o shell do usuário, via pseudo-TTY.
 
-use crate::application::{ports::TerminalPort, AppError, AppResult};
+use crate::application::{ports::{TerminalOutput, TerminalPort}, AppError, AppResult};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::{
     collections::HashMap,
@@ -40,7 +40,7 @@ fn size(cols: u16, rows: u16) -> PtySize {
 }
 
 impl TerminalPort for PtyTerminals {
-    fn open(&self, id: &str, cwd: &str, cols: u16, rows: u16, on_output: Box<dyn Fn(&[u8]) + Send>) -> AppResult<()> {
+    fn open(&self, id: &str, cwd: &str, cols: u16, rows: u16, on_output: TerminalOutput) -> AppResult<()> {
         self.close(id);
         let pair = native_pty_system().openpty(size(cols, rows)).map_err(fail)?;
         let child = pair.slave.spawn_command(shell_command(cwd)).map_err(fail)?;

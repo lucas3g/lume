@@ -81,6 +81,7 @@ pub fn branch_conversation(app: App<'_>, id: String, before_message: i64) -> App
 #[tauri::command]
 pub fn delete_conversation(app: App<'_>, id: String) -> AppResult<()> {
     app.running.cancel(&id);
+    app.terminals.close(&id);
     app.conversations.delete(&id)
 }
 

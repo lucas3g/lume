@@ -14,8 +14,7 @@
   let host = $state<HTMLElement>();
   let error = $state<string | null>(null);
 
-  const decoder = new TextDecoder();
-
+  /** Bytes do terminal; o xterm decodifica UTF-8 por conta própria, mesmo com um caractere partido entre dois pacotes. */
   function decode(base64: string): Uint8Array {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
@@ -38,12 +37,14 @@
     term.open(host);
     fit.fit();
 
+    // O terminal tem o id da conversa; comparar com ele (e não com o id devolvido por
+    // `terminalOpen`) evita perder o que o shell escreve antes de a abertura responder.
     const sessionId = conversation.id;
     let terminalId: string | null = null;
     let closed = false;
 
     const stop = api.onTerminalOutput(({ id, data }) => {
-      if (id === terminalId) term.write(decoder.decode(decode(data)));
+      if (id === sessionId) term.write(decode(data));
     });
     void api
       .terminalOpen(sessionId, term.cols, term.rows)

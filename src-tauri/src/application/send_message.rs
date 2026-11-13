@@ -2,7 +2,9 @@
 //! continuar a mesma conversa na próxima conta disponível.
 
 use super::{
+    conversations::NEW_CONVERSATION_TITLE,
     flags,
+    projects::NEW_SESSION_TITLE,
     ports::{
         AccountRepository, ChatEngine, Clock, ConnectorRepository, ConversationRepository, EventSink, FileLoader,
         Settings, SkillRepository, SwitchLog,
@@ -86,11 +88,19 @@ impl SendMessage {
             .get(conversation_id)?
             .ok_or_else(|| AppError("Conversa não encontrada.".into()))?;
         let mut attachments = attachment_paths.iter().map(|p| self.files.load(p)).collect::<AppResult<Vec<_>>>()?;
+        let meta = user_meta(&attachments, attachment_paths, &pasted);
         attachments.extend(pasted);
-        let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
-        let title = self.store_user_message(&conversation, text, &names)?;
+        let title = self.store_user_message(&conversation, text, meta.as_deref())?;
         let setup = self.prepare.prepare(&conversation, text)?;
         let context_meta = self.announce_context(conversation_id, &setup.context_titles);
+        // Quem respondeu por último nesta conversa: poupar uma conta só é novidade se a conta mudou.
+        let last_account = self
+            .conversations
+            .messages(conversation_id)?
+            .iter()
+            .rev()
+            .find(|m| m.role == ROLE_ASSISTANT)
+            .and_then(|m| m.account_id.clone());
 
         let mut tried: Vec<String> = vec![];
         let mut previous: Option<(Account, Handoff)> = None;
@@ -103,14 +113,14 @@ impl SendMessage {
                 self.emit(conversation_id, ChatEvent::Exhausted { resets_at: earliest_reset(&all, now) });
                 return Ok(());
             };
-            // Na primeira tentativa, avisa se a conta da vez foi poupada por estar quase no limite.
-            let spared = pick_next(&all, now, &tried, false).filter(|a| a.id != account.id).cloned();
-            match (previous.take(), spared) {
-                (Some((from, reason)), _) => self.announce_switch(conversation_id, &title, &from, &account, reason)?,
-                (None, Some(from)) if tried.is_empty() => {
-                    self.announce_switch(conversation_id, &title, &from, &account, Handoff::NearLimit)?
+            if let Some((from, reason)) = previous.take() {
+                self.announce_switch(conversation_id, &title, &from, &account, reason)?;
+            } else if tried.is_empty() {
+                // Na primeira tentativa, avisa se a conta da vez foi poupada por estar quase no limite.
+                let spared = pick_next(&all, now, &tried, false).filter(|a| a.id != account.id);
+                if let Some(from) = spared.filter(|_| last_account.as_deref() != Some(account.id.as_str())) {
+                    self.announce_switch(conversation_id, &title, &from.clone(), &account, Handoff::NearLimit)?;
                 }
-                _ => {}
             }
             self.emit(conversation_id, ChatEvent::Account { id: account.id.clone(), name: account.name.clone() });
             tried.push(account.id.clone());
@@ -196,12 +206,13 @@ impl SendMessage {
         self.events.chat(conversation_id, event);
     }
 
-    /// Grava a mensagem do usuário e dá título à conversa na primeira mensagem.
-    fn store_user_message(&self, conversation: &Conversation, text: &str, attachments: &[&str]) -> AppResult<String> {
+    /// Grava a mensagem do usuário e dá título à conversa na primeira mensagem,
+    /// a não ser que ela já tenha um título próprio (ex.: a rodada de uma tarefa agendada).
+    fn store_user_message(&self, conversation: &Conversation, text: &str, meta: Option<&str>) -> AppResult<String> {
         let first = self.conversations.message_count(&conversation.id)? == 0;
-        let meta = (!attachments.is_empty()).then(|| serde_json::json!({ "attachments": attachments }).to_string());
-        self.conversations.add_message(&conversation.id, ROLE_USER, text, None, meta.as_deref())?;
-        if !first {
+        self.conversations.add_message(&conversation.id, ROLE_USER, text, None, meta)?;
+        let untitled = [NEW_CONVERSATION_TITLE, NEW_SESSION_TITLE].contains(&conversation.title.as_str());
+        if !first || !untitled {
             return Ok(conversation.title.clone());
         }
         let title = make_title(text);
@@ -331,6 +342,20 @@ impl SendMessage {
             TurnEvent::Session(_) | TurnEvent::ApiError(_) | TurnEvent::Result { .. } => {}
         }
     }
+}
+
+/// Registro dos anexos na mensagem do usuário: nomes para exibir e o necessário
+/// para reenviar (caminhos dos arquivos e conteúdo das imagens coladas).
+fn user_meta(files: &[Attachment], paths: &[String], pasted: &[Attachment]) -> Option<String> {
+    if files.is_empty() && pasted.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = files.iter().chain(pasted).map(|a| a.name.as_str()).collect();
+    let images: Vec<serde_json::Value> = pasted
+        .iter()
+        .map(|a| serde_json::json!({ "name": a.name, "media_type": a.media_type, "data": a.data }))
+        .collect();
+    Some(serde_json::json!({ "attachments": names, "paths": paths, "images": images }).to_string())
 }
 
 pub fn make_title(text: &str) -> String {
@@ -502,6 +527,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keeps_a_title_the_conversation_already_has() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        world.store.update("c1", Some("⏱ Resumo"), None, None).unwrap();
+        let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Done { session_id: None, text: "ok".into() }));
+        use_case(&world, engine).execute("c1", "Resuma o dia.", &[], vec![], TurnControl::new().0).await.unwrap();
+        assert_eq!(world.conversation("c1").title, "⏱ Resumo");
+        assert!(!world.events.chat_events().iter().any(|e| matches!(e, ChatEvent::Title { .. })));
+    }
+
+    #[tokio::test]
     async fn spares_the_account_near_its_limit_and_says_so() {
         let world = World::with_accounts(vec![sample("a", 1), sample("b", 2)]);
         world.store.set_usage("a", Some(0.98), None, Some(5000)).unwrap();
@@ -513,6 +548,12 @@ mod tests {
         let messages = world.store.messages("c1").unwrap();
         assert_eq!(messages[1].content, "A conta a está quase no limite · usando b");
         assert_eq!(messages[2].account_id.as_deref(), Some("b"));
+
+        let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Done { session_id: None, text: "ok".into() }));
+        use_case(&world, engine).execute("c1", "mais", &[], vec![], TurnControl::new().0).await.unwrap();
+        let notices = world.store.messages("c1").unwrap().iter().filter(|m| m.role == ROLE_NOTICE).count();
+        assert_eq!(notices, 1, "a mesma conta seguir atendendo não é novidade");
+        assert_eq!(world.store.recent().unwrap().len(), 1);
 
         world.store.set_flag(flags::SWITCH_EARLY, false).unwrap();
         let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Done { session_id: None, text: "ok".into() }));
@@ -528,7 +569,9 @@ mod tests {
             (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })
         });
         use_case(&world, engine).execute("c1", "resuma", &["nota.md".into()], vec![], TurnControl::new().0).await.unwrap();
-        assert_eq!(world.store.messages("c1").unwrap()[0].meta.as_deref(), Some(r#"{"attachments":["nota.md"]}"#));
+        let meta: serde_json::Value = serde_json::from_str(world.store.messages("c1").unwrap()[0].meta.as_deref().unwrap()).unwrap();
+        assert_eq!(meta["attachments"][0], "nota.md");
+        assert_eq!(meta["paths"][0], "nota.md", "o caminho fica guardado para reenviar");
 
         let pasted = Attachment { name: "colada.png".into(), kind: AttachmentKind::Image, media_type: "image/png".into(), data: "AAAA".into() };
         let engine = ScriptedEngine::new(|req, _| {
@@ -537,7 +580,9 @@ mod tests {
             (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })
         });
         use_case(&world, engine).execute("c1", "veja", &["nota.md".into()], vec![pasted], TurnControl::new().0).await.unwrap();
-        assert!(world.store.messages("c1").unwrap()[2].meta.as_deref().unwrap().contains("colada.png"));
+        let meta: serde_json::Value = serde_json::from_str(world.store.messages("c1").unwrap()[2].meta.as_deref().unwrap()).unwrap();
+        assert_eq!(meta["attachments"][1], "colada.png");
+        assert_eq!(meta["images"][0]["data"], "AAAA", "a imagem colada fica guardada para reenviar");
 
         let missing = use_case(&world, ScriptedEngine::new(|_, _| unreachable!()))
             .execute("c1", "resuma", &["sumiu.txt".into()], vec![], TurnControl::new().0)

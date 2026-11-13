@@ -12,6 +12,8 @@ pub fn parse_line(line: &str) -> Vec<TurnEvent> {
         "stream_event" if !v["parent_tool_use_id"].is_null() => single(parse_subagent_event(&v["event"])),
         "stream_event" => single(parse_stream_event(&v["event"])),
         "rate_limit_event" => vec![TurnEvent::Rate(parse_rate(&v["rate_limit_info"]))],
+        // Mensagens de subagentes (com `parent_tool_use_id`) não são passos desta conversa.
+        "assistant" | "user" if !v["parent_tool_use_id"].is_null() => vec![],
         "assistant" => parse_assistant(&v),
         "user" => parse_tool_results(&v["message"]["content"]),
         "control_request" => single(parse_permission(&v)),
@@ -242,6 +244,10 @@ mod tests {
         assert_eq!(parse_line(line), [TurnEvent::SubagentDelta("lendo".into())]);
         let tool = r#"{"type":"stream_event","parent_tool_use_id":"t9","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}"#;
         assert!(parse_line(tool).is_empty(), "ferramentas do subagente não viram passos da conversa");
+        let call = r#"{"type":"assistant","parent_tool_use_id":"t9","message":{"content":[{"type":"tool_use","id":"u1","name":"Read","input":{}}]}}"#;
+        assert!(parse_line(call).is_empty(), "nem as chamadas completas do subagente");
+        let result = r#"{"type":"user","parent_tool_use_id":"t9","message":{"content":[{"type":"tool_result","tool_use_id":"u1","content":"x"}]}}"#;
+        assert!(parse_line(result).is_empty());
     }
 
     #[test]

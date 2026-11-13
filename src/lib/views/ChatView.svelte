@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open as pickFiles, save as pickSave } from "@tauri-apps/plugin-dialog";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { extractArtifacts, versionsOf, type Artifact } from "../artifacts";
   import ArtifactPanel from "../components/ArtifactPanel.svelte";
   import ContextRing from "../components/composer/ContextRing.svelte";
@@ -187,7 +187,7 @@
     const insert = workspace.composerInsert;
     if (!insert) return;
     workspace.composerInsert = null;
-    draft = draft.trim() ? `${draft.trimEnd()}\n\n${insert}` : insert;
+    untrack(() => (draft = draft.trim() ? `${draft.trimEnd()}\n\n${insert}` : insert));
   });
 
   function pickCommand(name: string) {
@@ -330,7 +330,7 @@
                 {/if}
                 {message.content}
               </div>
-              {#if !turn}
+              {#if !turn && message.id > 0}
                 <div class="msg-actions">
                   <button type="button" onclick={() => edit(message)}>Editar</button>
                 </div>
@@ -351,8 +351,10 @@
               {#if !turn}
                 <div class="msg-actions">
                   <button type="button" onclick={() => copyText(message.content)}>Copiar</button>
-                  <button type="button" onclick={() => regenerate(message)}>Regenerar</button>
-                  <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
+                  {#if message.id > 0}
+                    <button type="button" onclick={() => regenerate(message)}>Regenerar</button>
+                    <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
+                  {/if}
                 </div>
               {/if}
               {#each extractArtifacts(message.content) as artifact (artifact.code)}

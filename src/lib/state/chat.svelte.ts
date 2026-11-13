@@ -133,7 +133,18 @@ export async function branchAt(beforeMessage: number): Promise<string | null> {
 export async function regenerate(assistantMessage: Message): Promise<void> {
   const asked = [...chat.messages].reverse().find((m) => m.role === "user" && m.id < assistantMessage.id);
   if (!asked || !(await branchAt(asked.id))) return;
-  await send(asked.content);
+  await send(asked.content, resendOptions(asked));
+}
+
+/** Anexos guardados com a mensagem, para reenviá-la igual. */
+function resendOptions(message: Message): SendOptions {
+  if (!message.meta) return {};
+  try {
+    const meta = JSON.parse(message.meta) as { paths?: string[]; images?: PastedImage[] };
+    return { attachments: meta.paths ?? [], images: meta.images ?? [] };
+  } catch {
+    return {};
+  }
 }
 
 export function startEdit(message: Message): void {

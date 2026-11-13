@@ -45,7 +45,7 @@ impl ManageTerminals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::fakes::*;
+    use crate::application::{fakes::*, ports::TerminalOutput};
     use crate::domain::chat::KIND_AGENT;
     use std::sync::Mutex;
 
@@ -54,7 +54,7 @@ mod tests {
     struct FakeTerminal(Mutex<Vec<String>>);
 
     impl TerminalPort for FakeTerminal {
-        fn open(&self, id: &str, cwd: &str, cols: u16, rows: u16, on_output: Box<dyn Fn(&[u8]) + Send>) -> AppResult<()> {
+        fn open(&self, id: &str, cwd: &str, cols: u16, rows: u16, on_output: TerminalOutput) -> AppResult<()> {
             self.0.lock().unwrap().push(format!("open {id} {cwd} {cols}x{rows}"));
             on_output(b"$ ");
             Ok(())

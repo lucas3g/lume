@@ -10,7 +10,7 @@ use crate::application::{
     conversations::ManageConversations,
     extensions::{ManageAgents, ManageConnectors, ManageSkills},
     history::ManageHistory,
-    ports::{Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings, SwitchLog},
+    ports::{Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings, SwitchLog, VersionControl},
     projects::ManageProjects,
     send_message::SendMessage,
     store::BrowseStore,
@@ -90,6 +90,7 @@ impl Container {
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidGenerator);
         let store = Arc::new(SqliteStore::open(&data_dir.join("lume.db"), clock.clone())?);
         let notifier = Arc::new(TauriEvents::new(app.clone(), store.clone()));
+        let vcs: Arc<dyn VersionControl> = Arc::new(GitCli);
         let events: Arc<dyn EventSink> = notifier.clone();
         let index = Arc::new(SqliteHistoryIndex::new(store.clone(), main_config.join("projects"), desktop_dir));
         let skills = Arc::new(SqliteSkills::new(store.clone(), main_config.join("skills"), main_config.join("plugins")));
@@ -131,7 +132,7 @@ impl Container {
                 files: files.clone(),
                 ids: ids.clone(),
                 memory: Arc::new(FsMemory::new(main_config.join("projects"))),
-                vcs: Arc::new(GitCli),
+                vcs: vcs.clone(),
             },
             connectors: connectors.clone(),
             store: BrowseStore {
@@ -142,7 +143,7 @@ impl Container {
             workspace: ManageWorkspace {
                 conversations: store.clone(),
                 workspace: Arc::new(FsWorkspace),
-                vcs: Arc::new(GitCli),
+                vcs,
             },
             tasks: ManageTasks {
                 tasks: store.clone(),
