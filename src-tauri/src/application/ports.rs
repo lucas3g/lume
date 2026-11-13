@@ -189,6 +189,9 @@ pub trait Settings: Send + Sync {
     fn set_flag(&self, key: &str, value: bool) -> AppResult<()>;
     /// Configurações cujo nome começa com o prefixo: (nome, valor).
     fn flags_with_prefix(&self, prefix: &str) -> AppResult<Vec<(String, bool)>>;
+    /// Configuração de texto; `None` quando nunca foi gravada.
+    fn text(&self, key: &str) -> Option<String>;
+    fn set_text(&self, key: &str, value: &str) -> AppResult<()>;
 }
 
 /// Ouvinte dos eventos emitidos durante um turno.

@@ -1,7 +1,7 @@
 //! Comandos expostos à interface. Só traduzem a chamada para um caso de uso.
 
 use super::{windows, Container};
-use crate::application::{extensions::SkillView, flags, store::ServerPage, tasks::TaskInput, AppError, AppResult};
+use crate::application::{extensions::SkillView, flags, prefs, store::ServerPage, tasks::TaskInput, AppError, AppResult};
 use crate::domain::{
     account::{Account, Provider, ProviderInfo, UsageLimit},
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
@@ -318,6 +318,19 @@ pub fn set_flag(app: App<'_>, key: String, value: bool) -> AppResult<()> {
         return Err(AppError("Configuração desconhecida.".into()));
     }
     app.settings.set_flag(&key, value)
+}
+
+#[tauri::command]
+pub fn get_project_order(app: App<'_>) -> Option<String> {
+    app.settings.text(prefs::PROJECT_ORDER).filter(|v| prefs::PROJECT_ORDERS.contains(&v.as_str()))
+}
+
+#[tauri::command]
+pub fn set_project_order(app: App<'_>, order: String) -> AppResult<()> {
+    if !prefs::PROJECT_ORDERS.contains(&order.as_str()) {
+        return Err(AppError("Ordem desconhecida.".into()));
+    }
+    app.settings.set_text(prefs::PROJECT_ORDER, &order)
 }
 
 // ---- histórico

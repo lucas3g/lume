@@ -676,6 +676,22 @@ impl Settings for SqliteStore {
         )?;
         Ok(())
     }
+
+    fn text(&self, key: &str) -> Option<String> {
+        self.conn()
+            .query_row("SELECT value FROM settings WHERE key=?", [key], |r| r.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    fn set_text(&self, key: &str, value: &str) -> AppResult<()> {
+        self.conn().execute(
+            "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

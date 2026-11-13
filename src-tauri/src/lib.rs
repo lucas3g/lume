@@ -80,6 +80,8 @@ pub fn run() {
             commands::decide_permission,
             commands::get_flags,
             commands::set_flag,
+            commands::get_project_order,
+            commands::set_project_order,
             commands::history_status,
             commands::history_list,
             commands::history_reindex,

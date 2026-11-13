@@ -50,6 +50,13 @@ pub mod flags {
     pub const ALL: [&str; 5] = [AUTO_SWITCH, NOTIFY_SWITCH, USE_HISTORY, SWITCH_EARLY, NOTIFY_DESKTOP];
 }
 
+/// Preferências de interface guardadas como texto.
+pub mod prefs {
+    /// Ordem dos projetos na barra lateral: "recent", "name" ou "created".
+    pub const PROJECT_ORDER: &str = "project_order";
+    pub const PROJECT_ORDERS: [&str; 3] = ["recent", "name", "created"];
+}
+
 /// Eventos de uma conversa enviados à interface.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]

@@ -2,7 +2,7 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { formatTime, nowSeconds, percent } from "../format";
   import { accounts, stateOf } from "../state/accounts.svelte";
-  import { errorMessage } from "../api";
+  import { api, errorMessage } from "../api";
   import { chat, openConversation, removeConversation, startAgentSession, startIsolatedSession } from "../state/chat.svelte";
   import { projects } from "../state/projects.svelte";
   import type { Account, Conversation, Project, View } from "../types";
@@ -52,26 +52,51 @@
   const ORDER_LABEL: Record<ProjectOrder, string> = { recent: "Alterados recentemente", name: "Nome (A–Z)", created: "Ordem de criação" };
   const ORDER_KEY = "lume.projectOrder";
 
+  function isOrder(value: unknown): value is ProjectOrder {
+    return value === "recent" || value === "name" || value === "created";
+  }
   function savedOrder(): ProjectOrder {
     try {
       const saved = localStorage.getItem(ORDER_KEY);
-      return saved === "recent" || saved === "name" || saved === "created" ? saved : "created";
+      return isOrder(saved) ? saved : "created";
     } catch {
       return "created";
     }
   }
-  /** Ordem dos projetos na lista, lembrada neste computador. */
+  /** Ordem dos projetos na lista, gravada nas configurações do app. */
   let order = $state<ProjectOrder>(savedOrder());
   let ordering = $state(false);
+  /** Escolha feita antes de a gravada chegar não é desfeita por ela. */
+  let chosen = false;
+
+  api
+    .getProjectOrder()
+    .then((saved) => {
+      if (chosen) return;
+      if (isOrder(saved)) {
+        order = saved;
+        rememberLocally(saved);
+      } else if (order !== "created") {
+        // Escolha antiga, de quando só ficava no navegador: passa para as configurações.
+        api.setProjectOrder(order).catch(() => {});
+      }
+    })
+    .catch(() => {});
+
+  function rememberLocally(value: ProjectOrder) {
+    try {
+      localStorage.setItem(ORDER_KEY, value);
+    } catch {
+      // Sem armazenamento local vale a cópia das configurações.
+    }
+  }
 
   function chooseOrder(next: ProjectOrder) {
+    chosen = true;
     order = next;
     ordering = false;
-    try {
-      localStorage.setItem(ORDER_KEY, next);
-    } catch {
-      // Sem armazenamento local a escolha vale só até fechar o app.
-    }
+    rememberLocally(next);
+    api.setProjectOrder(next).catch(() => {});
   }
 
   /** Conversas agrupadas por projeto, na ordem escolhida; "Sem projeto" vem por último. */
