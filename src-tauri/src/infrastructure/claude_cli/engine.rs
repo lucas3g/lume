@@ -28,6 +28,9 @@ impl ClaudeCliEngine {
 
     fn command(&self, request: &TurnRequest) -> Command {
         let mut cmd = command(&self.cli, request.config_dir.as_deref());
+        // Sem isto o CLI conecta os conectores em segundo plano e a mensagem chega ao modelo
+        // antes deles: o assistente responde que não tem o Jira, o Gmail etc.
+        cmd.env("MCP_CONNECTION_NONBLOCKING", "false");
         cmd.args([
             "-p",
             "--input-format",

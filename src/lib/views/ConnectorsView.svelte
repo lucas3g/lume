@@ -90,6 +90,7 @@
     busy = c.name;
     error = notice = null;
     if (connect) notice = `Conclua o login de ${c.display_name} no navegador.`;
+    else if (c.source === "account") notice = `Desvincule ${c.display_name} na página de conectores do claude.ai, aberta no navegador.`;
     try {
       if (connect) {
         // O vínculo fica marcado fora da tela: o campo do código volta se o usuário sair e retornar.
@@ -99,22 +100,14 @@
           error = "Outro conector ainda espera o login. Conclua-o antes de vincular este.";
           return;
         }
-        // O login de um conector da conta só abre a página e termina na hora: o vínculo é feito
-        // no claude.ai, depois. Verifica de novo até ele aparecer conectado.
-        if (c.source === "account") {
-          const wait = new AbortController();
-          linkWait = wait;
-          try {
-            if (!(await waitLinked(c.name, wait.signal))) {
-              notice = null;
-              return;
-            }
-          } finally {
-            if (linkWait === wait) linkWait = null;
-          }
-        }
       } else {
         await api.unlinkConnector(c.name);
+      }
+      // Num conector da conta, vincular e desvincular só abrem a página: a mudança é feita
+      // no claude.ai, depois. Verifica de novo até ela aparecer na lista.
+      if (c.source === "account" && !(await waitAccountChange(c.name, connect))) {
+        notice = null;
+        return;
       }
       notice = null;
       await loadAccount();
@@ -126,7 +119,23 @@
     }
   }
 
-  /** Para de esperar o vínculo (o usuário desistiu do login no navegador). */
+  /** Espera, com Cancelar à mão, o conector da conta ficar vinculado (ou desvinculado). */
+  async function waitAccountChange(name: string, connect: boolean): Promise<boolean> {
+    const wait = new AbortController();
+    linkWait = wait;
+    try {
+      return await waitStatus(name, wait.signal, connect ? linkedStatus : unlinkedStatus);
+    } finally {
+      if (linkWait === wait) linkWait = null;
+    }
+  }
+
+  /** Vinculado: o conector aparece na lista e não pede mais login. */
+  const linkedStatus = (status: string | undefined) => status !== undefined && status !== "needs_auth";
+  /** Desvinculado: pede login de novo ou saiu da lista. */
+  const unlinkedStatus = (status: string | undefined) => status === undefined || status === "needs_auth";
+
+  /** Para de esperar o vínculo (o usuário desistiu da página no navegador). */
   function cancelLinkWait() {
     linkWait?.abort();
     notice = null;
@@ -148,9 +157,9 @@
     });
   }
 
-  /** Espera o conector da conta aparecer vinculado, verificando a lista de tempos em tempos.
-   * Devolve `false` se a espera foi cancelada ou a conta ativa mudou. */
-  async function waitLinked(name: string, signal: AbortSignal): Promise<boolean> {
+  /** Espera a situação do conector da conta satisfazer `done`, verificando a lista de tempos em
+   * tempos. Devolve `false` se a espera foi cancelada ou a conta ativa mudou. */
+  async function waitStatus(name: string, signal: AbortSignal, done: (status: string | undefined) => boolean): Promise<boolean> {
     const accountId = activeAccount()?.id ?? null;
     const deadline = Date.now() + LINK_TIMEOUT_MS;
     let delay = LINK_POLL_FIRST_MS;
@@ -159,11 +168,9 @@
       if (signal.aborted || (activeAccount()?.id ?? null) !== accountId) return false;
       await connectors.ensure(accountId);
       if (signal.aborted) return false;
-      // Só conta como vinculado quando o conector aparece na lista e não pede mais login;
-      // uma verificação que falhou ou veio sem ele não decide nada.
-      const status = connectors.error ? undefined : connectors.account.find((a) => a.name === name)?.status;
-      if (status !== undefined && status !== "needs_auth") return true;
-      if (Date.now() > deadline) throw new Error("O login não foi concluído em 5 minutos.");
+      // Uma verificação que falhou não decide nada.
+      if (!connectors.error && done(connectors.account.find((a) => a.name === name)?.status)) return true;
+      if (Date.now() > deadline) throw new Error("A mudança não apareceu em 5 minutos. Clique em Verificar de novo depois de concluí-la.");
       delay = Math.min(delay * 1.5, LINK_POLL_MAX_MS);
     }
   }
@@ -213,7 +220,7 @@
     {#if notice}
       <p class="muted small notice" role="status">
         {notice}
-        {#if linkWait}<button type="button" class="btn small" title="Parar de esperar o login no navegador" onclick={cancelLinkWait}>Cancelar</button>{/if}
+        {#if linkWait}<button type="button" class="btn small" title="Parar de esperar a página no navegador" onclick={cancelLinkWait}>Cancelar</button>{/if}
       </p>
     {/if}
     {#if logins.connector}<LoginCodeField scope="connector" />{/if}

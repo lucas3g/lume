@@ -84,11 +84,11 @@
           {/if}
         </span>
         {#if connected}
-          <button type="button" class="btn" disabled={busy} onclick={() => onlink(connector!, false)}>Desvincular</button>
+          <button type="button" class="btn" disabled={busy} onclick={() => onlink(connector!, false)}>{busy ? "Aguardando o claude.ai…" : "Desvincular"}</button>
         {:else}
           <button type="button" class="btn primary" disabled={busy} onclick={() => onlink(connector!, true)}>{busy ? "Aguardando o login…" : `Vincular ${connector.display_name}`}</button>
-          {#if busy && oncancel}<button type="button" class="btn" title="Parar de esperar o login no navegador" onclick={oncancel}>Cancelar</button>{/if}
         {/if}
+        {#if busy && oncancel}<button type="button" class="btn" title="Parar de esperar a página no navegador" onclick={oncancel}>Cancelar</button>{/if}
       </footer>
       <!-- A janela é modal: o campo do código precisa estar nela, não na página atrás. -->
       {#if logins.connector === connector.name}
