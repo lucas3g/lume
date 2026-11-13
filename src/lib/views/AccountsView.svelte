@@ -112,7 +112,7 @@
 </script>
 
 <div class="page">
-  <div class="page-inner">
+  <div class="page-inner wide">
     <header class="page-head">
       <div>
         <h1>Contas</h1>
@@ -189,17 +189,19 @@
           <div class="state">
             <span class={`pill ${STATE_CLASS[state]}`}>{STATE_LABEL[state]}</span>
             <span class="muted">{detail(a)}</span>
+            {#if (state === "login" || loginWarning(a)) && a.config_dir}
+              <button type="button" class="btn small enter" disabled={busy} onclick={() => run(() => api.loginAccountAgain(a.id))}>Entrar</button>
+            {/if}
           </div>
 
           <div class="row actions">
-            {#if (state === "login" || loginWarning(a)) && a.config_dir}
-              <button type="button" class="btn small" disabled={busy} onclick={() => run(() => api.loginAccountAgain(a.id))}>Entrar</button>
-            {/if}
             <Toggle checked={a.enabled} label={`Usar a conta ${a.name}`} onchange={(v) => run(() => api.setAccountEnabled(a.id, v))} />
             {#if a.config_dir}
               <button type="button" class="btn icon" aria-label={`Remover a conta ${a.name}`} disabled={busy} onclick={() => run(() => api.removeAccount(a.id))}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
+            {:else}
+              <span class="slot" aria-hidden="true"></span>
             {/if}
           </div>
         </div>
@@ -241,24 +243,35 @@
   .add { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
   .add label { font-weight: 500; }
   .add .input { flex: 1; }
-  .account { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--hairline); }
+  /* Colunas fixas: ordem, identidade, uso, situação e ações ficam alinhadas entre as linhas. */
+  .wide { max-width: 1160px; }
+  .account { display: grid; grid-template-columns: 28px minmax(0, 1.25fr) minmax(0, 1.35fr) 190px 108px; align-items: center; gap: 20px; padding: 14px 20px; border-bottom: 1px solid var(--hairline); }
   .order { display: flex; flex-direction: column; align-items: center; font-size: 13px; font-weight: 600; color: var(--muted); }
   .order .btn { width: 24px; min-height: 20px; }
-  .identity { flex: 1 1 180px; min-width: 0; }
+  .identity { min-width: 0; }
+  .identity strong, .identity .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .name { gap: 8px; }
   .name .edit { width: 24px; min-height: 24px; opacity: 0; transition: opacity 0.15s; }
   .account:hover .name .edit, .name .edit:focus-visible { opacity: 1; }
   .rename .input { flex: 1; min-width: 0; min-height: 30px; }
   .plan { padding: 1px 8px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 12px; color: var(--text-2); text-transform: capitalize; }
-  .usage { flex: 1 1 200px; display: flex; flex-direction: column; gap: 6px; }
+  .usage { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .usage-label { display: flex; justify-content: space-between; font-size: 12px; }
   .bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
   .bar div { height: 100%; border-radius: 3px; background: var(--bar); }
   .bar div.full { background: var(--warn); }
   .week { font-size: 12px; }
   .warn { color: var(--warn); }
-  .state { flex: 0 1 170px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-size: 12px; }
-  .actions { gap: 8px; }
+  .state { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-size: 12px; }
+  .state .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .state .enter { margin-top: 4px; }
+  .actions { justify-content: flex-end; gap: 8px; }
+  .actions .slot { width: 28px; height: 28px; }
+  @media (max-width: 900px) {
+    .account { grid-template-columns: 28px minmax(0, 1fr) 108px; }
+    .usage { grid-column: 2 / 3; }
+    .state { grid-column: 2 / 3; flex-direction: row; align-items: center; gap: 8px; }
+  }
   .empty, .foot { padding: 14px 20px; }
   .columns { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
   .panel { flex: 1 1 380px; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
