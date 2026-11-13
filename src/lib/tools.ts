@@ -1,6 +1,8 @@
 // Como apresentar ao usuário o uso de uma ferramenta pelo agente.
 
 export interface ToolUse {
+  /** Id da chamada (mensagens antigas não têm). */
+  id?: string;
   name: string;
   input: Record<string, unknown>;
   output: string | null;
@@ -31,6 +33,11 @@ const LABELS: Record<string, string> = {
   TodoWrite: "Atualizar tarefas",
 };
 
+/** Ferramentas que delegam o trabalho a um subagente. */
+export function isAgentTool(name: string): boolean {
+  return name === "Agent" || name === "Task";
+}
+
 /** Campo dos argumentos que melhor identifica o alvo, por ordem de preferência. */
 const TARGET_FIELDS = ["file_path", "notebook_path", "command", "pattern", "query", "url", "skill", "description", "path"];
 
@@ -38,7 +45,8 @@ export function parseToolUse(content: string): ToolUse | null {
   try {
     const value = JSON.parse(content);
     if (typeof value?.name !== "string") return null;
-    return { name: value.name, input: value.input ?? {}, output: value.output ?? null, is_error: value.is_error === true };
+    const id = typeof value.id === "string" ? value.id : undefined;
+    return { id, name: value.name, input: value.input ?? {}, output: value.output ?? null, is_error: value.is_error === true };
   } catch {
     return null;
   }

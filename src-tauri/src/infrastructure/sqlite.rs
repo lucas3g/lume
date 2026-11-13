@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, role TEXT NOT NULL,
   content TEXT NOT NULL, account_id TEXT, meta TEXT, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, id);
+CREATE TABLE IF NOT EXISTS subagent_steps(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, parent_id TEXT NOT NULL, step TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_subagent_steps_conv ON subagent_steps(conversation_id, id);
 CREATE TABLE IF NOT EXISTS switches(
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, from_name TEXT NOT NULL,
   to_name TEXT NOT NULL, conversation_title TEXT NOT NULL);
@@ -312,6 +315,16 @@ impl ConversationRepository for SqliteStore {
              WHERE conversation_id=? AND id<? ORDER BY id",
             params![new_id, source_id, before_message],
         )?;
+        // Os subagentes das chamadas copiadas continuam abríveis no ramo; os de depois, não.
+        c.execute(
+            "INSERT INTO subagent_steps(conversation_id,parent_id,step)
+             SELECT ?1,parent_id,step FROM subagent_steps
+             WHERE conversation_id=?2 AND parent_id IN (
+               SELECT json_extract(content,'$.id') FROM messages
+               WHERE conversation_id=?2 AND role='tool' AND id<?3 AND json_valid(content))
+             ORDER BY id",
+            params![new_id, source_id, before_message],
+        )?;
         Ok(())
     }
 
@@ -347,6 +360,7 @@ impl ConversationRepository for SqliteStore {
     fn delete(&self, id: &str) -> AppResult<()> {
         let c = self.conn();
         c.execute("DELETE FROM messages WHERE conversation_id=?", [id])?;
+        c.execute("DELETE FROM subagent_steps WHERE conversation_id=?", [id])?;
         c.execute("DELETE FROM conversations WHERE id=?", [id])?;
         Ok(())
     }
@@ -398,6 +412,21 @@ impl ConversationRepository for SqliteStore {
             .query_row("SELECT meta FROM messages WHERE id=?", [message_id], |r| r.get(0))
             .optional()?
             .flatten())
+    }
+
+    fn add_subagent_step(&self, conversation_id: &str, parent: &str, step: &str) -> AppResult<()> {
+        self.conn().execute(
+            "INSERT INTO subagent_steps(conversation_id,parent_id,step) VALUES(?,?,?)",
+            params![conversation_id, parent, step],
+        )?;
+        Ok(())
+    }
+
+    fn subagent_steps(&self, conversation_id: &str) -> AppResult<Vec<(String, String)>> {
+        let c = self.conn();
+        let mut st = c.prepare("SELECT parent_id,step FROM subagent_steps WHERE conversation_id=? ORDER BY id")?;
+        let rows = st.query_map([conversation_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }
 
@@ -646,5 +675,28 @@ impl Settings for SqliteStore {
             params![key, if value { "1" } else { "0" }],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::chat::{tool_message, KIND_CHAT};
+
+    #[test]
+    fn branch_keeps_only_subagents_of_copied_calls() {
+        let store = SqliteStore::memory();
+        ConversationRepository::insert(&store, "c1", "Conversa", "opus", "/tmp", KIND_CHAT, None).unwrap();
+        store.add_message("c1", "tool", &tool_message("antes", "Agent", "{}", Some("ok"), false), None, None).unwrap();
+        store.add_message("c1", "user", "corte", None, None).unwrap();
+        store.add_message("c1", "tool", &tool_message("depois", "Agent", "{}", Some("ok"), false), None, None).unwrap();
+        store.add_subagent_step("c1", "antes", r#"{"kind":"text","text":"a"}"#).unwrap();
+        store.add_subagent_step("c1", "depois", r#"{"kind":"text","text":"b"}"#).unwrap();
+        let cut = store.messages("c1").unwrap()[1].id;
+
+        store.copy("c1", "c2", "Ramo", cut).unwrap();
+
+        let parents: Vec<String> = store.subagent_steps("c2").unwrap().into_iter().map(|(p, _)| p).collect();
+        assert_eq!(parents, ["antes"]);
     }
 }

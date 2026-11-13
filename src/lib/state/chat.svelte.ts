@@ -3,6 +3,7 @@
 import { api, errorMessage } from "../api";
 import { DEFAULT_MODEL, type ChatEvent, type Conversation, type Message, type PastedImage } from "../types";
 import { loadProjects } from "./projects.svelte";
+import { applySubagentStep, forgetSubagents, loadSubagents, settleSubagents } from "./subagents.svelte";
 
 /** Resposta em andamento de uma conversa. */
 export interface Turn {
@@ -73,7 +74,14 @@ export async function loadConversations(): Promise<void> {
 export async function openConversation(id: string | null): Promise<void> {
   chat.activeId = id;
   chat.editing = null;
-  chat.messages = id ? await api.listMessages(id) : [];
+  if (!id) {
+    chat.messages = [];
+    return;
+  }
+  const [messages] = await Promise.all([api.listMessages(id), loadSubagents(id)]);
+  chat.messages = messages;
+  // Sem turno em andamento, nenhum subagente gravado pode estar trabalhando.
+  if (!chat.turns[id]) settleSubagents(id);
 }
 
 export async function removeConversation(id: string): Promise<void> {
@@ -82,6 +90,7 @@ export async function removeConversation(id: string): Promise<void> {
   delete chat.outcomes[id];
   delete chat.permissions[id];
   delete chat.queued[id];
+  forgetSubagents(id);
   if (chat.activeId === id) await openConversation(null);
   await loadConversations();
 }
@@ -289,6 +298,7 @@ async function finish(id: string, outcome: Outcome = null, continueQueue = true)
   delete chat.turns[id];
   delete chat.permissions[id];
   chat.outcomes[id] = outcome;
+  settleSubagents(id);
   // Entregues e não lidas (o turno acabou antes): voltam a esperar a vez.
   for (const item of chat.queued[id] ?? []) item.sending = false;
   if (chat.activeId === id) chat.messages = await api.listMessages(id);
@@ -307,7 +317,7 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 /** Eventos que indicam um turno em andamento, mesmo que iniciado por outra janela. */
-const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "tool", "step", "permission"]);
+const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "agent_step", "tool", "step", "permission"]);
 
 const SUBAGENT_PREFIX = "Subagente: ";
 const SUBAGENT_MAX = 90;
@@ -349,6 +359,9 @@ export function handleChatEvent(event: ChatEvent): void {
       break;
     case "subagent":
       if (turn) turn.status = subagentStatus(turn.status, event.text);
+      break;
+    case "agent_step":
+      applySubagentStep(id, event.parent, event.step);
       break;
     case "tool":
       if (turn) turn.status = TOOL_LABELS[event.name] ?? (event.name.startsWith("mcp__") ? "Usando um conector" : `Usando ${event.name}`);

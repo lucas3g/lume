@@ -14,6 +14,7 @@
   import PlanCard from "../components/PlanCard.svelte";
   import QuestionCard from "../components/QuestionCard.svelte";
   import CodeView from "../components/CodeView.svelte";
+  import SubagentPanel from "../components/SubagentPanel.svelte";
   import ToolRow from "../components/ToolRow.svelte";
   import { describeFile, folderName, formatTime, renderMarkdown } from "../format";
   import { activeAccount } from "../state/accounts.svelte";
@@ -23,7 +24,8 @@
   import { NEW_CONVERSATION, readDraft, saveDraft } from "../state/drafts";
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
-  import { parseToolUse } from "../tools";
+  import { closeSubagent, loadSubagents, openSubagent, runOf, runsOf, statusLabel, subagents } from "../state/subagents.svelte";
+  import { isAgentTool, parseToolUse, type ToolUse } from "../tools";
   import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
   import { onMount } from "svelte";
 
@@ -48,6 +50,37 @@
   let pasted = $state<(PastedImage & { preview: string })[]>([]);
   let pastedCount = 0;
   let scroller = $state<HTMLElement>();
+
+  // Subagentes da conversa aberta: os que ainda trabalham e o aberto no painel.
+  const runs = $derived(runsOf(chat.activeId));
+  const workingRuns = $derived(runs.filter((r) => r.status === "running"));
+  const openRunId = $derived(subagents.open && subagents.open.conversationId === chat.activeId ? subagents.open.parent : null);
+  const openRun = $derived(openRunId ? runOf(chat.activeId, openRunId) : undefined);
+  /** A chamada que criou o subagente aberto, para o título e a tarefa quando o início não foi registrado. */
+  const openRunCall = $derived.by(() => {
+    if (!openRunId) return null;
+    for (const m of chat.messages) {
+      if (m.role !== "tool") continue;
+      const tool = parseToolUse(m.content);
+      if (tool?.id === openRunId) {
+        const text = (key: string) => (typeof tool.input[key] === "string" ? (tool.input[key] as string) : "");
+        return { description: text("description"), prompt: text("prompt") };
+      }
+    }
+    return null;
+  });
+
+  function showSubagent(parent: string) {
+    if (!chat.activeId) return;
+    openArtifact = null;
+    openSubagent(chat.activeId, parent);
+  }
+
+  /** Situação de um subagente ao lado da linha da ferramenta que o criou. */
+  function agentNote(tool: ToolUse): string | null {
+    const run = tool.id ? runOf(chat.activeId, tool.id) : undefined;
+    return run ? statusLabel(run) : null;
+  }
 
   // O rascunho (texto, anexos e imagens) é de cada conversa e sobrevive à troca de tela.
   const draftKey = $derived(chat.activeId ?? NEW_CONVERSATION);
@@ -358,6 +391,16 @@
     workspace.openFile = null;
   });
 
+  // O que os subagentes da conversa fizeram é carregado ao abri-la (inclusive ramos e sessões novas).
+  $effect(() => {
+    if (chat.activeId) void loadSubagents(chat.activeId);
+  });
+
+  // Uma prévia de artifact aberta ocupa o lugar do subagente.
+  $effect(() => {
+    if (openArtifact) untrack(closeSubagent);
+  });
+
   // A situação da pasta acompanha a conversa aberta e cada passo do agente.
   $effect(() => {
     void chat.messages.length;
@@ -387,7 +430,7 @@
       <div class="panels" role="group" aria-label="Painel lateral">
         {#each PANELS as p (p.id)}
           {#if isAgent || !p.needsFolder}
-            <button type="button" aria-label={p.label} title={p.label} aria-pressed={panel === p.id && !openArtifact} class:on={panel === p.id && !openArtifact} onclick={() => ((openArtifact = null), togglePanel(p.id))}>
+            <button type="button" aria-label={p.label} title={p.label} aria-pressed={panel === p.id && !openArtifact && !openRunId} class:on={panel === p.id && !openArtifact && !openRunId} onclick={() => ((openArtifact = null), closeSubagent(), togglePanel(p.id))}>
               <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d={p.icon} /></svg>
             </button>
           {/if}
@@ -453,7 +496,12 @@
             </div>
           {:else if message.role === "tool"}
             {@const tool = parseToolUse(message.content)}
-            {#if tool}<ToolRow {tool} />{/if}
+            {#if tool && isAgentTool(tool.name) && tool.id}
+              {@const id = tool.id}
+              <ToolRow {tool} running={runOf(chat.activeId, id)?.status === "running"} note={agentNote(tool)} onopen={() => showSubagent(id)} />
+            {:else if tool}
+              <ToolRow {tool} />
+            {/if}
           {:else if message.role === "notice"}
             <div class="notice" role="status"><span></span>{message.content}<span></span></div>
           {:else}
@@ -496,6 +544,19 @@
             {#if turn.status || !turn.text}
               <div class="working"><span class="pulse" aria-hidden="true"></span>{turn.status ?? "Respondendo"}…</div>
             {/if}
+          </div>
+        {/if}
+
+        {#if workingRuns.length}
+          <div class="agents" role="group" aria-label="Subagentes trabalhando">
+            {#each workingRuns as run (run.id)}
+              <button type="button" class="agent-chip" class:on={openRunId === run.id} title="Ver o que o subagente está fazendo" onclick={() => showSubagent(run.id)}>
+                <span class="pulse" aria-hidden="true"></span>
+                <span class="agent-name">{run.description || "Subagente"}</span>
+                <span class="agent-activity">{run.activity ?? (run.background ? "em segundo plano" : "trabalhando")}</span>
+                <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+              </button>
+            {/each}
           </div>
         {/if}
 
@@ -649,7 +710,11 @@
     </div>
   </main>
 
-  {#if openArtifact}
+  {#if openRunId}
+    {#key openRunId}
+      <SubagentPanel run={openRun} fallback={openRunCall} onclose={closeSubagent} />
+    {/key}
+  {:else if openArtifact}
     <ArtifactPanel versions={openVersions} initial={openIndex} onclose={() => (openArtifact = null)} />
   {:else if panel}
     <aside aria-label={PANELS.find((p) => p.id === panel)?.label}>
@@ -734,6 +799,13 @@
   .notice { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
   .notice span { flex: 1; height: 1px; background: var(--border); }
   .alert { padding: 14px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; border-color: var(--border-strong); }
+  .agents { display: flex; flex-direction: column; gap: 6px; }
+  .agent-chip { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); text-align: left; color: var(--text); }
+  .agent-chip:hover, .agent-chip.on { background: var(--hover); border-color: var(--border-strong); }
+  .agent-chip .pulse { flex-shrink: 0; }
+  .agent-name { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+  .agent-activity { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+  .agent-chip svg { flex-shrink: 0; color: var(--muted); }
   .working { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
   .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-text); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.25; } }

@@ -68,6 +68,11 @@ impl ManageConversations {
         self.conversations.messages(id)
     }
 
+    /// Passos gravados dos subagentes da conversa: (chamada que o criou, passo em JSON).
+    pub fn subagent_steps(&self, id: &str) -> AppResult<Vec<(String, String)>> {
+        self.conversations.subagent_steps(id)
+    }
+
     /// Conteúdo (base64) da imagem colada de posição `index` numa mensagem enviada.
     pub fn message_image(&self, message_id: i64, index: usize) -> AppResult<String> {
         let missing = || AppError("A imagem não foi encontrada.".into());

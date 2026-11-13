@@ -19,7 +19,7 @@ pub(crate) mod fakes;
 
 use serde::Serialize;
 use std::{collections::HashMap, fmt, sync::{Arc, Mutex}};
-use crate::domain::chat::{Injection, PermissionDecision};
+use crate::domain::chat::{Injection, PermissionDecision, SubagentStep};
 use tokio::sync::{mpsc, oneshot, Notify};
 
 /// Sinal de cancelamento de um turno em andamento.
@@ -61,6 +61,8 @@ pub enum ChatEvent {
     Thinking { text: String },
     /// Andamento de um subagente (texto que ele produziu).
     Subagent { text: String },
+    /// Passo de um subagente, para acompanhar o que ele faz; `parent` é a chamada que o criou.
+    AgentStep { parent: String, step: SubagentStep },
     Tool { name: String },
     /// Algo foi gravado na conversa (trecho de texto ou uso de ferramenta): recarregue as mensagens.
     Step,

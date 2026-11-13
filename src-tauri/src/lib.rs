@@ -62,6 +62,7 @@ pub fn run() {
             commands::delete_conversation,
             commands::branch_conversation,
             commands::list_messages,
+            commands::list_subagent_steps,
             commands::set_conversation_model,
             commands::set_conversation_effort,
             commands::set_conversation_mode,

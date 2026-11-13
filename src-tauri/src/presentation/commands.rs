@@ -111,6 +111,16 @@ pub fn list_messages(app: App<'_>, conversation_id: String) -> AppResult<Vec<Mes
     app.conversations.messages(&conversation_id)
 }
 
+/// Passos dos subagentes da conversa, em ordem: `{ parent, step }`, com o passo em JSON.
+#[tauri::command]
+pub fn list_subagent_steps(app: App<'_>, conversation_id: String) -> AppResult<Vec<serde_json::Value>> {
+    let steps = app.conversations.subagent_steps(&conversation_id)?;
+    Ok(steps
+        .into_iter()
+        .filter_map(|(parent, step)| Some(serde_json::json!({ "parent": parent, "step": serde_json::from_str::<serde_json::Value>(&step).ok()? })))
+        .collect())
+}
+
 #[tauri::command]
 pub fn set_conversation_model(app: App<'_>, id: String, model: String) -> AppResult<()> {
     app.conversations.set_model(&id, &model)

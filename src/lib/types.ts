@@ -105,6 +105,15 @@ export interface HistoryStatus {
 export type FlagKey = "auto_switch" | "notify_switch" | "use_history" | "switch_early" | "notify_desktop";
 export type Flags = Record<FlagKey, boolean>;
 
+/** Passo de um subagente, como o núcleo envia e grava. */
+export type SubagentStep =
+  | { kind: "started"; description: string; agent_type: string; prompt: string; background: boolean }
+  | { kind: "progress"; description: string }
+  | { kind: "text"; text: string }
+  | { kind: "tool_call"; id: string; name: string; input: string }
+  | { kind: "tool_result"; id: string; output: string; is_error: boolean }
+  | { kind: "finished"; status: string; summary: string };
+
 export type ChatEvent = { conversation_id: string } & (
   | { kind: "title"; title: string }
   | { kind: "account"; id: string; name: string }
@@ -112,6 +121,7 @@ export type ChatEvent = { conversation_id: string } & (
   | { kind: "delta"; text: string }
   | { kind: "thinking"; text: string }
   | { kind: "subagent"; text: string }
+  | { kind: "agent_step"; parent: string; step: SubagentStep }
   | { kind: "tool"; name: string }
   | { kind: "step" }
   | { kind: "injected"; id: string }

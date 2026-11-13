@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  Account, AccountConnector, Agent, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
+  Account, AccountConnector, Agent, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
   MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
@@ -34,6 +34,8 @@ export const api = {
   branchConversation: (id: string, beforeMessage: number) =>
     invoke<Conversation>("branch_conversation", { id, beforeMessage }),
   listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
+  listSubagentSteps: (conversationId: string) =>
+    invoke<{ parent: string; step: SubagentStep }[]>("list_subagent_steps", { conversationId }),
   setConversationModel: (id: string, model: string) => invoke<void>("set_conversation_model", { id, model }),
   setConversationEffort: (id: string, effort: string) => invoke<void>("set_conversation_effort", { id, effort }),
   setConversationMode: (id: string, mode: string) => invoke<void>("set_conversation_mode", { id, mode }),

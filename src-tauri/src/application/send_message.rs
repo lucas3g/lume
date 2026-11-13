@@ -16,11 +16,11 @@ use crate::domain::{
     account::{earliest_reset, pick_next, Account},
     workspace::context_percent,
     chat::{
-        tool_message, Attachment, Conversation, Injection, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
+        tool_message, Attachment, Conversation, Injection, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
         ROLE_TOOL, ROLE_USER,
     },
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 use tokio::sync::mpsc::UnboundedSender;
 
 const TITLE_MAX_CHARS: usize = 48;
@@ -50,6 +50,9 @@ struct Journal {
     calls: HashMap<String, (String, String)>,
     /// Algo deste turno já foi gravado.
     recorded: bool,
+    /// Chamadas que criaram subagentes neste turno; as demais tarefas (ex.: comandos
+    /// em segundo plano) também mandam andamento e fim, que não interessam.
+    subagents: HashSet<String>,
 }
 
 impl Journal {
@@ -287,8 +290,8 @@ impl SendMessage {
 
     /// Chamadas que terminaram sem resultado (ex.: não autorizadas) também ficam na conversa.
     fn record_unanswered_calls(&self, conversation_id: &str, account_id: &str, journal: &mut Journal) {
-        for (name, input) in std::mem::take(&mut journal.calls).into_values() {
-            self.record_tool(conversation_id, account_id, journal, &tool_message(&name, &input, None, false));
+        for (id, (name, input)) in std::mem::take(&mut journal.calls) {
+            self.record_tool(conversation_id, account_id, journal, &tool_message(&id, &name, &input, None, false));
         }
     }
 
@@ -318,7 +321,7 @@ impl SendMessage {
             }
             TurnEvent::ToolResult { id, output, is_error } => {
                 if let Some((name, input)) = journal.calls.remove(id) {
-                    let content = tool_message(&name, &input, Some(output), *is_error);
+                    let content = tool_message(id, &name, &input, Some(output), *is_error);
                     self.record_tool(conversation_id, account_id, journal, &content);
                 }
             }
@@ -337,6 +340,20 @@ impl SendMessage {
             }
             TurnEvent::Thinking(text) => self.emit(conversation_id, ChatEvent::Thinking { text: text.clone() }),
             TurnEvent::SubagentDelta(text) => self.emit(conversation_id, ChatEvent::Subagent { text: text.clone() }),
+            TurnEvent::Subagent { parent, step } => {
+                let lifecycle = matches!(step, SubagentStep::Progress { .. } | SubagentStep::Finished { .. });
+                if lifecycle && !journal.subagents.contains(parent) {
+                    return;
+                }
+                journal.subagents.insert(parent.clone());
+                // Saídas longas são encurtadas já aqui: a interface ao vivo e a gravada mostram o mesmo.
+                let step = step.truncated();
+                // O andamento é passageiro; o resto fica gravado para rever o trabalho depois.
+                if !matches!(step, SubagentStep::Progress { .. }) {
+                    let _ = self.conversations.add_subagent_step(conversation_id, parent, &step.to_record());
+                }
+                self.emit(conversation_id, ChatEvent::AgentStep { parent: parent.clone(), step });
+            }
             TurnEvent::Tool(name) => self.emit(conversation_id, ChatEvent::Tool { name: name.clone() }),
             TurnEvent::Rate(rate) => {
                 if self.accounts.set_usage(account_id, rate).is_ok() {

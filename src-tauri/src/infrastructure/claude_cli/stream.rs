@@ -1,6 +1,6 @@
 //! Protocolo stream-json do Claude Code: leitura dos eventos e desfecho do turno.
 
-use crate::domain::chat::{RateInfo, TurnEnd, TurnEvent};
+use crate::domain::chat::{RateInfo, SubagentStep, TurnEnd, TurnEvent};
 use serde_json::Value;
 
 /// Eventos contidos em uma linha do stream (a de inicialização gera dois).
@@ -9,11 +9,13 @@ pub fn parse_line(line: &str) -> Vec<TurnEvent> {
     let single = |event: Option<TurnEvent>| event.into_iter().collect();
     match v["type"].as_str().unwrap_or("") {
         "system" if v["subtype"] == "init" => parse_init(&v),
+        "system" => single(parse_task(&v)),
         "stream_event" if !v["parent_tool_use_id"].is_null() => single(parse_subagent_event(&v["event"])),
         "stream_event" => single(parse_stream_event(&v["event"])),
         "rate_limit_event" => vec![TurnEvent::Rate(parse_rate(&v["rate_limit_info"]))],
-        // Mensagens de subagentes (com `parent_tool_use_id`) não são passos desta conversa.
-        "assistant" | "user" if !v["parent_tool_use_id"].is_null() => vec![],
+        // Mensagens de subagentes (com `parent_tool_use_id`) não são passos desta conversa:
+        // viram passos do subagente, para acompanhar o trabalho dele.
+        "assistant" | "user" if !v["parent_tool_use_id"].is_null() => parse_subagent_message(&v),
         "assistant" => parse_assistant(&v),
         // Eco (`--replay-user-messages`) de uma mensagem do usuário no momento em que é lida.
         "user" if v["isReplay"] == true => v["uuid"].as_str().map(|id| TurnEvent::UserRead(id.into())).into_iter().collect(),
@@ -127,6 +129,58 @@ fn parse_stream_event(e: &Value) -> Option<TurnEvent> {
         }
         _ => None,
     }
+}
+
+/// Ciclo de vida de um subagente (`task_*`), ligado à chamada que o criou.
+fn parse_task(v: &Value) -> Option<TurnEvent> {
+    let parent = v["tool_use_id"].as_str()?.to_owned();
+    let text = |key: &str| v[key].as_str().unwrap_or_default().to_owned();
+    let step = match v["subtype"].as_str()? {
+        // Tarefas de outros tipos (ex.: comandos em segundo plano) não são subagentes.
+        "task_started" if v["task_type"].as_str().is_some_and(|t| t.contains("agent")) => SubagentStep::Started {
+            description: text("description"),
+            agent_type: text("subagent_type"),
+            prompt: text("prompt"),
+            background: v["is_backgrounded"].as_bool().unwrap_or(false),
+        },
+        "task_progress" => SubagentStep::Progress { description: text("description") },
+        "task_notification" => SubagentStep::Finished { status: text("status"), summary: text("summary") },
+        _ => return None,
+    };
+    Some(TurnEvent::Subagent { parent, step })
+}
+
+/// Texto, chamadas de ferramenta e resultados de uma mensagem do subagente.
+fn parse_subagent_message(v: &Value) -> Vec<TurnEvent> {
+    let Some(parent) = v["parent_tool_use_id"].as_str() else { return vec![] };
+    let blocks = v["message"]["content"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let is_assistant = v["type"] == "assistant";
+    blocks
+        .iter()
+        .filter_map(|b| {
+            let step = match b["type"].as_str()? {
+                "text" if is_assistant => {
+                    let text = b["text"].as_str()?.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    SubagentStep::Text { text: text.to_owned() }
+                }
+                "tool_use" if is_assistant => SubagentStep::ToolCall {
+                    id: b["id"].as_str()?.to_owned(),
+                    name: b["name"].as_str()?.to_owned(),
+                    input: b["input"].to_string(),
+                },
+                "tool_result" => SubagentStep::ToolResult {
+                    id: b["tool_use_id"].as_str()?.to_owned(),
+                    output: block_text(&b["content"]),
+                    is_error: b["is_error"].as_bool().unwrap_or(false),
+                },
+                _ => return None,
+            };
+            Some(TurnEvent::Subagent { parent: parent.to_owned(), step })
+        })
+        .collect()
 }
 
 /// De um subagente só interessa o texto, para mostrar o andamento.
@@ -253,10 +307,47 @@ mod tests {
         assert_eq!(parse_line(line), [TurnEvent::SubagentDelta("lendo".into())]);
         let tool = r#"{"type":"stream_event","parent_tool_use_id":"t9","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}"#;
         assert!(parse_line(tool).is_empty(), "ferramentas do subagente não viram passos da conversa");
-        let call = r#"{"type":"assistant","parent_tool_use_id":"t9","message":{"content":[{"type":"tool_use","id":"u1","name":"Read","input":{}}]}}"#;
-        assert!(parse_line(call).is_empty(), "nem as chamadas completas do subagente");
+    }
+
+    #[test]
+    fn subagent_messages_become_its_steps() {
+        let sub = |step| TurnEvent::Subagent { parent: "t9".into(), step };
+        let call = r#"{"type":"assistant","parent_tool_use_id":"t9","message":{"content":[{"type":"text","text":"vou ler"},{"type":"tool_use","id":"u1","name":"Read","input":{}}]}}"#;
+        assert_eq!(
+            parse_line(call),
+            [
+                sub(SubagentStep::Text { text: "vou ler".into() }),
+                sub(SubagentStep::ToolCall { id: "u1".into(), name: "Read".into(), input: "{}".into() }),
+            ]
+        );
         let result = r#"{"type":"user","parent_tool_use_id":"t9","message":{"content":[{"type":"tool_result","tool_use_id":"u1","content":"x"}]}}"#;
-        assert!(parse_line(result).is_empty());
+        assert_eq!(parse_line(result), [sub(SubagentStep::ToolResult { id: "u1".into(), output: "x".into(), is_error: false })]);
+        // O pedido que abre o subagente chega como texto do usuário e não é um passo.
+        let prompt = r#"{"type":"user","parent_tool_use_id":"t9","message":{"content":"leia a.txt"}}"#;
+        assert!(parse_line(prompt).is_empty());
+    }
+
+    #[test]
+    fn task_events_follow_the_subagent_lifecycle() {
+        // Capturados do CLI 2.1.323.
+        let started = r#"{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"t9","description":"Ler a.txt","subagent_type":"general-purpose","is_backgrounded":true,"task_type":"local_agent","prompt":"leia"}"#;
+        let progress = r#"{"type":"system","subtype":"task_progress","task_id":"a1","tool_use_id":"t9","description":"Reading a.txt","last_tool_name":"Read"}"#;
+        let done = r#"{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"t9","status":"completed","summary":"hello"}"#;
+        let sub = |step| TurnEvent::Subagent { parent: "t9".into(), step };
+        assert_eq!(
+            parse_line(started),
+            [sub(SubagentStep::Started {
+                description: "Ler a.txt".into(),
+                agent_type: "general-purpose".into(),
+                prompt: "leia".into(),
+                background: true,
+            })]
+        );
+        assert_eq!(parse_line(progress), [sub(SubagentStep::Progress { description: "Reading a.txt".into() })]);
+        assert_eq!(parse_line(done), [sub(SubagentStep::Finished { status: "completed".into(), summary: "hello".into() })]);
+        let shell = r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"t8","task_type":"local_bash"}"#;
+        assert!(parse_line(shell).is_empty(), "comandos em segundo plano não são subagentes");
+        assert!(parse_line(r#"{"type":"system","subtype":"task_updated","task_id":"a1"}"#).is_empty());
     }
 
     #[test]

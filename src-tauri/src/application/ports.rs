@@ -59,6 +59,10 @@ pub trait ConversationRepository: Send + Sync {
     fn message_count(&self, conversation_id: &str) -> AppResult<i64>;
     /// Metadados guardados com a mensagem (`None` se ela não existe ou não tem).
     fn message_meta(&self, message_id: i64) -> AppResult<Option<String>>;
+    /// Grava um passo (JSON) do subagente criado pela chamada `parent`.
+    fn add_subagent_step(&self, conversation_id: &str, parent: &str, step: &str) -> AppResult<()>;
+    /// Passos de todos os subagentes da conversa, em ordem: (chamada, passo em JSON).
+    fn subagent_steps(&self, conversation_id: &str) -> AppResult<Vec<(String, String)>>;
 }
 
 pub trait ProjectRepository: Send + Sync {

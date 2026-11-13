@@ -102,6 +102,11 @@ pub enum TurnEvent {
     Thinking(String),
     /// Texto produzido por um subagente, para acompanhar o andamento.
     SubagentDelta(String),
+    /// Passo de um subagente; `parent` é o id da chamada da ferramenta que o criou.
+    Subagent {
+        parent: String,
+        step: SubagentStep,
+    },
     Tool(String),
     /// Chamada de ferramenta completa; `input` é o JSON dos argumentos.
     ToolCall {
@@ -266,14 +271,55 @@ pub fn transcript_prompt(messages: &[Message]) -> Option<String> {
     ))
 }
 
-/// Conteúdo de uma mensagem de ferramenta: o que foi chamado e o que voltou.
-pub fn tool_message(name: &str, input: &str, output: Option<&str>, is_error: bool) -> String {
-    let input: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-    let output = output.map(|text| match text.char_indices().nth(MAX_TOOL_OUTPUT_CHARS) {
+/// O que um subagente fez, passo a passo, para acompanhar o trabalho dele.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubagentStep {
+    Started {
+        description: String,
+        agent_type: String,
+        prompt: String,
+        background: bool,
+    },
+    /// Resumo do que ele está fazendo agora (ex.: "Lendo a.txt").
+    Progress { description: String },
+    Text { text: String },
+    /// `input` é o JSON dos argumentos.
+    ToolCall { id: String, name: String, input: String },
+    ToolResult { id: String, output: String, is_error: bool },
+    /// Fim do trabalho: "completed", "failed", "stopped"…
+    Finished { status: String, summary: String },
+}
+
+impl SubagentStep {
+    /// O passo com textos longos encurtados, para enviar à interface e gravar.
+    pub fn truncated(&self) -> SubagentStep {
+        let mut step = self.clone();
+        if let SubagentStep::ToolResult { output, .. } = &mut step {
+            *output = truncate_output(output);
+        }
+        step
+    }
+
+    /// O passo em JSON, como é gravado (chame sobre o passo já encurtado).
+    pub fn to_record(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
+fn truncate_output(text: &str) -> String {
+    match text.char_indices().nth(MAX_TOOL_OUTPUT_CHARS) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_owned(),
-    });
-    serde_json::json!({ "name": name, "input": input, "output": output, "is_error": is_error }).to_string()
+    }
+}
+
+/// Conteúdo de uma mensagem de ferramenta: o que foi chamado e o que voltou.
+/// O `id` da chamada liga a mensagem ao trabalho de um subagente.
+pub fn tool_message(id: &str, name: &str, input: &str, output: Option<&str>, is_error: bool) -> String {
+    let input: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+    let output = output.map(truncate_output);
+    serde_json::json!({ "id": id, "name": name, "input": input, "output": output, "is_error": is_error }).to_string()
 }
 
 #[cfg(test)]
@@ -289,7 +335,7 @@ mod tests {
         let messages = [
             message(ROLE_USER, "Oi"),
             message(ROLE_NOTICE, "troca de conta"),
-            message(ROLE_TOOL, &tool_message("Read", "{}", Some("x"), false)),
+            message(ROLE_TOOL, &tool_message("t1", "Read", "{}", Some("x"), false)),
             message(ROLE_ASSISTANT, "Olá!"),
         ];
         let text = transcript_prompt(&messages).unwrap();
@@ -306,11 +352,12 @@ mod tests {
     fn tool_message_keeps_input_as_json_and_truncates_output() {
         let long = "x".repeat(MAX_TOOL_OUTPUT_CHARS + 10);
         let v: serde_json::Value =
-            serde_json::from_str(&tool_message("Bash", r#"{"command":"ls"}"#, Some(&long), false)).unwrap();
+            serde_json::from_str(&tool_message("t1", "Bash", r#"{"command":"ls"}"#, Some(&long), false)).unwrap();
         assert_eq!(v["name"], "Bash");
+        assert_eq!(v["id"], "t1");
         assert_eq!(v["input"]["command"], "ls");
         assert_eq!(v["output"].as_str().unwrap().chars().count(), MAX_TOOL_OUTPUT_CHARS + 1);
-        let pending: serde_json::Value = serde_json::from_str(&tool_message("Edit", "{}", None, false)).unwrap();
+        let pending: serde_json::Value = serde_json::from_str(&tool_message("t2", "Edit", "{}", None, false)).unwrap();
         assert!(pending["output"].is_null());
     }
 }
