@@ -16,7 +16,7 @@
   import CodeView from "../components/CodeView.svelte";
   import SubagentPanel from "../components/SubagentPanel.svelte";
   import ToolRow from "../components/ToolRow.svelte";
-  import { describeFile, folderName, formatTime, formatWhen, fullDate, renderMarkdown } from "../format";
+  import { describeFile, folderName, formatTime, formatWhen, fullDate, isoDate, renderMarkdown } from "../format";
   import { activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
   import { api } from "../api";
@@ -28,6 +28,7 @@
   import { isAgentTool, parseToolUse, type ToolUse } from "../tools";
   import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
   import { onMount } from "svelte";
+  import { dayClock } from "../state/clock.svelte";
 
   interface Props {
     onnavigate: (view: View) => void;
@@ -510,9 +511,14 @@
                 {message.content}
               </div>
               {/if}
-              {#if !turn && message.id > 0}
+              {#if message.created_at || (!turn && message.id > 0)}
                 <div class="msg-actions">
-                  <button type="button" onclick={() => edit(message)}>Editar</button>
+                  {#if message.created_at}
+                    <time class="when" datetime={isoDate(message.created_at)} title={fullDate(message.created_at)}>{formatWhen(message.created_at, dayClock.now)}</time>
+                  {/if}
+                  {#if !turn && message.id > 0}
+                    <button type="button" onclick={() => edit(message)}>Editar</button>
+                  {/if}
                 </div>
               {/if}
             </div>
@@ -540,7 +546,7 @@
                   <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
                 {/if}
                 {#if message.created_at}
-                  <time class="when" datetime={new Date(message.created_at * 1000).toISOString()} title={fullDate(message.created_at)}>{formatWhen(message.created_at)}</time>
+                  <time class="when" datetime={isoDate(message.created_at)} title={fullDate(message.created_at)}>{formatWhen(message.created_at, dayClock.now)}</time>
                 {/if}
               </div>
               {#each extractArtifacts(message.content) as artifact (artifact.code)}
@@ -807,14 +813,17 @@
   .lightbox-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: rgba(255, 255, 255, 0.8); }
   .lightbox-bar button { min-height: 28px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 8px; background: rgba(255, 255, 255, 0.1); color: #fff; font-size: 12.5px; }
   .lightbox-bar button:hover { background: rgba(255, 255, 255, 0.2); }
-  .msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
+  .msg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; max-width: 100%; opacity: 0; transition: opacity 0.12s; }
   .user-wrap:hover .msg-actions, .user-wrap:focus-within .msg-actions, .assistant:hover .msg-actions, .assistant:focus-within .msg-actions, .msg-actions.shown { opacity: 1; }
   .msg-actions button { min-height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; font-size: 12px; color: var(--muted); }
   .msg-actions button:hover { background: var(--hover); color: var(--text); }
-  .msg-actions .when { align-self: center; padding: 0 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .msg-actions .when { padding: 0 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; transition: opacity 0.12s; }
+  /* Na última resposta os botões ficam sempre à vista, mas a hora segue só ao passar o mouse. */
+  .msg-actions.shown .when { opacity: 0; }
+  .assistant:hover .msg-actions.shown .when, .assistant:focus-within .msg-actions.shown .when { opacity: 1; }
   .editing { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--muted); }
   .editing span { flex: 1; }
-  @media (prefers-reduced-motion: reduce) { .msg-actions { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .msg-actions, .msg-actions .when { transition: none; } }
   .assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; color: var(--text-body); }
   .context { align-self: flex-start; padding: 2px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--muted); }
   .notice { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }

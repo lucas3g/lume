@@ -30,14 +30,22 @@ export function formatTime(seconds: number): string {
   return timeFormat.format(new Date(seconds * 1000));
 }
 
-/** "Hoje, 14:12", "Ontem, 21:40" ou "03 de nov., 09:00". */
-export function formatWhen(seconds: number): string {
+/**
+ * "Hoje, 14:12", "Ontem, 21:40" ou "03 de nov., 09:00". `now` (ms) é a referência de
+ * "hoje"; telas que ficam abertas passam um relógio reativo para o rótulo virar à meia-noite.
+ */
+export function formatWhen(seconds: number, now: number = Date.now()): string {
   const date = new Date(seconds * 1000);
-  const startOfToday = new Date();
+  const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
-  const days = Math.floor((startOfToday.getTime() - new Date(date).setHours(0, 0, 0, 0)) / 86_400_000);
+  const days = Math.round((startOfToday.getTime() - new Date(date).setHours(0, 0, 0, 0)) / 86_400_000);
   const day = days === 0 ? "Hoje" : days === 1 ? "Ontem" : dateFormat.format(date);
   return `${day}, ${timeFormat.format(date)}`;
+}
+
+/** Instante em ISO 8601, para o atributo `datetime` de `<time>`. */
+export function isoDate(seconds: number): string {
+  return new Date(seconds * 1000).toISOString();
 }
 
 const fullFormat = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full", timeStyle: "medium" });
