@@ -182,7 +182,7 @@ impl ManageConnectors {
     /// Perfil da conta que atende a próxima mensagem (sem conta: o login do computador).
     fn active_config_dir(&self) -> AppResult<Option<String>> {
         let all = self.accounts.all()?;
-        Ok(pick_next(&all, self.clock.now(), &[]).and_then(|a| a.config_dir.clone()))
+        Ok(pick_next(&all, self.clock.now(), &[], false).and_then(|a| a.config_dir.clone()))
     }
 
     fn exists(&self, name: &str) -> AppResult<bool> {

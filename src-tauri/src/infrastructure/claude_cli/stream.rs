@@ -9,6 +9,7 @@ pub fn parse_line(line: &str) -> Vec<TurnEvent> {
     let single = |event: Option<TurnEvent>| event.into_iter().collect();
     match v["type"].as_str().unwrap_or("") {
         "system" if v["subtype"] == "init" => parse_init(&v),
+        "stream_event" if !v["parent_tool_use_id"].is_null() => single(parse_subagent_event(&v["event"])),
         "stream_event" => single(parse_stream_event(&v["event"])),
         "rate_limit_event" => vec![TurnEvent::Rate(parse_rate(&v["rate_limit_info"]))],
         "assistant" => parse_assistant(&v),
@@ -124,6 +125,14 @@ fn parse_stream_event(e: &Value) -> Option<TurnEvent> {
     }
 }
 
+/// De um subagente só interessa o texto, para mostrar o andamento.
+fn parse_subagent_event(e: &Value) -> Option<TurnEvent> {
+    match parse_stream_event(e)? {
+        TurnEvent::Delta(text) => Some(TurnEvent::SubagentDelta(text)),
+        _ => None,
+    }
+}
+
 fn parse_rate(info: &Value) -> RateInfo {
     let windows = &info["unifiedWindows"];
     RateInfo {
@@ -225,6 +234,14 @@ mod tests {
     fn parses_text_delta() {
         assert_eq!(parse_line(DELTA), [TurnEvent::Delta("ok".into())]);
         assert!(parse_line("não é json").is_empty());
+    }
+
+    #[test]
+    fn subagent_text_is_kept_apart_from_the_answer() {
+        let line = r#"{"type":"stream_event","parent_tool_use_id":"t9","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lendo"}}}"#;
+        assert_eq!(parse_line(line), [TurnEvent::SubagentDelta("lendo".into())]);
+        let tool = r#"{"type":"stream_event","parent_tool_use_id":"t9","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}"#;
+        assert!(parse_line(tool).is_empty(), "ferramentas do subagente não viram passos da conversa");
     }
 
     #[test]

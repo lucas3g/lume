@@ -54,6 +54,7 @@ pub struct Container {
     pub switches: Arc<dyn SwitchLog>,
     pub settings: Arc<dyn Settings>,
     pub events: Arc<dyn EventSink>,
+    pub notifier: Arc<TauriEvents>,
     pub exports: Arc<dyn FileSaver>,
     pub running: RunningTurns,
     pub cli_found: bool,
@@ -81,8 +82,9 @@ impl Container {
 
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidGenerator);
-        let events: Arc<dyn EventSink> = Arc::new(TauriEvents::new(app.clone()));
         let store = Arc::new(SqliteStore::open(&data_dir.join("lume.db"), clock.clone())?);
+        let notifier = Arc::new(TauriEvents::new(app.clone(), store.clone()));
+        let events: Arc<dyn EventSink> = notifier.clone();
         let index = Arc::new(SqliteHistoryIndex::new(store.clone(), main_config.join("projects"), desktop_dir));
         let skills = Arc::new(SqliteSkills::new(store.clone(), main_config.join("skills"), main_config.join("plugins")));
         let connectors = Arc::new(ManageConnectors {
@@ -157,6 +159,7 @@ impl Container {
             switches: store.clone(),
             settings: store,
             events,
+            notifier,
             exports: Arc::new(FsFileLoader),
             running: RunningTurns::default(),
             cli_found,

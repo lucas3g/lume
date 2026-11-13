@@ -24,7 +24,7 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS accounts(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT, plan TEXT, config_dir TEXT,
   priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, auth_ok INTEGER NOT NULL DEFAULT 1,
-  limited_until INTEGER, util_5h REAL, util_7d REAL, resets_5h INTEGER);
+  limited_until INTEGER, util_5h REAL, util_7d REAL, resets_5h INTEGER, login_expires_at INTEGER);
 CREATE TABLE IF NOT EXISTS conversations(
   id TEXT PRIMARY KEY, title TEXT NOT NULL, cli_session_id TEXT, model TEXT NOT NULL,
   cwd TEXT NOT NULL, agent_id TEXT, kind TEXT NOT NULL DEFAULT 'chat', allowed_tools TEXT NOT NULL DEFAULT '',
@@ -57,11 +57,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hist_fts USING fts5(
 ";
 
 const ACCOUNT_COLUMNS: &str =
-    "id,name,email,plan,config_dir,priority,enabled,auth_ok,limited_until,util_5h,util_7d,resets_5h";
+    "id,name,email,plan,config_dir,priority,enabled,auth_ok,limited_until,util_5h,util_7d,resets_5h,login_expires_at";
 const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 8] = [
+const MIGRATIONS: [&str; 9] = [
+    "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
     "ALTER TABLE projects ADD COLUMN folder TEXT",
     "ALTER TABLE conversations ADD COLUMN effort TEXT NOT NULL DEFAULT 'medium'",
     // Conversas antigas foram criadas no modo que sempre pergunta; continuam assim.
@@ -122,6 +123,7 @@ fn account_row(r: &Row<'_>) -> rusqlite::Result<Account> {
         util_5h: r.get(9)?,
         util_7d: r.get(10)?,
         resets_5h: r.get(11)?,
+        login_expires_at: r.get(12)?,
     })
 }
 
@@ -159,8 +161,8 @@ impl AccountRepository for SqliteStore {
         let c = self.conn();
         let next: i64 = c.query_row("SELECT COALESCE(MAX(priority),0)+1 FROM accounts", [], |r| r.get(0))?;
         c.execute(
-            "INSERT INTO accounts(id,name,email,plan,config_dir,priority) VALUES(?,?,?,?,?,?)",
-            params![id, name, identity.email, identity.plan, config_dir, next],
+            "INSERT INTO accounts(id,name,email,plan,config_dir,priority,login_expires_at) VALUES(?,?,?,?,?,?,?)",
+            params![id, name, identity.email, identity.plan, config_dir, next, identity.login_expires_at],
         )?;
         Ok(())
     }
@@ -178,8 +180,8 @@ impl AccountRepository for SqliteStore {
 
     fn set_identity(&self, id: &str, identity: &Identity) -> AppResult<()> {
         self.conn().execute(
-            "UPDATE accounts SET email=COALESCE(?,email), plan=COALESCE(?,plan), auth_ok=? WHERE id=?",
-            params![identity.email, identity.plan, identity.logged_in as i64, id],
+            "UPDATE accounts SET email=COALESCE(?,email), plan=COALESCE(?,plan), auth_ok=?, login_expires_at=? WHERE id=?",
+            params![identity.email, identity.plan, identity.logged_in as i64, identity.login_expires_at, id],
         )?;
         Ok(())
     }

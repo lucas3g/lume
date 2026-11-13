@@ -66,6 +66,8 @@ impl Journal {
 enum Handoff {
     Limit,
     Auth,
+    /// Está quase no limite: poupada enquanto outra conta estiver livre.
+    NearLimit,
 }
 
 impl SendMessage {
@@ -93,12 +95,19 @@ impl SendMessage {
         loop {
             let all = self.accounts.all()?;
             let now = self.clock.now();
-            let Some(account) = pick_next(&all, now, &tried).cloned() else {
+            let spare = self.settings.flag(flags::SWITCH_EARLY, true);
+            let Some(account) = pick_next(&all, now, &tried, spare).cloned() else {
                 self.emit(conversation_id, ChatEvent::Exhausted { resets_at: earliest_reset(&all, now) });
                 return Ok(());
             };
-            if let Some((from, reason)) = previous.take() {
-                self.announce_switch(conversation_id, &title, &from, &account, reason)?;
+            // Na primeira tentativa, avisa se a conta da vez foi poupada por estar quase no limite.
+            let spared = pick_next(&all, now, &tried, false).filter(|a| a.id != account.id).cloned();
+            match (previous.take(), spared) {
+                (Some((from, reason)), _) => self.announce_switch(conversation_id, &title, &from, &account, reason)?,
+                (None, Some(from)) if tried.is_empty() => {
+                    self.announce_switch(conversation_id, &title, &from, &account, Handoff::NearLimit)?
+                }
+                _ => {}
             }
             self.emit(conversation_id, ChatEvent::Account { id: account.id.clone(), name: account.name.clone() });
             tried.push(account.id.clone());
@@ -222,6 +231,7 @@ impl SendMessage {
         let text = match reason {
             Handoff::Limit => format!("Limite da conta {} atingido · continuando com {}", from.name, to.name),
             Handoff::Auth => format!("A conta {} precisa de novo login · continuando com {}", from.name, to.name),
+            Handoff::NearLimit => format!("A conta {} está quase no limite · usando {}", from.name, to.name),
         };
         self.conversations.add_message(conversation_id, ROLE_NOTICE, &text, None, None)?;
         self.emit(conversation_id, ChatEvent::Notice { text });
@@ -285,7 +295,7 @@ impl SendMessage {
             }
             TurnEvent::Permission { request_id, tool, input, description } => {
                 if self.is_tool_allowed(conversation_id, tool) {
-                    let _ = answer.send(PermissionDecision { request_id: request_id.clone(), allow: true });
+                    let _ = answer.send(PermissionDecision::new(request_id, true));
                 } else {
                     let event = ChatEvent::Permission {
                         request_id: request_id.clone(),
@@ -297,6 +307,7 @@ impl SendMessage {
                 }
             }
             TurnEvent::Thinking(text) => self.emit(conversation_id, ChatEvent::Thinking { text: text.clone() }),
+            TurnEvent::SubagentDelta(text) => self.emit(conversation_id, ChatEvent::Subagent { text: text.clone() }),
             TurnEvent::Tool(name) => self.emit(conversation_id, ChatEvent::Tool { name: name.clone() }),
             TurnEvent::Rate(rate) => {
                 if self.accounts.set_usage(account_id, rate.util_5h, rate.util_7d, rate.resets_5h).is_ok() {
@@ -483,7 +494,26 @@ mod tests {
         let decisions = engine.decisions.clone();
         use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
         assert!(!world.events.chat_events().iter().any(|e| matches!(e, ChatEvent::Permission { .. })), "não pergunta de novo");
-        assert_eq!(*decisions.lock().unwrap(), [PermissionDecision { request_id: "r1".into(), allow: true }]);
+        assert_eq!(*decisions.lock().unwrap(), [PermissionDecision::new("r1", true)]);
+    }
+
+    #[tokio::test]
+    async fn spares_the_account_near_its_limit_and_says_so() {
+        let world = World::with_accounts(vec![sample("a", 1), sample("b", 2)]);
+        world.store.set_usage("a", Some(0.98), None, Some(5000)).unwrap();
+        let engine = ScriptedEngine::new(|req, _| {
+            assert_eq!(req.config_dir, None);
+            (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })
+        });
+        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        let messages = world.store.messages("c1").unwrap();
+        assert_eq!(messages[1].content, "A conta a está quase no limite · usando b");
+        assert_eq!(messages[2].account_id.as_deref(), Some("b"));
+
+        world.store.set_flag(flags::SWITCH_EARLY, false).unwrap();
+        let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Done { session_id: None, text: "ok".into() }));
+        use_case(&world, engine).execute("c1", "de novo", &[], TurnControl::new().0).await.unwrap();
+        assert_eq!(world.store.messages("c1").unwrap().last().unwrap().account_id.as_deref(), Some("a"));
     }
 
     #[tokio::test]

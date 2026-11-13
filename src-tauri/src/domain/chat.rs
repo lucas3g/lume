@@ -96,6 +96,8 @@ pub enum TurnEvent {
     },
     Delta(String),
     Thinking(String),
+    /// Texto produzido por um subagente, para acompanhar o andamento.
+    SubagentDelta(String),
     Tool(String),
     /// Chamada de ferramenta completa; `input` é o JSON dos argumentos.
     ToolCall {
@@ -188,11 +190,31 @@ impl Attachment {
     }
 }
 
+/// Ferramenta com que o agente faz perguntas ao usuário; a resposta vai nos próprios argumentos.
+pub const TOOL_ASK: &str = "AskUserQuestion";
+/// Ferramenta com que o agente pede aprovação do plano antes de agir.
+pub const TOOL_EXIT_PLAN: &str = "ExitPlanMode";
+
 /// Resposta do usuário a um pedido de autorização.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionDecision {
     pub request_id: String,
     pub allow: bool,
+    /// Respostas às perguntas do agente (pergunta → opção escolhida).
+    pub answers: Vec<(String, String)>,
+    /// Modo de permissão que a sessão passa a usar ao aprovar um plano.
+    pub next_mode: Option<String>,
+}
+
+impl PermissionDecision {
+    pub fn new(request_id: &str, allow: bool) -> PermissionDecision {
+        PermissionDecision { request_id: request_id.into(), allow, answers: vec![], next_mode: None }
+    }
+}
+
+/// Pedidos que só o usuário pode responder: nunca são liberados "para sempre".
+pub fn needs_user(tool: &str) -> bool {
+    tool == TOOL_ASK || tool == TOOL_EXIT_PLAN
 }
 
 /// Conteúdo de uma mensagem de ferramenta: o que foi chamado e o que voltou.

@@ -77,6 +77,12 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             api.prevent_close();
             let _ = window.hide();
         }
+        // De volta ao primeiro plano: o que esperava atenção foi visto.
+        (MAIN_WINDOW, WindowEvent::Focused(true)) => {
+            if let Some(container) = window.try_state::<std::sync::Arc<super::Container>>() {
+                container.notifier.clear_waiting();
+            }
+        }
         (QUICK_WINDOW, WindowEvent::Focused(false)) => {
             let _ = window.hide();
         }

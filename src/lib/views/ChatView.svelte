@@ -10,6 +10,8 @@
   import EnvironmentPanel from "../components/panel/EnvironmentPanel.svelte";
   import FilesPanel from "../components/panel/FilesPanel.svelte";
   import PermissionCard from "../components/PermissionCard.svelte";
+  import PlanCard from "../components/PlanCard.svelte";
+  import QuestionCard from "../components/QuestionCard.svelte";
   import CodeView from "../components/CodeView.svelte";
   import ToolRow from "../components/ToolRow.svelte";
   import { describeFile, folderName, formatTime, renderMarkdown } from "../format";
@@ -283,7 +285,11 @@
           </div>
         {/if}
 
-        {#if permission}
+        {#if permission?.tool === "AskUserQuestion"}
+          <QuestionCard request={permission} onanswer={(answers) => decide(true, false, { answers })} oncancel={() => decide(false, false)} />
+        {:else if permission?.tool === "ExitPlanMode"}
+          <PlanCard request={permission} ondecide={(mode) => (mode ? decide(true, false, { nextMode: mode }) : decide(false, false))} />
+        {:else if permission}
           <PermissionCard request={permission} ondecide={decide} />
         {/if}
 

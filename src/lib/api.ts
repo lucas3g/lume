@@ -35,8 +35,17 @@ export const api = {
     invoke<void>("send_message", { conversationId, text, attachments }),
   cancelMessage: (conversationId: string) => invoke<void>("cancel_message", { conversationId }),
   startFolderSession: (folder: string, model: string) => invoke<Conversation>("start_folder_session", { folder, model }),
-  decidePermission: (decision: { conversationId: string; requestId: string; tool: string; allow: boolean; always: boolean }) =>
-    invoke<void>("decide_permission", decision),
+  decidePermission: (decision: {
+    conversationId: string;
+    requestId: string;
+    tool: string;
+    allow: boolean;
+    always: boolean;
+    /** Respostas às perguntas do agente: [pergunta, opção]. */
+    answers?: [string, string][];
+    /** Modo da sessão após aprovar um plano. */
+    nextMode?: string;
+  }) => invoke<void>("decide_permission", decision),
 
   getFlags: () => invoke<Flags>("get_flags"),
   setFlag: (key: FlagKey, value: boolean) => invoke<void>("set_flag", { key, value }),

@@ -133,7 +133,7 @@ mod tests {
     }
 
     fn identity(email: &str) -> Identity {
-        Identity { logged_in: true, email: Some(email.into()), plan: Some("max".into()) }
+        Identity { logged_in: true, email: Some(email.into()), plan: Some("max".into()), login_expires_at: Some(99) }
     }
 
     #[tokio::test]

@@ -32,6 +32,7 @@ impl ClaudeCliEngine {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
+            "--forward-subagent-text",
             "--model",
             &request.model,
             "--tools",
@@ -102,10 +103,21 @@ async fn write_line(stdin: &mut Option<ChildStdin>, message: Value) {
 }
 
 /// Resposta a um pedido de autorização, no formato do protocolo de controle.
+/// Respostas a perguntas entram nos argumentos (`answers`); a aprovação de um
+/// plano pode trocar o modo da sessão (`updatedPermissions`).
 fn permission_response(decision: &PermissionDecision, input: &str) -> Value {
     let response = if decision.allow {
-        let input: Value = serde_json::from_str(input).unwrap_or(Value::Null);
-        json!({ "behavior": "allow", "updatedInput": input })
+        let mut input: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+        if !decision.answers.is_empty() {
+            let answers: serde_json::Map<String, Value> =
+                decision.answers.iter().map(|(q, a)| (q.clone(), Value::String(a.clone()))).collect();
+            input["answers"] = Value::Object(answers);
+        }
+        let mut response = json!({ "behavior": "allow", "updatedInput": input });
+        if let Some(mode) = &decision.next_mode {
+            response["updatedPermissions"] = json!([{ "type": "setMode", "mode": mode, "destination": "session" }]);
+        }
+        response
     } else {
         json!({ "behavior": "deny", "message": DENIED_MESSAGE })
     };
@@ -216,14 +228,32 @@ mod tests {
 
     #[test]
     fn permission_response_echoes_input_when_allowed() {
-        let allow = PermissionDecision { request_id: "r1".into(), allow: true };
+        let allow = PermissionDecision::new("r1", true);
         let v = permission_response(&allow, r#"{"file_path":"a.txt"}"#);
         assert_eq!(v["response"]["request_id"], "r1");
         assert_eq!(v["response"]["response"]["behavior"], "allow");
         assert_eq!(v["response"]["response"]["updatedInput"]["file_path"], "a.txt");
+        assert!(v["response"]["response"].get("updatedPermissions").is_none());
 
-        let deny = PermissionDecision { request_id: "r2".into(), allow: false };
+        let deny = PermissionDecision::new("r2", false);
         assert_eq!(permission_response(&deny, "{}")["response"]["response"]["behavior"], "deny");
+    }
+
+    /// Formatos conferidos com o CLI 2.1.323: respostas em `answers`; plano aprovado troca o modo.
+    #[test]
+    fn answers_and_plan_approval_follow_the_control_protocol() {
+        let mut answer = PermissionDecision::new("r1", true);
+        answer.answers = vec![("Qual cor?".into(), "Azul".into())];
+        let v = permission_response(&answer, r#"{"questions":[{"question":"Qual cor?"}]}"#);
+        let updated = &v["response"]["response"]["updatedInput"];
+        assert_eq!(updated["questions"][0]["question"], "Qual cor?");
+        assert_eq!(updated["answers"]["Qual cor?"], "Azul");
+
+        let mut plan = PermissionDecision::new("r2", true);
+        plan.next_mode = Some("acceptEdits".into());
+        let v = permission_response(&plan, r##"{"plan":"# Plano"}"##);
+        assert_eq!(v["response"]["response"]["updatedInput"]["plan"], "# Plano");
+        assert_eq!(v["response"]["response"]["updatedPermissions"][0]["mode"], "acceptEdits");
     }
 
     #[test]
@@ -324,7 +354,7 @@ mod tests {
         let end = engine()
             .run_turn(&req, &mut control, &mut |e| {
                 if let TurnEvent::Permission { request_id, .. } = e {
-                    let _ = answer.send(PermissionDecision { request_id: request_id.clone(), allow });
+                    let _ = answer.send(PermissionDecision::new(request_id, allow));
                 }
                 events.push(e.clone());
             })

@@ -25,6 +25,12 @@ export interface PermissionRequest {
   input: string;
 }
 
+/** O que acompanha a resposta a um pedido, além de permitir ou negar. */
+export interface DecisionExtras {
+  answers?: [string, string][];
+  nextMode?: string;
+}
+
 export const chat = $state({
   conversations: [] as Conversation[],
   activeId: null as string | null,
@@ -151,12 +157,14 @@ export async function startAgentSession(folder: string, model = DEFAULT_MODEL): 
 }
 
 /** Responde ao pedido de autorização da conversa aberta. */
-export async function decide(allow: boolean, always: boolean): Promise<void> {
+export async function decide(allow: boolean, always: boolean, extras: DecisionExtras = {}): Promise<void> {
   const id = chat.activeId;
   const request = id ? chat.permissions[id] : undefined;
   if (!id || !request) return;
   delete chat.permissions[id];
-  await api.decidePermission({ conversationId: id, requestId: request.requestId, tool: request.tool, allow, always });
+  const conversation = activeConversation();
+  if (allow && extras.nextMode && conversation) conversation.permission_mode = extras.nextMode;
+  await api.decidePermission({ conversationId: id, requestId: request.requestId, tool: request.tool, allow, always, ...extras });
 }
 
 export function cancel(): void {
@@ -178,7 +186,17 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 /** Eventos que indicam um turno em andamento, mesmo que iniciado por outra janela. */
-const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "tool", "step", "permission"]);
+const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "tool", "step", "permission"]);
+
+const SUBAGENT_PREFIX = "Subagente: ";
+const SUBAGENT_MAX = 90;
+
+/** Última linha do que o subagente escreveu, encurtada, como situação do turno. */
+function subagentStatus(current: string | null, delta: string): string {
+  const previous = current?.startsWith(SUBAGENT_PREFIX) ? current.slice(SUBAGENT_PREFIX.length) : "";
+  const text = (previous + delta).split("\n").filter((l) => l.trim()).pop() ?? "";
+  return SUBAGENT_PREFIX + (text.length > SUBAGENT_MAX ? "…" + text.slice(-SUBAGENT_MAX) : text);
+}
 
 /** Aplica ao estado um evento vindo do núcleo. */
 export function handleChatEvent(event: ChatEvent): void {
@@ -208,6 +226,9 @@ export function handleChatEvent(event: ChatEvent): void {
     case "thinking":
       if (turn && !turn.text) turn.status = "Pensando";
       break;
+    case "subagent":
+      if (turn) turn.status = subagentStatus(turn.status, event.text);
+      break;
     case "tool":
       if (turn) turn.status = TOOL_LABELS[event.name] ?? (event.name.startsWith("mcp__") ? "Usando um conector" : `Usando ${event.name}`);
       break;
@@ -218,7 +239,7 @@ export function handleChatEvent(event: ChatEvent): void {
       break;
     case "permission":
       chat.permissions[id] = { requestId: event.request_id, tool: event.tool, input: event.input };
-      if (turn) turn.status = "Aguardando sua aprovação";
+      if (turn) turn.status = event.tool === "AskUserQuestion" ? "Aguardando sua resposta" : "Aguardando sua aprovação";
       break;
     case "reset":
       if (turn) {

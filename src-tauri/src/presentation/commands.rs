@@ -4,7 +4,7 @@ use super::{windows, Container};
 use crate::application::{extensions::SkillView, flags, store::ServerPage, AppError, AppResult, ChatEvent};
 use crate::domain::{
     account::Account,
-    chat::{Conversation, Message, PermissionDecision, Switch},
+    chat::{needs_user, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, Connector},
     history::{HistSession, HistoryStatus},
     project::{Project, ProjectFile},
@@ -124,7 +124,9 @@ pub fn start_folder_session(app: App<'_>, folder: String, model: String) -> AppR
 }
 
 /// Resposta do usuário a um pedido de autorização; `always` libera a ferramenta na conversa.
+/// `answers` responde às perguntas do agente; `next_mode` é o modo após aprovar um plano.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn decide_permission(
     app: App<'_>,
     conversation_id: String,
@@ -132,11 +134,17 @@ pub fn decide_permission(
     tool: String,
     allow: bool,
     always: bool,
+    answers: Option<Vec<(String, String)>>,
+    next_mode: Option<String>,
 ) -> AppResult<()> {
-    if allow && always {
+    if allow && always && !needs_user(&tool) {
         app.conversations.allow_tool(&conversation_id, &tool)?;
     }
-    app.running.decide(&conversation_id, PermissionDecision { request_id, allow });
+    if let (true, Some(mode)) = (allow, &next_mode) {
+        app.conversations.set_permission_mode(&conversation_id, mode)?;
+    }
+    let decision = PermissionDecision { request_id, allow, answers: answers.unwrap_or_default(), next_mode };
+    app.running.decide(&conversation_id, decision);
     Ok(())
 }
 

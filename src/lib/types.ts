@@ -13,6 +13,8 @@ export interface Account {
   util_5h: number | null;
   util_7d: number | null;
   resets_5h: number | null;
+  /** Quando o login da conta vence. */
+  login_expires_at: number | null;
 }
 
 export interface Conversation {
@@ -65,7 +67,7 @@ export interface HistoryStatus {
   desktop_sessions: number;
 }
 
-export type FlagKey = "auto_switch" | "notify_switch" | "use_history";
+export type FlagKey = "auto_switch" | "notify_switch" | "use_history" | "switch_early" | "notify_desktop";
 export type Flags = Record<FlagKey, boolean>;
 
 export type ChatEvent = { conversation_id: string } & (
@@ -74,6 +76,7 @@ export type ChatEvent = { conversation_id: string } & (
   | { kind: "context"; titles: string[] }
   | { kind: "delta"; text: string }
   | { kind: "thinking"; text: string }
+  | { kind: "subagent"; text: string }
   | { kind: "tool"; name: string }
   | { kind: "step" }
   | { kind: "permission"; request_id: string; tool: string; input: string; description: string }

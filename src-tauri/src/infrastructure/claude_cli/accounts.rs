@@ -39,6 +39,37 @@ fn link_dir(target: &Path, link: &Path) {
     let _ = std::os::windows::fs::symlink_dir(target, link);
 }
 
+/// Instante Unix de uma data ISO 8601 em UTC ("2026-12-12T03:41:12.461Z").
+fn parse_iso_utc(text: &str) -> Option<i64> {
+    let (date, time) = text.split_once('T')?;
+    let mut date = date.split('-').map(|n| n.parse::<i64>().ok());
+    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
+    let time = time.trim_end_matches('Z');
+    let mut time = time.split(':').map(|n| n.split('.').next()?.parse::<i64>().ok());
+    let (hour, minute, second) = (time.next()??, time.next()??, time.next().flatten().unwrap_or(0));
+    // Dias desde 1970-01-01 (algoritmo "days from civil").
+    let (y, m) = if month <= 2 { (year - 1, month + 9) } else { (year, month - 3) };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_iso_utc;
+
+    #[test]
+    fn parses_iso_dates_from_auth_status() {
+        assert_eq!(parse_iso_utc("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_iso_utc("2026-12-12T03:41:12.461Z"), Some(1_797_046_872));
+        assert_eq!(parse_iso_utc("2026-11-13T01:27:24Z"), Some(1_794_533_244));
+        assert_eq!(parse_iso_utc("ontem"), None);
+    }
+}
+
 #[async_trait]
 impl AccountGateway for ClaudeCliAccounts {
     fn prepare_profile(&self, account_id: &str) -> AppResult<String> {
@@ -70,6 +101,7 @@ impl AccountGateway for ClaudeCliAccounts {
             logged_in: v["loggedIn"].as_bool().unwrap_or(false),
             email: v["email"].as_str().map(Into::into),
             plan: v["subscriptionType"].as_str().map(Into::into),
+            login_expires_at: v["loginExpiresAt"].as_str().and_then(parse_iso_utc),
         }
     }
 

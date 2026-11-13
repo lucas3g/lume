@@ -40,7 +40,11 @@ pub mod flags {
     pub const AUTO_SWITCH: &str = "auto_switch";
     pub const NOTIFY_SWITCH: &str = "notify_switch";
     pub const USE_HISTORY: &str = "use_history";
-    pub const ALL: [&str; 3] = [AUTO_SWITCH, NOTIFY_SWITCH, USE_HISTORY];
+    /// Poupar a conta que está quase no limite enquanto outra estiver livre.
+    pub const SWITCH_EARLY: &str = "switch_early";
+    /// Avisos do sistema quando o app está em segundo plano.
+    pub const NOTIFY_DESKTOP: &str = "notify_desktop";
+    pub const ALL: [&str; 5] = [AUTO_SWITCH, NOTIFY_SWITCH, USE_HISTORY, SWITCH_EARLY, NOTIFY_DESKTOP];
 }
 
 /// Eventos de uma conversa enviados à interface.
@@ -52,6 +56,8 @@ pub enum ChatEvent {
     Context { titles: Vec<String> },
     Delta { text: String },
     Thinking { text: String },
+    /// Andamento de um subagente (texto que ele produziu).
+    Subagent { text: String },
     Tool { name: String },
     /// Algo foi gravado na conversa (trecho de texto ou uso de ferramenta): recarregue as mensagens.
     Step,

@@ -2,9 +2,11 @@
   import { api, errorMessage } from "../api";
   import SettingRow from "../components/SettingRow.svelte";
   import Toggle from "../components/Toggle.svelte";
-  import { formatTime, formatWhen, percent } from "../format";
+  import { formatTime, formatWhen, nowSeconds, percent } from "../format";
   import { accounts, loadAccounts, moveAccount, stateOf, type AccountState } from "../state/accounts.svelte";
   import type { Account } from "../types";
+
+  const LOGIN_WARNING_DAYS = 10;
 
   let newName = $state("");
   let adding = $state(false);
@@ -25,6 +27,20 @@
     active: "ok",
     available: "",
   };
+
+  /** Dias até o login vencer; só vale a pena avisar nos últimos dias. */
+  function loginDaysLeft(a: Account): number | null {
+    if (a.login_expires_at === null) return null;
+    return Math.floor((a.login_expires_at - nowSeconds()) / 86_400);
+  }
+
+  function loginWarning(a: Account): string | null {
+    const days = loginDaysLeft(a);
+    if (days === null || days > LOGIN_WARNING_DAYS) return null;
+    if (days < 0) return "O login venceu: entre novamente";
+    if (days === 0) return "O login vence hoje: entre novamente";
+    return `O login vence em ${days} ${days === 1 ? "dia" : "dias"}`;
+  }
 
   function detail(a: Account): string {
     const state = stateOf(a);
@@ -104,11 +120,12 @@
               {#if a.plan}<span class="plan">{a.plan}</span>{/if}
             </div>
             <div class="muted small">{a.email ?? "E-mail não informado"}</div>
+            {#if loginWarning(a)}<div class="warn small">{loginWarning(a)}</div>{/if}
           </div>
 
           <div class="usage">
             {#if a.util_5h !== null}
-              <div class="usage-label muted"><span>Uso na janela de 5 h</span><span>{percent(a.util_5h)}%</span></div>
+              <div class="usage-label muted"><span>Uso na janela de 5 h{a.resets_5h ? ` · zera às ${formatTime(a.resets_5h)}` : ""}</span><span>{percent(a.util_5h)}%</span></div>
               <div class="bar" role="img" aria-label={`${percent(a.util_5h)}% usado na janela de 5 horas`}>
                 <div class:full={state === "limited"} style:width={`${percent(a.util_5h)}%`}></div>
               </div>
@@ -124,7 +141,7 @@
           </div>
 
           <div class="row actions">
-            {#if state === "login" && a.config_dir}
+            {#if (state === "login" || loginWarning(a)) && a.config_dir}
               <button type="button" class="btn small" disabled={busy} onclick={() => run(() => api.loginAccountAgain(a.id))}>Entrar</button>
             {/if}
             <Toggle checked={a.enabled} label={`Usar a conta ${a.name}`} onchange={(v) => run(() => api.setAccountEnabled(a.id, v))} />
@@ -145,7 +162,13 @@
       <section class="card panel">
         <h2 class="section-title">Troca automática</h2>
         <SettingRow flag="auto_switch" title="Trocar de conta ao atingir o limite" description="Passa para a próxima conta disponível e reenvia a última mensagem." />
+        <SettingRow flag="switch_early" title="Poupar a conta quase no limite" description="Acima de 95% da janela de 5 h, usa outra conta livre antes de o limite estourar." />
         <SettingRow flag="notify_switch" title="Avisar na conversa" description="Mostra uma linha discreta indicando a conta que assumiu." />
+      </section>
+
+      <section class="card panel">
+        <h2 class="section-title">Avisos</h2>
+        <SettingRow flag="notify_desktop" title="Avisar pelo sistema" description="Com o Lume em segundo plano, avisa quando uma resposta termina ou o agente precisa de você." />
       </section>
 
       <section class="card panel">
@@ -179,6 +202,7 @@
   .bar div { height: 100%; border-radius: 3px; background: var(--bar); }
   .bar div.full { background: var(--warn); }
   .week { font-size: 12px; }
+  .warn { color: var(--warn); }
   .state { flex: 0 1 170px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-size: 12px; }
   .actions { gap: 8px; }
   .empty, .foot { padding: 14px 20px; }
