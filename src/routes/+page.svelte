@@ -4,7 +4,8 @@
   import { api } from "$lib/api";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import UpdateBanner from "$lib/components/UpdateBanner.svelte";
-  import { loadAccounts, loadFlags } from "$lib/state/accounts.svelte";
+  import { activeAccount, loadAccounts, loadFlags } from "$lib/state/accounts.svelte";
+  import { connectors } from "$lib/state/connectors.svelte";
   import { loadAgents } from "$lib/state/agents.svelte";
   import { loadProjects } from "$lib/state/projects.svelte";
   import { handleChatEvent, loadConversations, openConversation } from "$lib/state/chat.svelte";
@@ -21,7 +22,8 @@
   let cliFound = $state(true);
 
   onMount(() => {
-    void Promise.all([loadAccounts(), loadFlags(), loadConversations(), loadAgents(), loadProjects()]);
+    // Os conectores da conta demoram para verificar: começam a carregar já na abertura.
+    void Promise.all([loadAccounts(), loadFlags(), loadConversations(), loadAgents(), loadProjects()]).then(() => connectors.ensure(activeAccount()?.id ?? null));
     void api.environment().then((env) => (cliFound = env.cli_found));
     // Uso das contas direto do provedor, para a barra lateral e o anel do compositor abrirem atualizados.
     const usageTimer = setTimeout(() => void api.refreshUsage().then(loadAccounts).catch(() => {}), 3000);

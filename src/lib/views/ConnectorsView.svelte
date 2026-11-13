@@ -2,16 +2,18 @@
   import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
   import ConnectorIcon from "../components/ConnectorIcon.svelte";
+  import { activeAccount } from "../state/accounts.svelte";
+  import { connectors } from "../state/connectors.svelte";
   import ConnectorCatalog from "../components/store/ConnectorCatalog.svelte";
   import Toggle from "../components/Toggle.svelte";
   import type { AccountConnector, Connector } from "../types";
 
   let tab = $state<"mine" | "discover">("mine");
-  /** Conectores que o Claude Code carrega para a conta ativa (web, terminal e plugins). */
-  let account = $state<AccountConnector[]>([]);
+  /** Conectores que o Claude Code carrega para a conta ativa (web, terminal e plugins), guardados entre visitas. */
+  const account = $derived(connectors.account);
+  const checking = $derived(connectors.checking);
   /** Conectores cadastrados no próprio Lume. */
   let mine = $state<Connector[]>([]);
-  let checking = $state(true);
   let adding = $state(false);
   let name = $state("");
   let config = $state('{\n  "command": "npx",\n  "args": ["-y", "pacote-do-servidor"]\n}');
@@ -55,16 +57,10 @@
     mine = await api.listConnectors();
   }
 
-  /** A situação dos conectores da conta vem do Claude Code e leva alguns segundos. */
+  /** A situação dos conectores da conta vem do Claude Code e leva alguns segundos; a última lista fica na tela enquanto isso. */
   async function loadAccount() {
-    checking = true;
-    try {
-      account = await api.listAccountConnectors();
-    } catch (e) {
-      error = errorMessage(e);
-    } finally {
-      checking = false;
-    }
+    await connectors.ensure(activeAccount()?.id ?? null);
+    if (connectors.error) error = connectors.error;
   }
 
   /** Executa uma ação mostrando o erro, se houver, e recarrega os conectores do Lume. */
@@ -227,8 +223,11 @@
           </div>
         {/each}
 
-        {#if checking && !account.length}
-          <p class="muted empty">Verificando os conectores da conta…</p>
+        {#if checking && !connectors.loaded}
+          {#each [1, 2, 3, 4] as i (i)}
+            <div class="grid item skeleton" aria-hidden="true"><span class="bone icon-bone"></span><span class="bone"></span><span class="bone short"></span><span></span></div>
+          {/each}
+          <p class="muted empty" role="status">Verificando os conectores da conta…</p>
         {:else if !accountRows.length && !mineRows.length}
           <p class="muted empty">{query ? "Nenhum conector com esse nome." : "Nenhum conector ainda. Procure em Descobrir ou adicione um."}</p>
         {/if}
@@ -266,6 +265,10 @@
   .actions { justify-content: flex-end; gap: 6px; }
   .warn { color: var(--warn-text); }
   .empty { padding: 14px 16px; }
+  .skeleton .bone { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--surface-2), var(--hover), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+  .skeleton .icon-bone { width: 32px; height: 32px; border-radius: 9px; }
+  .skeleton .short { width: 60%; }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   @media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr) auto; } .head span:nth-child(2), .head span:nth-child(3), .item .cell:nth-child(2), .item .status { display: none; } }
 </style>
