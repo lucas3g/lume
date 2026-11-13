@@ -164,7 +164,7 @@
 
       <section class="card" aria-label="Conectores">
         <div class="grid head">
-          <span>Conector</span><span>Tipo</span><span>Status</span><span class="sr-only">Ações</span>
+          <span>Conector</span><span>Tipo</span><span class="center">Status</span><span class="sr-only">Ações</span>
         </div>
 
         {#each accountRows as c (c.name)}
@@ -196,6 +196,8 @@
                 <button type="button" class="btn icon" aria-label={`Desvincular ${c.display_name}`} title="Desvincular" disabled={busy !== null} onclick={() => link(c, false)}>
                   <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1M4 4l16 16" /></svg>
                 </button>
+              {:else}
+                <span class="slot" aria-hidden="true"></span>
               {/if}
               <Toggle checked={c.enabled} label={`Usar ${c.display_name} nas conversas`} onchange={(v) => toggleAccount(c, v)} />
             </span>
@@ -249,7 +251,9 @@
   .form textarea { padding: 10px 12px; resize: vertical; }
   code { font-family: var(--mono); font-size: 12px; }
 
-  .grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.9fr) auto; align-items: center; gap: 12px; padding: 0 16px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.9fr) 86px; align-items: center; gap: 12px; padding: 0 16px; }
+  .center, .status { justify-content: center; text-align: center; }
+  .slot { width: 28px; height: 28px; }
   .head { min-height: 36px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: var(--muted); }
   .item { min-height: 52px; border-bottom: 1px solid var(--hairline); }
   .item:last-of-type { border-bottom: 0; }
