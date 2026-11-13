@@ -4,7 +4,7 @@
   import { formatWhen } from "../format";
   import { chat, loadConversations, openConversation, startAgentSession } from "../state/chat.svelte";
   import { loadProjects, projects } from "../state/projects.svelte";
-  import type { ProjectFile, View } from "../types";
+  import type { MemoryFile, ProjectFile, View } from "../types";
 
   interface Props {
     onnavigate: (view: View) => void;
@@ -16,6 +16,12 @@
   let files = $state<ProjectFile[]>([]);
   let error = $state<string | null>(null);
   let saved = $state(false);
+  /** Memória do Claude Code na pasta do projeto. */
+  let memory = $state<MemoryFile[]>([]);
+  let memoryOpen = $state<string | null>(null);
+  let memoryText = $state("");
+  let memorySaved = $state(false);
+  let newMemoryName = $state("");
 
   const project = $derived(projects.list.find((p) => p.id === projects.selectedId));
   const conversations = $derived(chat.conversations.filter((c) => project && c.project_id === project.id));
@@ -30,8 +36,49 @@
     error = null;
     saved = false;
     files = [];
-    if (id) void api.listProjectFiles(id).then((list) => (files = list));
+    memory = [];
+    memoryOpen = null;
+    if (id) {
+      void api.listProjectFiles(id).then((list) => (files = list));
+      if (current?.folder) void api.projectMemoryList(id).then((list) => (memory = list));
+    }
   });
+
+  const openMemory = (name: string) =>
+    run(async () => {
+      if (!project) return;
+      memoryText = await api.projectMemoryRead(project.id, name);
+      memoryOpen = name;
+      memorySaved = false;
+    });
+
+  const saveMemory = () =>
+    run(async () => {
+      if (!project || !memoryOpen) return;
+      await api.projectMemoryWrite(project.id, memoryOpen, memoryText);
+      memory = await api.projectMemoryList(project.id);
+      memorySaved = true;
+    });
+
+  const removeMemory = (name: string) =>
+    run(async () => {
+      if (!project) return;
+      await api.projectMemoryRemove(project.id, name);
+      memory = await api.projectMemoryList(project.id);
+      if (memoryOpen === name) memoryOpen = null;
+    });
+
+  const createMemory = (event: SubmitEvent) => {
+    event.preventDefault();
+    return run(async () => {
+      if (!project) return;
+      const name = newMemoryName.trim().endsWith(".md") ? newMemoryName.trim() : `${newMemoryName.trim()}.md`;
+      await api.projectMemoryWrite(project.id, name, "");
+      memory = await api.projectMemoryList(project.id);
+      newMemoryName = "";
+      await openMemory(name);
+    });
+  };
 
   /** Executa uma ação mostrando o erro, se houver. */
   async function run(action: () => Promise<void>) {
@@ -148,6 +195,43 @@
         {/each}
       </section>
 
+      {#if project.folder}
+        <section class="card" aria-label="Memória do projeto">
+          <div class="head">
+            <div>
+              <h2 class="section-title">Memória</h2>
+              <div class="muted small">O que o assistente aprendeu trabalhando nesta pasta. Ele lê estes arquivos em toda sessão; edite ou apague o que não deve lembrar.</div>
+            </div>
+            <form class="row" onsubmit={createMemory}>
+              <input class="input small-input" placeholder="nova-nota.md" bind:value={newMemoryName} aria-label="Nome do novo arquivo de memória" />
+              <button type="submit" class="btn small" disabled={!newMemoryName.trim()}>Criar</button>
+            </form>
+          </div>
+          {#each memory as m (m.name)}
+            <div class="line" class:on={memoryOpen === m.name}>
+              <button type="button" class="grow link-text" onclick={() => openMemory(m.name)}>{m.name}</button>
+              <span class="muted small">{m.modified ? formatWhen(m.modified) : ""}</span>
+              <button type="button" class="btn icon" aria-label={`Apagar ${m.name}`} onclick={() => removeMemory(m.name)}>
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            </div>
+          {:else}
+            <div class="line muted">Nada memorizado ainda.</div>
+          {/each}
+          {#if memoryOpen}
+            <div class="editor">
+              <textarea class="input mono" rows="12" bind:value={memoryText} oninput={() => (memorySaved = false)} aria-label={`Conteúdo de ${memoryOpen}`}></textarea>
+              <div class="row">
+                <button type="button" class="btn primary" onclick={saveMemory}>Salvar {memoryOpen}</button>
+                {#if memorySaved}<span class="muted small" role="status">Salvo.</span>{/if}
+                <span class="spacer"></span>
+                <button type="button" class="btn" onclick={() => (memoryOpen = null)}>Fechar</button>
+              </div>
+            </div>
+          {/if}
+        </section>
+      {/if}
+
       <section class="card" aria-label="Conversas do projeto">
         <div class="head"><h2 class="section-title">Conversas</h2></div>
         {#each conversations as c (c.id)}
@@ -176,4 +260,10 @@
   .line { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 0 16px; border: 0; border-bottom: 1px solid var(--hairline); background: transparent; text-align: left; }
   .line:last-child { border-bottom: 0; }
   .link:hover { background: var(--hover); }
+  .line.on { background: var(--hover); }
+  .link-text { padding: 0; border: 0; background: transparent; color: var(--text); text-align: left; min-height: 44px; }
+  .link-text:hover { color: var(--accent-text); }
+  .small-input { min-height: 30px; width: 170px; font-size: 12.5px; }
+  .editor { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--hairline); }
+  .editor textarea { width: 100%; padding: 10px 12px; resize: vertical; font-size: 12.5px; line-height: 1.5; }
 </style>

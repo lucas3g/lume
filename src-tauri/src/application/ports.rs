@@ -7,7 +7,7 @@ use crate::domain::{
     chat::{Attachment, Conversation, Message, Switch, TurnEnd, TurnEvent, TurnRequest},
     extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
-    project::{Project, ProjectFile},
+    project::{MemoryFile, Project, ProjectFile},
     store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
@@ -64,6 +64,14 @@ pub trait ProjectRepository: Send + Sync {
     fn knowledge(&self, project_id: &str) -> AppResult<Vec<(String, String)>>;
     fn add_file(&self, id: &str, project_id: &str, name: &str, content: &str) -> AppResult<()>;
     fn remove_file(&self, file_id: &str) -> AppResult<()>;
+}
+
+/// Memória que o Claude Code mantém por pasta de projeto (arquivos Markdown).
+pub trait MemoryStore: Send + Sync {
+    fn list(&self, folder: &str) -> AppResult<Vec<MemoryFile>>;
+    fn read(&self, folder: &str, name: &str) -> AppResult<String>;
+    fn write(&self, folder: &str, name: &str, content: &str) -> AppResult<()>;
+    fn remove(&self, folder: &str, name: &str) -> AppResult<()>;
 }
 
 /// Arquivos da pasta de uma sessão. Os caminhos são relativos a `root`.

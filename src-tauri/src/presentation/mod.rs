@@ -28,6 +28,7 @@ use crate::infrastructure::{
     history_index::SqliteHistoryIndex,
     icons::FaviconFetcher,
     mcp_registry::McpRegistry,
+    memory_fs::FsMemory,
     skills::{DesktopConnectors, SqliteSkills},
     sqlite::SqliteStore,
     workspace_fs::FsWorkspace,
@@ -124,6 +125,7 @@ impl Container {
                 conversations: store.clone(),
                 files: files.clone(),
                 ids: ids.clone(),
+                memory: Arc::new(FsMemory::new(main_config.join("projects"))),
             },
             connectors: connectors.clone(),
             store: BrowseStore {

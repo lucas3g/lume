@@ -1,12 +1,12 @@
 //! Gestão de projetos e de seus arquivos de conhecimento.
 
 use super::{
-    ports::{ConversationRepository, FileLoader, IdGenerator, ProjectRepository},
+    ports::{ConversationRepository, FileLoader, IdGenerator, MemoryStore, ProjectRepository},
     AppError, AppResult,
 };
 use crate::domain::{
     chat::{AttachmentKind, Conversation, KIND_AGENT},
-    project::{folder_name, normalize_folder, Project, ProjectFile, MAX_KNOWLEDGE_CHARS},
+    project::{folder_name, normalize_folder, MemoryFile, Project, ProjectFile, MAX_KNOWLEDGE_CHARS},
 };
 use std::sync::Arc;
 
@@ -17,9 +17,37 @@ pub struct ManageProjects {
     pub conversations: Arc<dyn ConversationRepository>,
     pub files: Arc<dyn FileLoader>,
     pub ids: Arc<dyn IdGenerator>,
+    pub memory: Arc<dyn MemoryStore>,
 }
 
 impl ManageProjects {
+    /// Pasta do projeto, exigida pelas operações de memória.
+    fn folder_of(&self, project_id: &str) -> AppResult<String> {
+        self.projects
+            .get(project_id)?
+            .and_then(|p| p.folder)
+            .ok_or_else(|| AppError("A memória existe só em projetos com pasta.".into()))
+    }
+
+    pub fn memory_files(&self, project_id: &str) -> AppResult<Vec<MemoryFile>> {
+        match self.projects.get(project_id)?.and_then(|p| p.folder) {
+            Some(folder) => self.memory.list(&folder),
+            None => Ok(vec![]),
+        }
+    }
+
+    pub fn memory_read(&self, project_id: &str, name: &str) -> AppResult<String> {
+        self.memory.read(&self.folder_of(project_id)?, name)
+    }
+
+    pub fn memory_write(&self, project_id: &str, name: &str, content: &str) -> AppResult<()> {
+        self.memory.write(&self.folder_of(project_id)?, name, content)
+    }
+
+    pub fn memory_remove(&self, project_id: &str, name: &str) -> AppResult<()> {
+        self.memory.remove(&self.folder_of(project_id)?, name)
+    }
+
     pub fn list(&self) -> AppResult<Vec<Project>> {
         self.projects.list()
     }
@@ -142,7 +170,25 @@ mod tests {
             conversations: world.store.clone(),
             files: Arc::new(files),
             ids: Arc::new(SequentialIds::default()),
+            memory: Arc::new(FakeMemory::default()),
         }
+    }
+
+    #[test]
+    fn memory_is_tied_to_the_project_folder() {
+        let world = World::with_accounts(vec![]);
+        let uc = use_case(&world, FakeFiles(vec![]));
+        let loose = uc.save(None, "Sem pasta", "").unwrap();
+        assert!(uc.memory_files(&loose.id).unwrap().is_empty());
+        assert!(uc.memory_write(&loose.id, "a.md", "x").is_err());
+
+        uc.start_session("/tmp/loja", "opus").unwrap();
+        let project = uc.list().unwrap().into_iter().find(|p| p.folder.is_some()).unwrap();
+        uc.memory_write(&project.id, "notas.md", "lembrar").unwrap();
+        assert_eq!(uc.memory_files(&project.id).unwrap()[0].name, "notas.md");
+        assert_eq!(uc.memory_read(&project.id, "notas.md").unwrap(), "lembrar");
+        uc.memory_remove(&project.id, "notas.md").unwrap();
+        assert!(uc.memory_files(&project.id).unwrap().is_empty());
     }
 
     #[test]

@@ -22,6 +22,28 @@ pub struct ProjectFile {
     pub size: usize,
 }
 
+/// Arquivo de memória do Claude Code em uma pasta de projeto.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct MemoryFile {
+    pub name: String,
+    pub size: u64,
+    pub modified: i64,
+}
+
+/// Nome da pasta em que o Claude Code guarda os dados de um diretório de trabalho
+/// (memória e transcrições): o caminho com tudo que não é letra ou dígito trocado por "-".
+pub fn claude_project_dir_name(folder: &str) -> String {
+    normalize_folder(folder).chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// Nome de arquivo de memória aceitável: um `.md` simples, sem caminho.
+pub fn valid_memory_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.ends_with(".md")
+        && !name.starts_with('.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// Caminho de pasta sem barra final, para comparar pastas de forma estável.
 pub fn normalize_folder(folder: &str) -> String {
     let trimmed = folder.trim();
@@ -76,6 +98,14 @@ mod tests {
         assert_eq!(folder_name("/Users/ana/Dev/loja/"), "loja");
         assert_eq!(folder_name("C:\\Dev\\portal"), "portal");
         assert_eq!(folder_name("/"), "/");
+    }
+
+    #[test]
+    fn claude_project_dir_replaces_everything_but_letters_and_digits() {
+        assert_eq!(claude_project_dir_name("/Users/ana/Dev/app.v2/"), "-Users-ana-Dev-app-v2");
+        assert_eq!(claude_project_dir_name("C:\\Dev\\portal"), "C--Dev-portal");
+        assert!(valid_memory_name("MEMORY.md") && valid_memory_name("clean-arch_v2.md"));
+        assert!(!valid_memory_name("../x.md") && !valid_memory_name("notas.txt") && !valid_memory_name(".oculto.md"));
     }
 
     #[test]

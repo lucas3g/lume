@@ -137,7 +137,7 @@
     {#if notice}<p class="muted small" role="status">{notice}</p>{/if}
 
     {#if tab === "discover"}
-      <ServerDirectory onchange={() => void loadMine()} />
+      <ServerDirectory {account} {busy} onlink={(c, connect) => void link(c, connect)} onchange={() => void loadMine()} />
     {:else}
       <div class="toolbar">
         <input class="input grow" type="search" aria-label="Procurar conector" placeholder="Procurar" bind:value={filter} />

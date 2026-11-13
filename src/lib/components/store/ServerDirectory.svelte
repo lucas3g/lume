@@ -1,14 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, errorMessage } from "../../api";
-  import type { ServerListing } from "../../types";
+  import { coveredProducts, matchesQuery } from "../../connectors";
+  import type { AccountConnector, ServerListing } from "../../types";
   import ConnectorIcon from "../ConnectorIcon.svelte";
 
   interface Props {
+    /** Conectores da conta claude.ai, mostrados antes do registro público. */
+    account: AccountConnector[];
+    /** Conector da conta com uma operação em andamento. */
+    busy: string | null;
+    onlink: (connector: AccountConnector, connect: boolean) => void;
     /** Avisa quando um conector foi adicionado. */
     onchange: () => void;
   }
-  let { onchange }: Props = $props();
+  let { account, busy, onlink, onchange }: Props = $props();
+
+  const accountMatches = $derived(account.filter((c) => c.source === "account" && matchesQuery(c, query)));
 
   let servers = $state<ServerListing[]>([]);
   let query = $state("");
@@ -90,8 +98,33 @@
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
+  {#if accountMatches.length}
+    <div class="section-head">
+      <h2 class="section-title">Da sua conta claude.ai</h2>
+      <span class="muted small">Vincule uma vez; valem em todas as conversas</span>
+    </div>
+    <div class="grid" role="list">
+      {#each accountMatches as c (c.name)}
+        <article class="card item" role="listitem">
+          <div class="body">
+            <ConnectorIcon endpoint={c.endpoint} name={c.display_name} size={40} />
+            <div class="text">
+              <div class="row name"><strong>{c.display_name}</strong>{#if c.status === "connected"}<span class="pill ok">Vinculado</span>{/if}</div>
+              <p class="muted small description">{coveredProducts(c).length ? `Cobre ${coveredProducts(c).join(", ")}` : "Serviço conectado à sua conta claude.ai"}</p>
+            </div>
+            {#if c.status === "connected"}
+              <button type="button" class="btn small" disabled={busy === c.name} onclick={() => onlink(c, false)}>Desvincular</button>
+            {:else}
+              <button type="button" class="btn small primary" disabled={busy === c.name} onclick={() => onlink(c, true)}>{busy === c.name ? "Aguardando…" : "Vincular"}</button>
+            {/if}
+          </div>
+        </article>
+      {/each}
+    </div>
+  {/if}
+
   <div class="section-head">
-    <h2 class="section-title">{query.trim() ? "Resultados" : "Conectores disponíveis"}</h2>
+    <h2 class="section-title">{query.trim() ? "Outros resultados" : "Conectores da comunidade"}</h2>
     <span class="muted small">Registro público de servidores MCP</span>
   </div>
 

@@ -8,6 +8,7 @@ use crate::domain::{
     account::{Account, Identity},
     chat::{Attachment, Conversation, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, KIND_CHAT},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
+    project::MemoryFile,
     store::{InputPlace, PluginListing, ServerInput, ServerInstall, ServerListing},
     extension::{AccountConnector, ConnectorSource as Origin, ConnectorStatus},
     workspace::{FileEntry, FileView, WorkspaceStatus},
@@ -200,6 +201,31 @@ impl SqliteStore {
     pub fn insert_connector(&self, id: &str, name: &str, config: &str, enabled: bool) {
         ConnectorRepository::insert(self, id, name, config).unwrap();
         ConnectorRepository::set_enabled(self, id, enabled).unwrap();
+    }
+}
+
+/// Memória em memória: (pasta, nome) → conteúdo.
+#[derive(Default)]
+pub struct FakeMemory(Mutex<Vec<(String, String, String)>>);
+
+impl MemoryStore for FakeMemory {
+    fn list(&self, folder: &str) -> AppResult<Vec<MemoryFile>> {
+        Ok(self.0.lock().unwrap().iter().filter(|(f, _, _)| f == folder)
+            .map(|(_, name, content)| MemoryFile { name: name.clone(), size: content.len() as u64, modified: 0 }).collect())
+    }
+    fn read(&self, folder: &str, name: &str) -> AppResult<String> {
+        self.0.lock().unwrap().iter().find(|(f, n, _)| f == folder && n == name).map(|(_, _, c)| c.clone())
+            .ok_or_else(|| AppError("não existe".into()))
+    }
+    fn write(&self, folder: &str, name: &str, content: &str) -> AppResult<()> {
+        let mut files = self.0.lock().unwrap();
+        files.retain(|(f, n, _)| !(f == folder && n == name));
+        files.push((folder.into(), name.into(), content.into()));
+        Ok(())
+    }
+    fn remove(&self, folder: &str, name: &str) -> AppResult<()> {
+        self.0.lock().unwrap().retain(|(f, n, _)| !(f == folder && n == name));
+        Ok(())
     }
 }
 

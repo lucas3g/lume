@@ -174,6 +174,13 @@ export interface WorkspaceStatus {
   files: ChangedFile[];
 }
 
+/** Arquivo da memória que o Claude Code mantém na pasta do projeto. */
+export interface MemoryFile {
+  name: string;
+  size: number;
+  modified: number;
+}
+
 export interface ProjectFile {
   id: string;
   name: string;

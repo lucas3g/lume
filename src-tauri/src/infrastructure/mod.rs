@@ -6,6 +6,7 @@ pub mod git_cli;
 pub mod history_index;
 pub mod icons;
 pub mod mcp_registry;
+pub mod memory_fs;
 pub mod skills;
 pub mod sqlite;
 pub mod transcript;

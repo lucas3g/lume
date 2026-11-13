@@ -7,7 +7,7 @@ use crate::domain::{
     chat::{needs_user, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, Connector},
     history::{HistSession, HistoryStatus},
-    project::{Project, ProjectFile},
+    project::{MemoryFile, Project, ProjectFile},
     store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
@@ -267,6 +267,28 @@ pub fn add_project_files(app: App<'_>, project_id: String, paths: Vec<String>) -
 #[tauri::command]
 pub fn remove_project_file(app: App<'_>, file_id: String) -> AppResult<()> {
     app.projects.remove_file(&file_id)
+}
+
+// ---- memória do projeto (lê e grava em disco)
+
+#[tauri::command(async)]
+pub fn project_memory_list(app: App<'_>, project_id: String) -> AppResult<Vec<MemoryFile>> {
+    app.projects.memory_files(&project_id)
+}
+
+#[tauri::command(async)]
+pub fn project_memory_read(app: App<'_>, project_id: String, name: String) -> AppResult<String> {
+    app.projects.memory_read(&project_id, &name)
+}
+
+#[tauri::command(async)]
+pub fn project_memory_write(app: App<'_>, project_id: String, name: String, content: String) -> AppResult<()> {
+    app.projects.memory_write(&project_id, &name, &content)
+}
+
+#[tauri::command(async)]
+pub fn project_memory_remove(app: App<'_>, project_id: String, name: String) -> AppResult<()> {
+    app.projects.memory_remove(&project_id, &name)
 }
 
 #[tauri::command]

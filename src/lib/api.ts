@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Account, AccountConnector, Agent, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  Message, PluginListing, Project, ProjectFile, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
+  MemoryFile, Message, PluginListing, Project, ProjectFile, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -73,6 +73,11 @@ export const api = {
   listProjectFiles: (projectId: string) => invoke<ProjectFile[]>("list_project_files", { projectId }),
   addProjectFiles: (projectId: string, paths: string[]) => invoke<void>("add_project_files", { projectId, paths }),
   removeProjectFile: (fileId: string) => invoke<void>("remove_project_file", { fileId }),
+  projectMemoryList: (projectId: string) => invoke<MemoryFile[]>("project_memory_list", { projectId }),
+  projectMemoryRead: (projectId: string, name: string) => invoke<string>("project_memory_read", { projectId, name }),
+  projectMemoryWrite: (projectId: string, name: string, content: string) =>
+    invoke<void>("project_memory_write", { projectId, name, content }),
+  projectMemoryRemove: (projectId: string, name: string) => invoke<void>("project_memory_remove", { projectId, name }),
   setConversationProject: (id: string, projectId: string | null) =>
     invoke<void>("set_conversation_project", { id, projectId }),
 
