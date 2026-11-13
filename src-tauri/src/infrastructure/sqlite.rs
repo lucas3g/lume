@@ -9,7 +9,7 @@ use crate::application::{
 };
 use crate::domain::{
     account::{Account, Identity},
-    chat::{Conversation, Message, Switch, DEFAULT_PERMISSION_MODE},
+    chat::{Conversation, Message, RateInfo, Switch, DEFAULT_PERMISSION_MODE},
     extension::{connector_key, Agent, Connector},
     project::{Project, ProjectFile},
     schedule::{Repeat, Task},
@@ -25,7 +25,7 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS accounts(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT, plan TEXT, config_dir TEXT,
   priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, auth_ok INTEGER NOT NULL DEFAULT 1,
-  limited_until INTEGER, util_5h REAL, util_7d REAL, resets_5h INTEGER, login_expires_at INTEGER);
+  limited_until INTEGER, util_5h REAL, util_7d REAL, resets_5h INTEGER, login_expires_at INTEGER, resets_7d INTEGER);
 CREATE TABLE IF NOT EXISTS conversations(
   id TEXT PRIMARY KEY, title TEXT NOT NULL, cli_session_id TEXT, model TEXT NOT NULL,
   cwd TEXT NOT NULL, agent_id TEXT, kind TEXT NOT NULL DEFAULT 'chat', allowed_tools TEXT NOT NULL DEFAULT '',
@@ -62,12 +62,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hist_fts USING fts5(
 ";
 
 const ACCOUNT_COLUMNS: &str =
-    "id,name,email,plan,config_dir,priority,enabled,auth_ok,limited_until,util_5h,util_7d,resets_5h,login_expires_at";
+    "id,name,email,plan,config_dir,priority,enabled,auth_ok,limited_until,util_5h,util_7d,resets_5h,login_expires_at,resets_7d";
 const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 9] = [
+const MIGRATIONS: [&str; 10] = [
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
+    "ALTER TABLE accounts ADD COLUMN resets_7d INTEGER",
     "ALTER TABLE projects ADD COLUMN folder TEXT",
     "ALTER TABLE conversations ADD COLUMN effort TEXT NOT NULL DEFAULT 'medium'",
     // Conversas antigas foram criadas no modo que sempre pergunta; continuam assim.
@@ -129,6 +130,7 @@ fn account_row(r: &Row<'_>) -> rusqlite::Result<Account> {
         util_7d: r.get(10)?,
         resets_5h: r.get(11)?,
         login_expires_at: r.get(12)?,
+        resets_7d: r.get(13)?,
     })
 }
 
@@ -203,11 +205,11 @@ impl AccountRepository for SqliteStore {
         Ok(())
     }
 
-    fn set_usage(&self, id: &str, util_5h: Option<f64>, util_7d: Option<f64>, resets_5h: Option<i64>) -> AppResult<()> {
+    fn set_usage(&self, id: &str, rate: &RateInfo) -> AppResult<()> {
         self.conn().execute(
             "UPDATE accounts SET util_5h=COALESCE(?,util_5h), util_7d=COALESCE(?,util_7d),
-             resets_5h=COALESCE(?,resets_5h) WHERE id=?",
-            params![util_5h, util_7d, resets_5h, id],
+             resets_5h=COALESCE(?,resets_5h), resets_7d=COALESCE(?,resets_7d) WHERE id=?",
+            params![rate.util_5h, rate.util_7d, rate.resets_5h, rate.resets_7d, id],
         )?;
         Ok(())
     }

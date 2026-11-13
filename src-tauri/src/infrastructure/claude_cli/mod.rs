@@ -5,6 +5,7 @@ pub mod connectors;
 pub mod engine;
 pub mod plugins;
 pub mod stream;
+pub mod usage;
 
 use std::{
     path::{Path, PathBuf},

@@ -55,6 +55,12 @@ pub async fn login_account_again(app: App<'_>, id: String) -> AppResult<()> {
     app.accounts.login_again(&id).await
 }
 
+/// Consulta o uso atual de cada conta junto ao provedor; devolve quantas foram atualizadas.
+#[tauri::command]
+pub async fn refresh_usage(app: App<'_>) -> AppResult<usize> {
+    app.accounts.refresh_usage().await
+}
+
 #[tauri::command]
 pub fn list_switches(app: App<'_>) -> AppResult<Vec<Switch>> {
     app.switches.recent()

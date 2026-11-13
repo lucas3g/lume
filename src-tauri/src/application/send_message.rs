@@ -324,7 +324,7 @@ impl SendMessage {
             TurnEvent::SubagentDelta(text) => self.emit(conversation_id, ChatEvent::Subagent { text: text.clone() }),
             TurnEvent::Tool(name) => self.emit(conversation_id, ChatEvent::Tool { name: name.clone() }),
             TurnEvent::Rate(rate) => {
-                if self.accounts.set_usage(account_id, rate.util_5h, rate.util_7d, rate.resets_5h).is_ok() {
+                if self.accounts.set_usage(account_id, rate).is_ok() {
                     self.events.accounts_changed();
                 }
             }
@@ -371,7 +371,7 @@ pub fn make_title(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::application::fakes::*;
-    use crate::domain::{account::sample, chat::{AttachmentKind, TurnRequest}, history::Snippet};
+    use crate::domain::{account::sample, chat::{AttachmentKind, RateInfo, TurnRequest}, history::Snippet};
 
     fn use_case(world: &World, engine: ScriptedEngine) -> SendMessage {
         SendMessage {
@@ -539,7 +539,8 @@ mod tests {
     #[tokio::test]
     async fn spares_the_account_near_its_limit_and_says_so() {
         let world = World::with_accounts(vec![sample("a", 1), sample("b", 2)]);
-        world.store.set_usage("a", Some(0.98), None, Some(5000)).unwrap();
+        let rate = RateInfo { status: "allowed".into(), resets_at: None, util_5h: Some(0.98), util_7d: None, resets_5h: Some(5000), resets_7d: None };
+        world.store.set_usage("a", &rate).unwrap();
         let engine = ScriptedEngine::new(|req, _| {
             assert_eq!(req.config_dir, None);
             (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })

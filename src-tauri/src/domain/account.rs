@@ -17,6 +17,7 @@ pub struct Account {
     pub util_5h: Option<f64>,
     pub util_7d: Option<f64>,
     pub resets_5h: Option<i64>,
+    pub resets_7d: Option<i64>,
     /// Quando o login da conta vence e precisa ser refeito.
     pub login_expires_at: Option<i64>,
 }
@@ -77,6 +78,7 @@ pub(crate) fn sample(id: &str, priority: i64) -> Account {
         util_5h: None,
         util_7d: None,
         resets_5h: None,
+        resets_7d: None,
         login_expires_at: None,
     }
 }

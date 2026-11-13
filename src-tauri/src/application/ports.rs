@@ -4,7 +4,7 @@
 use super::{AppResult, ChatEvent, TurnControl};
 use crate::domain::{
     account::{Account, Identity},
-    chat::{Attachment, Conversation, Message, Switch, TurnEnd, TurnEvent, TurnRequest},
+    chat::{Attachment, Conversation, Message, RateInfo, Switch, TurnEnd, TurnEvent, TurnRequest},
     extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
     project::{MemoryFile, Project, ProjectFile},
@@ -22,7 +22,7 @@ pub trait AccountRepository: Send + Sync {
     fn set_identity(&self, id: &str, identity: &Identity) -> AppResult<()>;
     fn set_auth(&self, id: &str, ok: bool) -> AppResult<()>;
     fn set_limited(&self, id: &str, until: Option<i64>) -> AppResult<()>;
-    fn set_usage(&self, id: &str, util_5h: Option<f64>, util_7d: Option<f64>, resets_5h: Option<i64>) -> AppResult<()>;
+    fn set_usage(&self, id: &str, rate: &RateInfo) -> AppResult<()>;
     fn reorder(&self, ids: &[String]) -> AppResult<()>;
 }
 
@@ -192,6 +192,12 @@ pub trait ChatEngine: Send + Sync {
         control: &mut TurnControl,
         on_event: TurnListener<'_>,
     ) -> TurnEnd;
+}
+
+/// Consulta o uso atual de uma conta junto ao provedor, sem uma conversa.
+#[async_trait]
+pub trait UsageProbe: Send + Sync {
+    async fn usage(&self, config_dir: Option<&str>) -> AppResult<RateInfo>;
 }
 
 /// Login e identidade das contas junto ao provedor.

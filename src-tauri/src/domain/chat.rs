@@ -77,6 +77,7 @@ pub struct RateInfo {
     pub util_5h: Option<f64>,
     pub util_7d: Option<f64>,
     pub resets_5h: Option<i64>,
+    pub resets_7d: Option<i64>,
 }
 
 impl RateInfo {

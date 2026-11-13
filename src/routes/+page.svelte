@@ -23,6 +23,8 @@
   onMount(() => {
     void Promise.all([loadAccounts(), loadFlags(), loadConversations(), loadAgents(), loadProjects()]);
     void api.environment().then((env) => (cliFound = env.cli_found));
+    // Uso das contas direto do provedor, para a barra lateral e o anel do compositor abrirem atualizados.
+    const usageTimer = setTimeout(() => void api.refreshUsage().then(loadAccounts).catch(() => {}), 3000);
     // Mensagem enviada pela entrada rápida: abre a conversa recém-criada.
     const showConversation = async (id: string) => {
       await loadConversations();
@@ -34,7 +36,10 @@
       api.onAccountsChanged(() => void loadAccounts()),
       api.onOpenConversation((id) => void showConversation(id)),
     ];
-    return () => listeners.forEach((l) => void l.then((stop) => stop()));
+    return () => {
+      clearTimeout(usageTimer);
+      listeners.forEach((l) => void l.then((stop) => stop()));
+    };
   });
 </script>
 

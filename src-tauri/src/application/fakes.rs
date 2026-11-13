@@ -6,7 +6,7 @@ use super::{
 };
 use crate::domain::{
     account::{Account, Identity},
-    chat::{Attachment, Conversation, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, KIND_CHAT},
+    chat::{Attachment, Conversation, PermissionDecision, RateInfo, TurnEnd, TurnEvent, TurnRequest, KIND_CHAT},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
     project::MemoryFile,
     store::{InputPlace, PluginListing, ServerInput, ServerInstall, ServerListing},
@@ -180,6 +180,16 @@ impl AccountGateway for FakeGateway {
     }
     async fn login(&self, _config_dir: &str) -> AppResult<Identity> {
         self.login.clone().map_err(AppError)
+    }
+}
+
+/// Uso fixo: metade da janela de 5 h.
+pub struct FakeUsage;
+
+#[async_trait]
+impl UsageProbe for FakeUsage {
+    async fn usage(&self, _config_dir: Option<&str>) -> AppResult<RateInfo> {
+        Ok(RateInfo { status: "allowed".into(), resets_at: None, util_5h: Some(0.5), util_7d: Some(0.2), resets_5h: Some(500), resets_7d: Some(900) })
     }
 }
 

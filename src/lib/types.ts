@@ -13,6 +13,7 @@ export interface Account {
   util_5h: number | null;
   util_7d: number | null;
   resets_5h: number | null;
+  resets_7d: number | null;
   /** Quando o login da conta vence. */
   login_expires_at: number | null;
 }

@@ -3,7 +3,7 @@
   import { tick, untrack } from "svelte";
   import { extractArtifacts, versionsOf, type Artifact } from "../artifacts";
   import ArtifactPanel from "../components/ArtifactPanel.svelte";
-  import ContextRing from "../components/composer/ContextRing.svelte";
+  import UsageRing from "../components/composer/UsageRing.svelte";
   import ModeMenu from "../components/composer/ModeMenu.svelte";
   import ModelMenu from "../components/composer/ModelMenu.svelte";
   import ChangesPanel from "../components/panel/ChangesPanel.svelte";
@@ -497,7 +497,7 @@
           {#if isAgent && conversation}
             <ModeMenu mode={conversation.permission_mode} onmode={setMode} />
           {/if}
-          <ContextRing percent={conversation?.context_percent ?? null} />
+          <UsageRing {account} {onnavigate} />
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 //! Gestão do pool de contas.
 
 use super::{
-    ports::{AccountGateway, AccountRepository, EventSink, IdGenerator},
+    ports::{AccountGateway, AccountRepository, EventSink, IdGenerator, UsageProbe},
     AppError, AppResult,
 };
 use crate::domain::account::Account;
@@ -14,9 +14,26 @@ pub struct ManageAccounts {
     pub gateway: Arc<dyn AccountGateway>,
     pub events: Arc<dyn EventSink>,
     pub ids: Arc<dyn IdGenerator>,
+    pub usage: Arc<dyn UsageProbe>,
 }
 
 impl ManageAccounts {
+    /// Consulta o uso atual de cada conta com login válido e guarda o resultado.
+    /// Contas que falham ficam como estavam; devolve quantas foram atualizadas.
+    pub async fn refresh_usage(&self) -> AppResult<usize> {
+        let mut updated = 0;
+        for account in self.accounts.all()?.into_iter().filter(|a| a.enabled && a.auth_ok) {
+            if let Ok(rate) = self.usage.usage(account.config_dir.as_deref()).await {
+                self.accounts.set_usage(&account.id, &rate)?;
+                updated += 1;
+            }
+        }
+        if updated > 0 {
+            self.events.accounts_changed();
+        }
+        Ok(updated)
+    }
+
     pub fn list(&self) -> AppResult<Vec<Account>> {
         self.accounts.all()
     }
@@ -129,7 +146,19 @@ mod tests {
             gateway: Arc::new(gateway),
             events: world.events.clone(),
             ids: Arc::new(SequentialIds::default()),
+            usage: Arc::new(FakeUsage),
         }
+    }
+
+    #[tokio::test]
+    async fn refreshes_usage_of_accounts_that_can_answer() {
+        let world = World::with_accounts(vec![crate::domain::account::sample("a", 1), crate::domain::account::sample("b", 2)]);
+        world.store.set_auth("b", false).unwrap();
+        let uc = use_case(&world, FakeGateway::logged_in(identity("a@exemplo.com")));
+        assert_eq!(uc.refresh_usage().await.unwrap(), 1);
+        let all = uc.list().unwrap();
+        assert_eq!((all[0].util_5h, all[0].resets_7d), (Some(0.5), Some(900)));
+        assert_eq!(all[1].util_5h, None, "conta sem login não é consultada");
     }
 
     fn identity(email: &str) -> Identity {

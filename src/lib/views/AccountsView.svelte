@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
   import SettingRow from "../components/SettingRow.svelte";
   import Toggle from "../components/Toggle.svelte";
@@ -9,6 +10,22 @@
   const LOGIN_WARNING_DAYS = 10;
 
   let newName = $state("");
+  let refreshing = $state(false);
+
+  /** Consulta o uso atual de cada conta no provedor (um turno mínimo por conta). */
+  async function refreshUsage() {
+    refreshing = true;
+    try {
+      await api.refreshUsage();
+      await loadAccounts();
+    } catch (e) {
+      error = errorMessage(e);
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  onMount(() => void refreshUsage());
   let adding = $state(false);
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -82,7 +99,10 @@
         <h1>Contas</h1>
         <p class="muted">Quando o limite de uma conta acaba, a conversa continua na próxima da lista, sem perder o contexto.</p>
       </div>
-      <button type="button" class="btn primary" disabled={busy} onclick={() => (adding = !adding)}>Adicionar conta</button>
+      <div class="row">
+        <button type="button" class="btn" disabled={refreshing} onclick={refreshUsage}>{refreshing ? "Consultando…" : "Atualizar uso"}</button>
+        <button type="button" class="btn primary" disabled={busy} onclick={() => (adding = !adding)}>Adicionar conta</button>
+      </div>
     </header>
 
     {#if adding}
@@ -129,7 +149,7 @@
               <div class="bar" role="img" aria-label={`${percent(a.util_5h)}% usado na janela de 5 horas`}>
                 <div class:full={state === "limited"} style:width={`${percent(a.util_5h)}%`}></div>
               </div>
-              {#if a.util_7d !== null}<div class="muted week">Semana: {percent(a.util_7d)}%</div>{/if}
+              {#if a.util_7d !== null}<div class="muted week">Semana: {percent(a.util_7d)}%{a.resets_7d ? ` · zera ${formatWhen(a.resets_7d)}` : ""}</div>{/if}
             {:else}
               <div class="muted small">Uso aparece após a primeira mensagem</div>
             {/if}

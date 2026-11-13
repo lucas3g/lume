@@ -23,6 +23,7 @@ export const api = {
   refreshAccount: (id: string) => invoke<void>("refresh_account", { id }),
   loginAccountAgain: (id: string) => invoke<void>("login_account_again", { id }),
   listSwitches: () => invoke<Switch[]>("list_switches"),
+  refreshUsage: () => invoke<number>("refresh_usage"),
 
   listConversations: () => invoke<Conversation[]>("list_conversations"),
   createConversation: (model: string) => invoke<Conversation>("create_conversation", { model }),

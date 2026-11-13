@@ -53,6 +53,7 @@ pub fn run() {
             commands::refresh_account,
             commands::login_account_again,
             commands::list_switches,
+            commands::refresh_usage,
             commands::list_conversations,
             commands::create_conversation,
             commands::delete_conversation,

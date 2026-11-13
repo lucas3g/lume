@@ -143,6 +143,7 @@ fn parse_rate(info: &Value) -> RateInfo {
         util_5h: windows["five_hour"]["utilization"].as_f64(),
         util_7d: windows["seven_day"]["utilization"].as_f64(),
         resets_5h: windows["five_hour"]["resetsAt"].as_i64(),
+        resets_7d: windows["seven_day"]["resetsAt"].as_i64(),
     }
 }
 
@@ -303,7 +304,7 @@ mod tests {
     fn parses_real_rate_limit_event() {
         let [TurnEvent::Rate(r)] = &parse_line(RATE_ALLOWED)[..] else { panic!() };
         assert!(!r.is_limited());
-        assert_eq!((r.util_5h, r.util_7d, r.resets_5h), (Some(0.41), Some(0.46), Some(1794521400)));
+        assert_eq!((r.util_5h, r.util_7d, r.resets_5h, r.resets_7d), (Some(0.41), Some(0.46), Some(1794521400), Some(1794906000)));
     }
 
     #[test]
