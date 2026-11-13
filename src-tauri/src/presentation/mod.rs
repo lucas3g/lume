@@ -14,6 +14,7 @@ use crate::application::{
     projects::ManageProjects,
     send_message::SendMessage,
     store::BrowseStore,
+    tasks::ManageTasks,
     terminal::ManageTerminals,
     turn_setup::PrepareTurn,
     workspace::ManageWorkspace,
@@ -53,6 +54,7 @@ pub struct Container {
     pub store: BrowseStore,
     pub projects: ManageProjects,
     pub workspace: ManageWorkspace,
+    pub tasks: ManageTasks,
     pub terminals: ManageTerminals,
     pub send_message: SendMessage,
     pub switches: Arc<dyn SwitchLog>,
@@ -141,6 +143,14 @@ impl Container {
                 workspace: Arc::new(FsWorkspace),
                 vcs: Arc::new(GitCli),
             },
+            tasks: ManageTasks {
+                tasks: store.clone(),
+                projects: store.clone(),
+                conversations: store.clone(),
+                ids: ids.clone(),
+                clock: clock.clone(),
+                chat_dir: chat_dir.to_string_lossy().into_owned(),
+            },
             terminals: ManageTerminals {
                 conversations: store.clone(),
                 terminals: Arc::new(PtyTerminals::default()),
@@ -178,11 +188,46 @@ impl Container {
     }
 }
 
+/// Intervalo entre verificações das tarefas agendadas.
+const SCHEDULER_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl Container {
+    /// Envia a mensagem em segundo plano; o andamento chega pelos eventos de conversa.
+    /// Devolve `false` se a conversa já tem um turno em andamento.
+    pub fn spawn_turn(self: &Arc<Self>, conversation_id: String, text: String, attachments: Vec<String>, pasted: Vec<crate::domain::chat::Attachment>) -> bool {
+        let Some(control) = self.running.start(&conversation_id) else { return false };
+        let container = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = container.send_message.execute(&conversation_id, &text, &attachments, pasted, control).await {
+                container.events.chat(&conversation_id, crate::application::ChatEvent::Error { message: e.0 });
+            }
+            container.running.finish(&conversation_id);
+        });
+        true
+    }
+
+    /// Roda uma tarefa agora: cria a conversa da rodada e dispara o turno.
+    pub fn run_task(self: &Arc<Self>, task_id: &str) -> AppResult<crate::domain::chat::Conversation> {
+        let (conversation, prompt) = self.tasks.begin_run(task_id)?;
+        self.spawn_turn(conversation.id.clone(), prompt, vec![], vec![]);
+        Ok(conversation)
+    }
+}
+
 /// Tarefas de inicialização que não devem atrasar a abertura da janela.
 pub fn start_background_work(container: Arc<Container>) {
     let c = container.clone();
     tauri::async_runtime::spawn(async move {
         let _ = c.accounts.ensure_default().await;
+    });
+    let c = container.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(SCHEDULER_TICK).await;
+            for task in c.tasks.due().unwrap_or_default() {
+                let _ = c.run_task(&task.id);
+            }
+        }
     });
     tauri::async_runtime::spawn_blocking(move || container.history.reindex());
 }

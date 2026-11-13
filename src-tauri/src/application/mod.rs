@@ -8,6 +8,7 @@ pub mod ports;
 pub mod projects;
 pub mod send_message;
 pub mod store;
+pub mod tasks;
 pub mod terminal;
 pub mod turn_setup;
 pub mod workspace;

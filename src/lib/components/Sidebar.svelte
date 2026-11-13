@@ -27,6 +27,7 @@
   const SHORTCUTS: { id: View; label: string; icon: string }[] = [
     { id: "skills", label: "Skills e agentes", icon: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11" },
     { id: "connectors", label: "Conectores", icon: "M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" },
+    { id: "tasks", label: "Tarefas agendadas", icon: "M8 3v3M16 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 14l2 2 4-4" },
     { id: "history", label: "Histórico importado", icon: "M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" },
   ];
 

@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Account, AccountConnector, Agent, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
+  MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -48,6 +48,12 @@ export const api = {
     /** Modo da sessão após aprovar um plano. */
     nextMode?: string;
   }) => invoke<void>("decide_permission", decision),
+
+  listTasks: () => invoke<Task[]>("list_tasks"),
+  saveTask: (task: TaskForm) => invoke<Task>("save_task", { task }),
+  setTaskEnabled: (id: string, enabled: boolean) => invoke<void>("set_task_enabled", { id, enabled }),
+  deleteTask: (id: string) => invoke<void>("delete_task", { id }),
+  runTask: (id: string) => invoke<Conversation>("run_task", { id }),
 
   getFlags: () => invoke<Flags>("get_flags"),
   setFlag: (key: FlagKey, value: boolean) => invoke<void>("set_flag", { key, value }),

@@ -8,6 +8,7 @@ use crate::domain::{
     extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
     project::{MemoryFile, Project, ProjectFile},
+    schedule::Task,
     store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
@@ -64,6 +65,14 @@ pub trait ProjectRepository: Send + Sync {
     fn knowledge(&self, project_id: &str) -> AppResult<Vec<(String, String)>>;
     fn add_file(&self, id: &str, project_id: &str, name: &str, content: &str) -> AppResult<()>;
     fn remove_file(&self, file_id: &str) -> AppResult<()>;
+}
+
+pub trait TaskRepository: Send + Sync {
+    fn list(&self) -> AppResult<Vec<Task>>;
+    fn get(&self, id: &str) -> AppResult<Option<Task>>;
+    /// Cria ou substitui a tarefa.
+    fn save(&self, task: &Task) -> AppResult<()>;
+    fn delete(&self, id: &str) -> AppResult<()>;
 }
 
 /// Memória que o Claude Code mantém por pasta de projeto (arquivos Markdown).

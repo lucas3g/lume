@@ -142,7 +142,40 @@ export const MODES: { id: string; label: string; description: string; isDefault?
 ];
 
 /** Telas principais do aplicativo. */
-export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts";
+export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts" | "tasks";
+
+export type Repeat =
+  | { kind: "every_minutes"; minutes: number }
+  | { kind: "daily"; hour: number; minute: number }
+  | { kind: "weekly"; weekday: number; hour: number; minute: number };
+
+/** Tarefa agendada: um prompt que roda sozinho na cadência escolhida. */
+export interface Task {
+  id: string;
+  name: string;
+  prompt: string;
+  project_id: string | null;
+  model: string;
+  repeat: Repeat;
+  tz_offset_minutes: number;
+  enabled: boolean;
+  last_run_at: number | null;
+  next_run_at: number;
+}
+
+export type TaskForm = Omit<Task, "id" | "enabled" | "last_run_at" | "next_run_at"> & { id: string | null };
+
+const WEEKDAYS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+const two = (n: number) => String(n).padStart(2, "0");
+
+export function describeRepeat(r: Repeat): string {
+  if (r.kind === "every_minutes") {
+    if (r.minutes % 60 === 0) return `a cada ${r.minutes / 60} ${r.minutes === 60 ? "hora" : "horas"}`;
+    return `a cada ${r.minutes} min`;
+  }
+  if (r.kind === "daily") return `todo dia às ${two(r.hour)}:${two(r.minute)}`;
+  return `toda ${WEEKDAYS[r.weekday]} às ${two(r.hour)}:${two(r.minute)}`;
+}
 
 export interface Project {
   id: string;

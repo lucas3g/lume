@@ -3,7 +3,7 @@
 use crate::application::{
     ports::{
         AccountRepository, AgentRepository, Clock, ConnectorRepository, ConversationRepository, ProjectRepository,
-        Settings, SwitchLog,
+        Settings, SwitchLog, TaskRepository,
     },
     AppError, AppResult,
 };
@@ -12,6 +12,7 @@ use crate::domain::{
     chat::{Conversation, Message, Switch, DEFAULT_PERMISSION_MODE},
     extension::{connector_key, Agent, Connector},
     project::{Project, ProjectFile},
+    schedule::{Repeat, Task},
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::{
@@ -49,6 +50,10 @@ CREATE TABLE IF NOT EXISTS projects(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, instructions TEXT NOT NULL, folder TEXT);
 CREATE TABLE IF NOT EXISTS project_files(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tasks(
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL, project_id TEXT, model TEXT NOT NULL,
+  repeat TEXT NOT NULL, tz_offset INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at INTEGER, next_run_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS hist_sessions(
   id TEXT PRIMARY KEY, source TEXT NOT NULL, cwd TEXT, title TEXT, path TEXT NOT NULL,
   mtime INTEGER NOT NULL, msg_count INTEGER NOT NULL);
@@ -514,6 +519,54 @@ impl ConnectorRepository for SqliteStore {
 
     fn delete(&self, id: &str) -> AppResult<()> {
         self.conn().execute("DELETE FROM connectors WHERE id=?", [id])?;
+        Ok(())
+    }
+}
+
+const TASK_COLUMNS: &str = "id,name,prompt,project_id,model,repeat,tz_offset,enabled,last_run_at,next_run_at";
+
+fn task_row(r: &Row<'_>) -> rusqlite::Result<Task> {
+    let repeat: String = r.get(5)?;
+    let repeat: Repeat = serde_json::from_str(&repeat).unwrap_or(Repeat::EveryMinutes { minutes: 60 });
+    Ok(Task {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        prompt: r.get(2)?,
+        project_id: r.get(3)?,
+        model: r.get(4)?,
+        repeat,
+        tz_offset_minutes: r.get(6)?,
+        enabled: r.get::<_, i64>(7)? != 0,
+        last_run_at: r.get(8)?,
+        next_run_at: r.get(9)?,
+    })
+}
+
+impl TaskRepository for SqliteStore {
+    fn list(&self) -> AppResult<Vec<Task>> {
+        let c = self.conn();
+        let mut st = c.prepare(&format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY name"))?;
+        let rows = st.query_map([], task_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn get(&self, id: &str) -> AppResult<Option<Task>> {
+        Ok(self.conn().query_row(&format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id=?"), [id], task_row).optional()?)
+    }
+
+    fn save(&self, task: &Task) -> AppResult<()> {
+        let repeat = serde_json::to_string(&task.repeat).unwrap_or_default();
+        self.conn().execute(
+            "INSERT OR REPLACE INTO tasks(id,name,prompt,project_id,model,repeat,tz_offset,enabled,last_run_at,next_run_at)
+             VALUES(?,?,?,?,?,?,?,?,?,?)",
+            params![task.id, task.name, task.prompt, task.project_id, task.model, repeat, task.tz_offset_minutes,
+                task.enabled as i64, task.last_run_at, task.next_run_at],
+        )?;
+        Ok(())
+    }
+
+    fn delete(&self, id: &str) -> AppResult<()> {
+        self.conn().execute("DELETE FROM tasks WHERE id=?", [id])?;
         Ok(())
     }
 }

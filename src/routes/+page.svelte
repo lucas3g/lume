@@ -14,6 +14,7 @@
   import ProjectView from "$lib/views/ProjectView.svelte";
   import SkillsView from "$lib/views/SkillsView.svelte";
   import HistoryView from "$lib/views/HistoryView.svelte";
+  import TasksView from "$lib/views/TasksView.svelte";
 
   let view = $state<View>("chat");
   let cliFound = $state(true);
@@ -54,6 +55,8 @@
       <ConnectorsView />
     {:else if view === "history"}
       <HistoryView onnavigate={(v) => (view = v)} />
+    {:else if view === "tasks"}
+      <TasksView onnavigate={(v) => (view = v)} />
     {:else}
       <AccountsView />
     {/if}

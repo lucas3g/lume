@@ -1,13 +1,14 @@
 //! Comandos expostos à interface. Só traduzem a chamada para um caso de uso.
 
 use super::{windows, Container};
-use crate::application::{extensions::SkillView, flags, store::ServerPage, AppError, AppResult, ChatEvent};
+use crate::application::{extensions::SkillView, flags, store::ServerPage, tasks::TaskInput, AppError, AppResult};
 use crate::domain::{
     account::Account,
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, Connector},
     history::{HistSession, HistoryStatus},
     project::{MemoryFile, Project, ProjectFile},
+    schedule::{Repeat, Task},
     store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
@@ -129,17 +130,51 @@ pub fn send_message(
         .into_iter()
         .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
         .collect();
-    let Some(control) = app.running.start(&conversation_id) else {
+    if !app.spawn_turn(conversation_id, text, attachments, pasted) {
         return Err(AppError("Aguarde a resposta em andamento.".into()));
-    };
-    let container = Arc::clone(&app);
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = container.send_message.execute(&conversation_id, &text, &attachments, pasted, control).await {
-            container.events.chat(&conversation_id, ChatEvent::Error { message: e.0 });
-        }
-        container.running.finish(&conversation_id);
-    });
+    }
     Ok(())
+}
+
+// ---- tarefas agendadas
+
+/// Cadência e dados de uma tarefa, como a interface envia.
+#[derive(Deserialize)]
+pub struct TaskForm {
+    id: Option<String>,
+    name: String,
+    prompt: String,
+    project_id: Option<String>,
+    model: String,
+    repeat: Repeat,
+    tz_offset_minutes: i64,
+}
+
+#[tauri::command]
+pub fn list_tasks(app: App<'_>) -> AppResult<Vec<Task>> {
+    app.tasks.list()
+}
+
+#[tauri::command]
+pub fn save_task(app: App<'_>, task: TaskForm) -> AppResult<Task> {
+    let TaskForm { id, name, prompt, project_id, model, repeat, tz_offset_minutes } = task;
+    app.tasks.save(TaskInput { id, name, prompt, project_id, model, repeat, tz_offset_minutes })
+}
+
+#[tauri::command]
+pub fn set_task_enabled(app: App<'_>, id: String, enabled: bool) -> AppResult<()> {
+    app.tasks.set_enabled(&id, enabled)
+}
+
+#[tauri::command]
+pub fn delete_task(app: App<'_>, id: String) -> AppResult<()> {
+    app.tasks.delete(&id)
+}
+
+/// Roda a tarefa agora e devolve a conversa em que ela está rodando.
+#[tauri::command]
+pub fn run_task(app: App<'_>, id: String) -> AppResult<Conversation> {
+    app.run_task(&id)
 }
 
 /// Abre uma sessão de agente na pasta; a pasta vira (ou reutiliza) um projeto.
