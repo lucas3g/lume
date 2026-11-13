@@ -98,6 +98,7 @@ pub(crate) fn cli_command(cli: &Path) -> Command {
         cmd.env("PATH", path);
     }
     cmd.kill_on_drop(true);
+    super::hide_console_async(&mut cmd);
     cmd
 }
 

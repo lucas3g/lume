@@ -1,6 +1,6 @@
 //! Controle de versão pela linha de comando do git.
 
-use super::workspace_fs::resolve;
+use super::{hide_console, workspace_fs::resolve};
 use crate::application::{ports::VersionControl, AppError, AppResult};
 use crate::domain::workspace::{ChangedFile, WorkspaceStatus};
 use std::{collections::HashMap, fs, process::Command};
@@ -14,12 +14,12 @@ pub struct GitCli;
 
 /// Saída padrão do git, se o comando teve sucesso.
 fn git(root: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
+    let output = hide_console(&mut Command::new("git")).arg("-C").arg(root).args(args).output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn git_or_error(root: &str, args: &[&str]) -> AppResult<String> {
-    let output = Command::new("git")
+    let output = hide_console(&mut Command::new("git"))
         .arg("-C")
         .arg(root)
         .args(args)

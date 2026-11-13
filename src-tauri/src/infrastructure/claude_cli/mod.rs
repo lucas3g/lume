@@ -34,6 +34,7 @@ fn command(cli: &Path, config_dir: Option<&str>) -> Command {
         cmd.env("PATH", path);
     }
     cmd.kill_on_drop(true);
+    super::hide_console_async(&mut cmd);
     cmd
 }
 
@@ -49,6 +50,7 @@ fn blocking_command(cli: &Path, config_dir: Option<&str>) -> std::process::Comma
     if let Some(path) = shell_path() {
         cmd.env("PATH", path);
     }
+    super::hide_console(&mut cmd);
     cmd
 }
 

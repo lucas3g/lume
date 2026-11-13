@@ -17,6 +17,28 @@ pub mod sqlite;
 pub mod transcript;
 pub mod workspace_fs;
 
+/// No Windows, um processo de console (claude, codex, git) iniciado por um app de
+/// janela abre um terminal próprio; esta flag mantém o processo sem janela.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Esconde a janela de console do comando no Windows; nos demais sistemas não faz nada.
+pub(crate) fn hide_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// Versão de `hide_console` para comandos assíncronos do tokio.
+pub(crate) fn hide_console_async(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 use crate::application::ports::{Clock, IdGenerator};
 use std::time::{SystemTime, UNIX_EPOCH};
 
