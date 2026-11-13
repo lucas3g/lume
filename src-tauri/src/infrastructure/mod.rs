@@ -2,6 +2,7 @@
 
 pub mod antigravity_cli;
 pub mod claude_cli;
+pub mod cli_output;
 pub mod clipboard;
 pub mod codex_cli;
 pub mod providers;

@@ -15,7 +15,7 @@ use std::{
 };
 
 use crate::application::{AppError, AppResult};
-use std::{io::Read, time::{Duration, Instant}};
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 
 /// Variáveis herdadas que fariam o CLI se comportar como sessão aninhada.
@@ -57,6 +57,15 @@ fn blocking_command(cli: &Path, config_dir: Option<&str>) -> std::process::Comma
 /// Executa um comando do CLI e devolve a saída padrão; falha com a mensagem do CLI
 /// ou com `slow` se estourar o tempo (o processo é encerrado).
 pub(crate) fn run_cli(cli: &Path, config_dir: Option<&str>, args: &[&str], timeout: Duration, slow: &str) -> AppResult<String> {
+    run_cli_with(cli, config_dir, args, timeout, slow, false)
+}
+
+/// Como `run_cli`, para logins: no Windows abre no navegador padrão a página de login que o CLI imprimir.
+pub(crate) fn run_cli_login(cli: &Path, config_dir: Option<&str>, args: &[&str], timeout: Duration, slow: &str) -> AppResult<String> {
+    run_cli_with(cli, config_dir, args, timeout, slow, true)
+}
+
+fn run_cli_with(cli: &Path, config_dir: Option<&str>, args: &[&str], timeout: Duration, slow: &str, open_page: bool) -> AppResult<String> {
     let mut child = blocking_command(cli, config_dir)
         .args(args)
         .stdin(Stdio::null())
@@ -64,11 +73,7 @@ pub(crate) fn run_cli(cli: &Path, config_dir: Option<&str>, args: &[&str], timeo
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| AppError(format!("Não foi possível executar o Claude Code: {e}")))?;
-    // Lê as saídas em paralelo para o processo nunca bloquear com o buffer cheio.
-    let reader = |pipe: Option<std::process::ChildStdout>| pipe.map(|mut p| std::thread::spawn(move || { let mut b = Vec::new(); let _ = p.read_to_end(&mut b); b }));
-    let err_reader = |pipe: Option<std::process::ChildStderr>| pipe.map(|mut p| std::thread::spawn(move || { let mut b = Vec::new(); let _ = p.read_to_end(&mut b); b }));
-    let out = reader(child.stdout.take());
-    let err = err_reader(child.stderr.take());
+    let run = super::cli_output::BlockingRun::watch(&mut child, open_page);
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -82,12 +87,11 @@ pub(crate) fn run_cli(cli: &Path, config_dir: Option<&str>, args: &[&str], timeo
             Err(e) => return Err(AppError(format!("Falha ao aguardar o Claude Code: {e}"))),
         }
     };
-    let stdout = String::from_utf8_lossy(&out.and_then(|t| t.join().ok()).unwrap_or_default()).into_owned();
-    let stderr = String::from_utf8_lossy(&err.and_then(|t| t.join().ok()).unwrap_or_default()).into_owned();
+    let output = run.finish(status);
     if status.success() {
-        return Ok(stdout);
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
-    let detail = if stderr.trim().is_empty() { stdout.trim().to_owned() } else { stderr.trim().to_owned() };
+    let detail = super::cli_output::failure_detail(&output);
     Err(AppError(if detail.is_empty() { "O Claude Code recusou a operação.".into() } else { detail }))
 }
 

@@ -1,7 +1,7 @@
 //! Conectores que o próprio Claude Code carrega para uma conta: os da conta
 //! claude.ai (web), os configurados no terminal e os de plugins.
 
-use super::run_cli;
+use super::{run_cli, run_cli_login};
 use crate::application::{ports::AccountConnectors, AppResult};
 use crate::domain::extension::{parse_mcp_list, AccountConnector};
 use std::{path::PathBuf, time::Duration};
@@ -27,7 +27,7 @@ impl AccountConnectors for ClaudeCliConnectors {
 
     /// Abre o login do conector no navegador e espera a conclusão.
     fn login(&self, config_dir: Option<&str>, name: &str) -> AppResult<()> {
-        run_cli(&self.cli, config_dir, &["mcp", "login", name], LOGIN_TIMEOUT, "O login não foi concluído em 5 minutos.").map(|_| ())
+        run_cli_login(&self.cli, config_dir, &["mcp", "login", name], LOGIN_TIMEOUT, "O login não foi concluído em 5 minutos.").map(|_| ())
     }
 
     fn logout(&self, config_dir: Option<&str>, name: &str) -> AppResult<()> {

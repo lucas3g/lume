@@ -13,6 +13,7 @@ use crate::domain::{
     account::{Identity, Provider},
     chat::{RateInfo, TurnEnd, TurnEvent, TurnRequest},
 };
+use super::cli_output::{failure_detail, run_login};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
@@ -137,7 +138,10 @@ impl AccountGateway for CodexAccounts {
     /// Abre o login do ChatGPT (no navegador) para o perfil indicado.
     async fn login(&self, provider: Provider, config_dir: &str) -> AppResult<Identity> {
         let cli = find_cli().ok_or_else(missing_cli)?;
-        let run = command(&cli, Some(config_dir)).arg("login").stdin(Stdio::null()).output();
+        let mut cmd = command(&cli, Some(config_dir));
+        cmd.arg("login");
+        // O Codex abre o navegador por conta própria mesmo sem console; abrir aqui duplicaria a aba.
+        let run = run_login(cmd, false);
         let output = tokio::time::timeout(LOGIN_TIMEOUT, run)
             .await
             .map_err(|_| AppError("O login não foi concluído em 5 minutos.".into()))?
@@ -146,8 +150,7 @@ impl AccountGateway for CodexAccounts {
         if identity.logged_in {
             return Ok(identity);
         }
-        let detail = String::from_utf8_lossy(&output.stderr);
-        Err(AppError(format!("O login não foi concluído. {}", detail.trim())))
+        Err(AppError(format!("O login não foi concluído. {}", failure_detail(&output))))
     }
 }
 

@@ -3,11 +3,11 @@
 use super::command;
 use crate::application::{ports::AccountGateway, AppError, AppResult};
 use crate::domain::account::{Identity, Provider};
+use crate::infrastructure::cli_output::{failure_detail, run_login};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
 
@@ -99,10 +99,10 @@ impl AccountGateway for ClaudeCliAccounts {
 
     /// Abre o login oficial (no navegador) para o perfil indicado.
     async fn login(&self, provider: Provider, config_dir: &str) -> AppResult<Identity> {
-        let run = command(&self.cli, Some(config_dir))
-            .args(["auth", "login", "--claudeai"])
-            .stdin(Stdio::null())
-            .output();
+        let mut cmd = command(&self.cli, Some(config_dir));
+        cmd.args(["auth", "login", "--claudeai"]);
+        // Sem console, o Claude Code no Windows não abre o navegador: o Lume abre.
+        let run = run_login(cmd, true);
         let output = tokio::time::timeout(LOGIN_TIMEOUT, run)
             .await
             .map_err(|_| AppError("O login não foi concluído em 5 minutos.".into()))?
@@ -111,8 +111,7 @@ impl AccountGateway for ClaudeCliAccounts {
         if identity.logged_in {
             return Ok(identity);
         }
-        let detail = String::from_utf8_lossy(&output.stderr);
-        Err(AppError(format!("O login não foi concluído. {}", detail.trim())))
+        Err(AppError(format!("O login não foi concluído. {}", failure_detail(&output))))
     }
 }
 
