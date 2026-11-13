@@ -18,6 +18,18 @@ export type Outcome =
   | { kind: "exhausted"; resetsAt: number | null }
   | null;
 
+/** Mensagem mandada enquanto o agente trabalha: espera o fim do turno, ou vai já com "Enviar agora". */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  attachments: string[];
+  images: (PastedImage & { preview?: string })[];
+  /** Entregue ao agente, esperando ele ler. */
+  sending: boolean;
+  /** O agente desta conta não lê mensagens no meio do turno. */
+  waitsForEnd: boolean;
+}
+
 /** Pedido de autorização do agente aguardando resposta. */
 export interface PermissionRequest {
   requestId: string;
@@ -38,6 +50,8 @@ export const chat = $state({
   turns: {} as Record<string, Turn>,
   outcomes: {} as Record<string, Outcome>,
   permissions: {} as Record<string, PermissionRequest>,
+  /** Mensagens na fila de cada conversa, na ordem em que foram escritas. */
+  queued: {} as Record<string, QueuedMessage[]>,
   /** Mensagem do usuário sendo editada: o envio ramifica a conversa antes dela. */
   editing: null as { messageId: number; original: string } | null,
 });
@@ -67,6 +81,7 @@ export async function removeConversation(id: string): Promise<void> {
   delete chat.turns[id];
   delete chat.outcomes[id];
   delete chat.permissions[id];
+  delete chat.queued[id];
   if (chat.activeId === id) await openConversation(null);
   await loadConversations();
 }
@@ -181,17 +196,59 @@ export async function send(text: string, options: SendOptions = {}): Promise<voi
     chat.activeId = id = created.id;
     chat.messages = [];
   }
+  await deliver(id, text, attachments, images);
+}
+
+/** Inicia o turno de uma conversa que já existe (aberta ou não). */
+async function deliver(id: string, text: string, attachments: string[], images: PastedImage[]): Promise<void> {
   chat.outcomes[id] = null;
   chat.turns[id] = { text: "", status: null, account: null, context: [] };
-  const sent = localMessage("user", text || "Veja as imagens anexadas.");
-  const names = [...attachments.map(fileName), ...images.map((i) => i.name)];
-  if (names.length) sent.meta = JSON.stringify({ attachments: names });
-  chat.messages.push(sent);
+  if (chat.activeId === id) {
+    const sent = localMessage("user", text || "Veja as imagens anexadas.");
+    const names = [...attachments.map(fileName), ...images.map((i) => i.name)];
+    if (names.length) sent.meta = JSON.stringify({ attachments: names, images });
+    chat.messages.push(sent);
+  }
   try {
     await api.sendMessage(id, text, attachments, images);
   } catch (e) {
     delete chat.turns[id];
     chat.outcomes[id] = { kind: "error", message: errorMessage(e) };
+  }
+}
+
+const imagesOnly = (images: QueuedMessage["images"]): PastedImage[] =>
+  images.map(({ name, media_type, data }) => ({ name, media_type, data }));
+
+/** Põe a mensagem na fila da conversa enquanto o agente trabalha. */
+export function enqueue(id: string, text: string, attachments: string[], images: QueuedMessage["images"]): void {
+  const item: QueuedMessage = { id: crypto.randomUUID(), text, attachments, images, sending: false, waitsForEnd: false };
+  chat.queued[id] = [...(chat.queued[id] ?? []), item];
+}
+
+export function unqueue(id: string, messageId: string): void {
+  chat.queued[id] = (chat.queued[id] ?? []).filter((m) => m.id !== messageId || m.sending);
+}
+
+/** Entrega já a mensagem da fila: o agente a lê no próximo passo, sem parar o que está fazendo. */
+export async function sendNow(id: string, messageId: string): Promise<void> {
+  const item = chat.queued[id]?.find((m) => m.id === messageId);
+  if (!item || item.sending) return;
+  if (!chat.turns[id]) {
+    unqueue(id, messageId);
+    await deliver(id, item.text, item.attachments, imagesOnly(item.images));
+    return;
+  }
+  item.sending = true;
+  let accepted = false;
+  try {
+    accepted = await api.injectMessage(id, item.id, item.text, item.attachments, imagesOnly(item.images));
+  } catch {
+    accepted = false;
+  }
+  if (!accepted) {
+    item.sending = false;
+    item.waitsForEnd = true;
   }
 }
 
@@ -227,12 +284,20 @@ export function cancel(): void {
   if (chat.activeId) void api.cancelMessage(chat.activeId);
 }
 
-async function finish(id: string, outcome: Outcome = null): Promise<void> {
+/** Encerra o turno. Depois de uma resposta completa, a próxima mensagem da fila é enviada. */
+async function finish(id: string, outcome: Outcome = null, continueQueue = true): Promise<void> {
   delete chat.turns[id];
   delete chat.permissions[id];
   chat.outcomes[id] = outcome;
+  // Entregues e não lidas (o turno acabou antes): voltam a esperar a vez.
+  for (const item of chat.queued[id] ?? []) item.sending = false;
   if (chat.activeId === id) chat.messages = await api.listMessages(id);
   await loadConversations();
+  const next = continueQueue && !outcome && !chat.turns[id] ? chat.queued[id]?.[0] : undefined;
+  if (next) {
+    chat.queued[id] = chat.queued[id].slice(1);
+    await deliver(id, next.text, next.attachments, imagesOnly(next.images));
+  }
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -293,6 +358,12 @@ export function handleChatEvent(event: ChatEvent): void {
       if (turn) turn.text = "";
       if (chat.activeId === id) void api.listMessages(id).then((messages) => (chat.messages = messages));
       break;
+    case "injected":
+      // O agente leu a mensagem: ela sai da fila e passa a vir da lista de mensagens.
+      chat.queued[id] = (chat.queued[id] ?? []).filter((m) => m.id !== event.id);
+      if (turn) turn.text = "";
+      if (chat.activeId === id) void api.listMessages(id).then((messages) => (chat.messages = messages));
+      break;
     case "permission":
       chat.permissions[id] = { requestId: event.request_id, tool: event.tool, input: event.input };
       if (turn) turn.status = event.tool === "AskUserQuestion" ? "Aguardando sua resposta" : "Aguardando sua aprovação";
@@ -307,8 +378,11 @@ export function handleChatEvent(event: ChatEvent): void {
       if (chat.activeId === id) chat.messages.push(localMessage("notice", event.text));
       break;
     case "done":
-    case "cancelled":
       void finish(id);
+      break;
+    case "cancelled":
+      // Parar é decisão do usuário: a fila fica esperando.
+      void finish(id, null, false);
       break;
     case "exhausted":
       void finish(id, { kind: "exhausted", resetsAt: event.resets_at });

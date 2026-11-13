@@ -1,6 +1,7 @@
 //! Conversas, mensagens e o ciclo de um turno com o modelo.
 
 use serde::Serialize;
+use super::account::Provider;
 
 pub const ROLE_USER: &str = "user";
 pub const ROLE_ASSISTANT: &str = "assistant";
@@ -31,6 +32,8 @@ pub struct Conversation {
     pub id: String,
     pub title: String,
     pub cli_session_id: Option<String>,
+    /// Serviço em que a sessão acima existe; conta de outro tipo não consegue retomá-la.
+    pub session_provider: Provider,
     pub model: String,
     pub cwd: String,
     pub agent_id: Option<String>,
@@ -119,6 +122,8 @@ pub enum TurnEvent {
         description: String,
     },
     Rate(RateInfo),
+    /// O provedor leu uma mensagem do usuário (eco com o identificador dela).
+    UserRead(String),
     /// Tokens ocupados no contexto ao fim do turno e o tamanho da janela do modelo.
     Context {
         used_tokens: u64,
@@ -136,6 +141,8 @@ pub enum TurnEvent {
 /// O que é preciso para executar um turno em nome de uma conta.
 #[derive(Debug, Clone)]
 pub struct TurnRequest {
+    /// Tipo da conta: decide qual CLI executa o turno.
+    pub provider: Provider,
     pub config_dir: Option<String>,
     pub cwd: String,
     pub model: String,
@@ -172,6 +179,16 @@ pub enum AttachmentKind {
     Text,
     Image,
     Pdf,
+}
+
+/// Mensagem que o usuário mandou durante um turno em andamento, para o agente ler
+/// assim que puder (entre um passo e outro) sem interromper o que está fazendo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Injection {
+    /// Identificador que o provedor devolve quando a mensagem é lida.
+    pub id: String,
+    pub prompt: String,
+    pub attachments: Vec<Attachment>,
 }
 
 /// Arquivo enviado junto com a mensagem.

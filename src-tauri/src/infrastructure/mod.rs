@@ -1,6 +1,10 @@
 //! Adaptadores: implementações concretas das portas da aplicação.
 
+pub mod antigravity_cli;
 pub mod claude_cli;
+pub mod clipboard;
+pub mod codex_cli;
+pub mod providers;
 pub mod files;
 pub mod git_cli;
 pub mod history_index;

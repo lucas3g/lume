@@ -19,8 +19,8 @@ pub(crate) mod fakes;
 
 use serde::Serialize;
 use std::{collections::HashMap, fmt, sync::{Arc, Mutex}};
-use crate::domain::chat::PermissionDecision;
-use tokio::sync::{mpsc, Notify};
+use crate::domain::chat::{Injection, PermissionDecision};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 /// Sinal de cancelamento de um turno em andamento.
 pub type Cancel = Arc<Notify>;
@@ -64,6 +64,8 @@ pub enum ChatEvent {
     Tool { name: String },
     /// Algo foi gravado na conversa (trecho de texto ou uso de ferramenta): recarregue as mensagens.
     Step,
+    /// Uma mensagem enviada durante o turno foi lida pelo agente e gravada na conversa.
+    Injected { id: String },
     Permission { request_id: String, tool: String, input: String, description: String },
     /// Descarta o texto parcial: o turno será refeito em outra conta.
     Reset,
@@ -81,14 +83,23 @@ pub struct TurnControl {
     pub decisions: mpsc::UnboundedReceiver<PermissionDecision>,
     /// Permite ao caso de uso responder sozinho (ferramenta já liberada).
     pub answer: mpsc::UnboundedSender<PermissionDecision>,
+    /// Mensagens mandadas durante o turno; o motor confirma se conseguiu entregá-las.
+    pub injections: mpsc::UnboundedReceiver<(Injection, oneshot::Sender<bool>)>,
+    /// O que gravar na conversa quando o agente ler cada mensagem: id → (texto, registro dos anexos).
+    pub pending_users: PendingUsers,
 }
+
+/// Mensagens entregues durante o turno e ainda não lidas pelo agente.
+pub type PendingUsers = Arc<Mutex<HashMap<String, (String, Option<String>)>>>;
 
 impl TurnControl {
     pub fn new() -> (TurnControl, TurnHandle) {
         let cancel = Cancel::default();
         let (answer, decisions) = mpsc::unbounded_channel();
-        let handle = TurnHandle { cancel: cancel.clone(), answer: answer.clone() };
-        (TurnControl { cancel, decisions, answer }, handle)
+        let (inject, injections) = mpsc::unbounded_channel();
+        let pending_users = PendingUsers::default();
+        let handle = TurnHandle { cancel: cancel.clone(), answer: answer.clone(), inject, pending_users: pending_users.clone() };
+        (TurnControl { cancel, decisions, answer, injections, pending_users }, handle)
     }
 }
 
@@ -96,6 +107,8 @@ impl TurnControl {
 pub struct TurnHandle {
     cancel: Cancel,
     answer: mpsc::UnboundedSender<PermissionDecision>,
+    inject: mpsc::UnboundedSender<(Injection, oneshot::Sender<bool>)>,
+    pending_users: PendingUsers,
 }
 
 /// Turnos em andamento, por conversa, para cancelar e responder autorizações.
@@ -132,5 +145,23 @@ impl RunningTurns {
         if let Some(turn) = self.map().get(conversation_id) {
             let _ = turn.answer.send(decision);
         }
+    }
+
+    /// Esquece uma mensagem que o motor não aceitou.
+    pub fn forget_injection(&self, conversation_id: &str, id: &str) {
+        if let Some(turn) = self.map().get(conversation_id) {
+            turn.pending_users.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        }
+    }
+
+    /// Entrega uma mensagem ao turno em andamento. O receptor diz se o motor a aceitou;
+    /// `None` quando não há turno nesta conversa.
+    pub fn inject(&self, conversation_id: &str, injection: Injection, record: (String, Option<String>)) -> Option<oneshot::Receiver<bool>> {
+        let map = self.map();
+        let turn = map.get(conversation_id)?;
+        let (ack, accepted) = oneshot::channel();
+        turn.pending_users.lock().unwrap_or_else(|e| e.into_inner()).insert(injection.id.clone(), record);
+        turn.inject.send((injection, ack)).ok()?;
+        Some(accepted)
     }
 }

@@ -19,7 +19,8 @@
   import { activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
   import { api } from "../api";
-  import { activeConversation, branchAt, cancel, cancelEdit, chat, decide, regenerate, send, setAgent, setEffort, setMode, setModel, startEdit } from "../state/chat.svelte";
+  import { activeConversation, branchAt, cancel, cancelEdit, chat, decide, enqueue, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
+  import { NEW_CONVERSATION, readDraft, saveDraft } from "../state/drafts";
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
   import { parseToolUse } from "../tools";
@@ -48,6 +49,24 @@
   let pastedCount = 0;
   let scroller = $state<HTMLElement>();
 
+  // O rascunho (texto, anexos e imagens) é de cada conversa e sobrevive à troca de tela.
+  const draftKey = $derived(chat.activeId ?? NEW_CONVERSATION);
+  let draftLoadedFor: string | null = null;
+  $effect.pre(() => {
+    const key = draftKey;
+    untrack(() => {
+      const saved = readDraft(key);
+      draft = saved.text;
+      attachments = saved.attachments;
+      pasted = saved.pasted;
+      draftLoadedFor = key;
+    });
+  });
+  $effect(() => {
+    const current = { text: draft, attachments, pasted };
+    if (draftLoadedFor) untrack(() => saveDraft(draftLoadedFor!, current));
+  });
+
 
   const conversation = $derived(activeConversation());
   const turn = $derived(chat.activeId ? chat.turns[chat.activeId] : undefined);
@@ -60,7 +79,9 @@
   const projectId = $derived(conversation ? conversation.project_id : projects.pendingId);
   const agentModel = $derived(agents.list.find((a) => a.id === agentId)?.model ?? null);
   const effort = $derived(conversation?.effort ?? newEffort);
-  const canSend = $derived((draft.trim().length > 0 || pasted.length > 0) && !turn);
+  const canSend = $derived(draft.trim().length > 0 || pasted.length > 0);
+  /** Mensagens esperando o agente, na conversa aberta. */
+  const queued = $derived(chat.activeId ? (chat.queued[chat.activeId] ?? []) : []);
   /** Lista de comandos: aparece enquanto o texto é só "/" seguido do começo de um nome. */
   const commandQuery = $derived(commandsDismissed ? null : (draft.match(/^\/(\S*)$/)?.[1] ?? null));
   const commandMatches = $derived(
@@ -110,16 +131,87 @@
     pasted = pasted.filter((_, i) => i !== index);
   }
 
-  function meta(message: Message, key: "context" | "attachments"): string[] {
-    if (!message.meta) return [];
+  /** Registro da mensagem (anexos, contexto, imagens), lido uma vez só: pode trazer imagens grandes em base64. */
+  function parseMeta(message: Message): Record<string, unknown> {
+    if (!message.meta) return {};
     try {
-      return JSON.parse(message.meta)[key] ?? [];
+      return JSON.parse(message.meta) ?? {};
     } catch {
-      return [];
+      return {};
     }
   }
 
+  function meta(message: Message, key: "context" | "attachments"): string[] {
+    const value = parseMeta(message)[key];
+    return Array.isArray(value) ? value : [];
+  }
+
   const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+  /** Imagem colada numa mensagem enviada; `index` é a posição na lista guardada. */
+  interface SentImage {
+    image: PastedImage;
+    messageId: number;
+    index: number;
+  }
+
+  /** Imagens coladas que foram enviadas com a mensagem. */
+  function imagesOf(message: Message, info: Record<string, unknown>): SentImage[] {
+    const images = Array.isArray(info.images) ? (info.images as PastedImage[]) : [];
+    return images
+      .map((image, index) => ({ image, messageId: message.id, index }))
+      .filter(({ image }) => image?.data && image?.media_type);
+  }
+
+  /** Nomes dos anexos que não são imagens coladas: estas vêm por último na lista. */
+  function fileNames(info: Record<string, unknown>): string[] {
+    const names = Array.isArray(info.attachments) ? (info.attachments as string[]) : [];
+    const pasted = Array.isArray(info.images) ? info.images.length : 0;
+    return names.slice(0, Math.max(0, names.length - pasted));
+  }
+
+  const imageSrc = (image: PastedImage) => `data:${image.media_type};base64,${image.data}`;
+
+  /** Imagem aberta em tamanho grande. */
+  let zoomed = $state.raw<SentImage | null>(null);
+  let lightbox = $state<HTMLDialogElement>();
+  /** Resultado do último "Copiar": null enquanto não houve, ou a mensagem de erro. */
+  let imageCopied = $state<"ok" | string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function openImage(sent: SentImage) {
+    zoomed = sent;
+    imageCopied = null;
+    clearTimeout(copiedTimer);
+  }
+
+  // O elemento nativo cuida do foco, do Esc e de bloquear o resto da tela.
+  $effect(() => {
+    if (zoomed && !lightbox?.open) lightbox?.showModal();
+    if (!zoomed && lightbox?.open) lightbox.close();
+  });
+
+  // Trocar de conversa fecha a imagem aberta.
+  $effect(() => {
+    void chat.activeId;
+    zoomed = null;
+  });
+
+  async function copyImage(sent: SentImage) {
+    let result: "ok" | string;
+    try {
+      // Mensagens ainda não gravadas têm id local (≤ 0) e só existem na tela.
+      await api.copyImage(sent.messageId > 0 ? { message_id: sent.messageId, index: sent.index } : { data: sent.image.data });
+      result = "ok";
+    } catch (e) {
+      result = e instanceof Error ? e.message : String(e);
+    }
+    // A imagem pode ter sido fechada (ou trocada) enquanto copiava.
+    if (zoomed !== sent) return;
+    imageCopied = result;
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (imageCopied = null), imageCopied === "ok" ? 1500 : 4000);
+  }
 
   function contextLabel(count: number): string {
     return count === 1 ? "Usou 1 conversa anterior como contexto" : `Usou ${count} conversas anteriores como contexto`;
@@ -176,9 +268,19 @@
     const text = draft.trim();
     const files = attachments;
     const images = pasted.map(({ name, media_type, data }) => ({ name, media_type, data }));
+    // Com o agente trabalhando, a mensagem entra na fila e sai quando ele terminar (ou em "Enviar agora").
+    if (turn && chat.activeId) {
+      enqueue(chat.activeId, text, files, pasted);
+      draft = "";
+      attachments = [];
+      pasted = [];
+      return;
+    }
     draft = "";
     attachments = [];
     pasted = [];
+    // A conversa nova ganha id durante o envio: o rascunho enviado não pode ficar para a próxima.
+    saveDraft(draftKey, { text: "", attachments: [], pasted: [] });
     await send(text, { model, agentId, projectId, effort, attachments: files, images });
   }
 
@@ -264,7 +366,7 @@
 
   // Acompanha o fim da conversa enquanto a resposta chega.
   $effect(() => {
-    void [chat.messages.length, turn?.text, turn?.status, outcome, permission];
+    void [chat.messages.length, turn?.text, turn?.status, outcome, permission, queued.length];
     void tick().then(() => scroller?.scrollTo({ top: scroller.scrollHeight }));
   });
 </script>
@@ -322,14 +424,27 @@
 
         {#each chat.messages as message (message.id)}
           {#if message.role === "user"}
-            {@const names = meta(message, "attachments")}
+            {@const info = parseMeta(message)}
+            {@const images = imagesOf(message, info)}
+            {@const names = fileNames(info)}
             <div class="user-wrap">
+              {#if images.length}
+                <div class="sent-images" role="group" aria-label="Imagens enviadas">
+                  {#each images as sent (sent.index)}
+                    <button type="button" class="sent-image" title="Ampliar a imagem" aria-label={`Ampliar a imagem ${sent.image.name}`} onclick={() => openImage(sent)}>
+                      <img src={imageSrc(sent.image)} alt={sent.image.name} />
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+              {#if names.length || message.content}
               <div class="user">
                 {#if names.length}
                   <div class="files">{#each names as n}<span class="file">{n}</span>{/each}</div>
                 {/if}
                 {message.content}
               </div>
+              {/if}
               {#if !turn && message.id > 0}
                 <div class="msg-actions">
                   <button type="button" onclick={() => edit(message)}>Editar</button>
@@ -383,6 +498,32 @@
             {/if}
           </div>
         {/if}
+
+        {#each queued as item (item.id)}
+          <div class="user-wrap queued" aria-label="Mensagem na fila">
+            <div class="user">
+              {#if item.attachments.length || item.images.length}
+                <div class="files">
+                  {#each [...item.attachments.map(baseName), ...item.images.map((i) => i.name)] as name, i (i)}
+                    <span class="file">{name}</span>
+                  {/each}
+                </div>
+              {/if}
+              {item.text}
+            </div>
+            <div class="queue-actions">
+              {#if item.sending}
+                <span class="muted small">Entregue · o agente lê no próximo passo</span>
+              {:else}
+                <span class="muted small">{item.waitsForEnd ? "Este serviço só lê ao fim da resposta" : turn ? "Na fila · vai quando a resposta terminar" : "Na fila"}</span>
+                <button type="button" class="btn small" title="Remover da fila" onclick={() => chat.activeId && unqueue(chat.activeId, item.id)}>Remover</button>
+                {#if !item.waitsForEnd || !turn}
+                  <button type="button" class="btn small primary" title="O agente lê esta mensagem já, sem parar o que está fazendo" onclick={() => chat.activeId && sendNow(chat.activeId, item.id)}>Enviar agora</button>
+                {/if}
+              {/if}
+            </div>
+          </div>
+        {/each}
 
         {#if permission?.tool === "AskUserQuestion"}
           <QuestionCard request={permission} onanswer={(answers) => decide(true, false, { answers })} oncancel={() => decide(false, false)} />
@@ -455,6 +596,11 @@
               <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
             <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos · cole imagens aqui" bind:value={draft} onkeydown={onKeydown} onpaste={onPaste}></textarea>
+            {#if turn && canSend}
+              <button type="button" class="send" aria-label="Pôr na fila" title="Pôr na fila (Enter): vai quando a resposta terminar" onclick={submit}>
+                <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+              </button>
+            {/if}
             {#if turn}
               <button type="button" class="send stop" aria-label="Parar a resposta" title="Parar" onclick={cancel}>
                 <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5" /></svg>
@@ -493,7 +639,7 @@
               {/each}
             </select>
           {/if}
-          <ModelMenu model={agentModel ?? model} {effort} locked={agentModel !== null} onmodel={changeModel} oneffort={changeEffort} />
+          <ModelMenu model={agentModel ?? model} {effort} locked={agentModel !== null} provider={account?.provider} onmodel={changeModel} oneffort={changeEffort} />
           {#if isAgent && conversation}
             <ModeMenu mode={conversation.permission_mode} onmode={setMode} />
           {/if}
@@ -518,6 +664,19 @@
       {/if}
     </aside>
   {/if}
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+<dialog bind:this={lightbox} class="lightbox" aria-label={zoomed?.image.name ?? "Imagem"} onclose={() => (zoomed = null)} onclick={(e) => e.target === lightbox && (zoomed = null)}>
+  {#if zoomed}
+    {@const sent = zoomed}
+    {@const image = sent.image}
+    <div class="lightbox-bar">
+      <span class="lightbox-name">{image.name}</span>
+      <button type="button" title={imageCopied && imageCopied !== "ok" ? imageCopied : "Copiar a imagem"} onclick={() => copyImage(sent)}>{imageCopied === "ok" ? "Copiada" : imageCopied ? "Não copiou" : "Copiar"}</button>
+      <button type="button" title="Fechar (Esc)" aria-label="Fechar" onclick={() => (zoomed = null)}>×</button>
+    </div>
+    <img src={imageSrc(image)} alt={image.name} />
+  {/if}
+</dialog>
 </div>
 
 <style>
@@ -547,8 +706,22 @@
   .welcome { padding: 96px 0 0; text-align: center; display: flex; flex-direction: column; gap: 8px; }
   .welcome h2 { font-family: var(--display); font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
 
+  .queued .user { opacity: 0.6; border-style: dashed; }
+  .queue-actions { display: flex; align-items: center; gap: 6px; }
   .user-wrap { align-self: flex-end; max-width: 520px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
   .user { padding: 10px 14px; border: 1px solid var(--border); border-radius: 14px 14px 4px 14px; background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .sent-images { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .sent-image { padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg); cursor: zoom-in; }
+  .sent-image img { display: block; max-width: 240px; max-height: 180px; object-fit: cover; }
+  .sent-image:hover { border-color: var(--border-strong); }
+  .lightbox { width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; border: 0; color: inherit; }
+  .lightbox::backdrop { background: transparent; }
+  .lightbox[open] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; background: rgba(0, 0, 0, 0.78); cursor: zoom-out; }
+  .lightbox img { max-width: 100%; max-height: calc(100% - 52px); object-fit: contain; border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); cursor: default; }
+  .lightbox-bar { display: flex; align-items: center; gap: 8px; max-width: 100%; cursor: default; }
+  .lightbox-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: rgba(255, 255, 255, 0.8); }
+  .lightbox-bar button { min-height: 28px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 8px; background: rgba(255, 255, 255, 0.1); color: #fff; font-size: 12.5px; }
+  .lightbox-bar button:hover { background: rgba(255, 255, 255, 0.2); }
   .msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
   .user-wrap:hover .msg-actions, .user-wrap:focus-within .msg-actions, .assistant:hover .msg-actions, .assistant:focus-within .msg-actions { opacity: 1; }
   .msg-actions button { min-height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; font-size: 12px; color: var(--muted); }

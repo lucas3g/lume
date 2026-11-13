@@ -3,7 +3,7 @@
 
 use super::{AppResult, ChatEvent, TurnControl};
 use crate::domain::{
-    account::{Account, Identity},
+    account::{Account, Identity, Provider, UsageLimit},
     chat::{Attachment, Conversation, Message, RateInfo, Switch, TurnEnd, TurnEvent, TurnRequest},
     extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
@@ -16,12 +16,14 @@ use async_trait::async_trait;
 
 pub trait AccountRepository: Send + Sync {
     fn all(&self) -> AppResult<Vec<Account>>;
-    fn insert(&self, id: &str, name: &str, identity: &Identity, config_dir: Option<&str>) -> AppResult<()>;
+    fn insert(&self, id: &str, name: &str, provider: Provider, identity: &Identity, config_dir: Option<&str>) -> AppResult<()>;
     fn delete(&self, id: &str) -> AppResult<()>;
     fn set_enabled(&self, id: &str, enabled: bool) -> AppResult<()>;
     fn set_name(&self, id: &str, name: &str) -> AppResult<()>;
     fn set_identity(&self, id: &str, identity: &Identity) -> AppResult<()>;
     fn set_auth(&self, id: &str, ok: bool) -> AppResult<()>;
+    /// Liga a conta a um perfil próprio (`None` = login do computador).
+    fn set_config_dir(&self, id: &str, config_dir: Option<&str>) -> AppResult<()>;
     fn set_limited(&self, id: &str, until: Option<i64>) -> AppResult<()>;
     fn set_usage(&self, id: &str, rate: &RateInfo) -> AppResult<()>;
     fn reorder(&self, ids: &[String]) -> AppResult<()>;
@@ -34,6 +36,8 @@ pub trait ConversationRepository: Send + Sync {
     /// Libera de vez uma ferramenta nesta conversa.
     fn allow_tool(&self, id: &str, tool: &str) -> AppResult<()>;
     fn update(&self, id: &str, title: Option<&str>, session: Option<&str>, model: Option<&str>) -> AppResult<()>;
+    /// Registra em qual serviço a sessão da conversa existe.
+    fn set_session_provider(&self, id: &str, provider: Provider) -> AppResult<()>;
     /// Cria `new_id` com as configurações de `source_id` (sem a sessão do provedor)
     /// e as mensagens de id menor que `before_message`.
     fn copy(&self, source_id: &str, new_id: &str, title: &str, before_message: i64) -> AppResult<()>;
@@ -53,6 +57,8 @@ pub trait ConversationRepository: Send + Sync {
         meta: Option<&str>,
     ) -> AppResult<()>;
     fn message_count(&self, conversation_id: &str) -> AppResult<i64>;
+    /// Metadados guardados com a mensagem (`None` se ela não existe ou não tem).
+    fn message_meta(&self, message_id: i64) -> AppResult<Option<String>>;
 }
 
 pub trait ProjectRepository: Send + Sync {
@@ -198,17 +204,27 @@ pub trait ChatEngine: Send + Sync {
 /// Consulta o uso atual de uma conta junto ao provedor, sem uma conversa.
 #[async_trait]
 pub trait UsageProbe: Send + Sync {
-    async fn usage(&self, config_dir: Option<&str>) -> AppResult<RateInfo>;
+    async fn usage(&self, provider: Provider, config_dir: Option<&str>) -> AppResult<RateInfo>;
+
+    /// Todos os limites da conta, inclusive os semanais por modelo. Quem só conhece
+    /// as duas janelas do turno devolve apenas sessão e semana.
+    async fn limits(&self, provider: Provider, config_dir: Option<&str>) -> AppResult<Vec<UsageLimit>> {
+        let rate = self.usage(provider, config_dir).await?;
+        Ok(UsageLimit::from_windows(rate.util_5h, rate.resets_5h, rate.util_7d, rate.resets_7d))
+    }
 }
 
 /// Login e identidade das contas junto ao provedor.
 #[async_trait]
 pub trait AccountGateway: Send + Sync {
+    /// O CLI que atende este tipo de conta está instalado neste computador.
+    fn installed(&self, provider: Provider) -> bool;
     /// Cria o perfil isolado de uma conta e devolve o diretório de configuração.
-    fn prepare_profile(&self, account_id: &str) -> AppResult<String>;
-    fn discard_profile(&self, config_dir: &str);
-    async fn identity(&self, config_dir: Option<&str>) -> Identity;
-    async fn login(&self, config_dir: &str) -> AppResult<Identity>;
+    /// Falha quando o CLI do tipo só aceita o login do computador.
+    fn prepare_profile(&self, provider: Provider, account_id: &str) -> AppResult<String>;
+    fn discard_profile(&self, provider: Provider, config_dir: &str);
+    async fn identity(&self, provider: Provider, config_dir: Option<&str>) -> Identity;
+    async fn login(&self, provider: Provider, config_dir: &str) -> AppResult<Identity>;
 }
 
 pub trait HistoryIndex: Send + Sync {

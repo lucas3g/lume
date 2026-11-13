@@ -15,6 +15,8 @@ pub fn parse_line(line: &str) -> Vec<TurnEvent> {
         // Mensagens de subagentes (com `parent_tool_use_id`) não são passos desta conversa.
         "assistant" | "user" if !v["parent_tool_use_id"].is_null() => vec![],
         "assistant" => parse_assistant(&v),
+        // Eco (`--replay-user-messages`) de uma mensagem do usuário no momento em que é lida.
+        "user" if v["isReplay"] == true => v["uuid"].as_str().map(|id| TurnEvent::UserRead(id.into())).into_iter().collect(),
         "user" => parse_tool_results(&v["message"]["content"]),
         "control_request" => single(parse_permission(&v)),
         "result" => parse_context(&v)
@@ -232,6 +234,12 @@ mod tests {
     // Capturado do CLI 2.1.322.
     const RATE_ALLOWED: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794521400,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.41,"resetsAt":1794521400,"status":"allowed"},"seven_day":{"utilization":0.46,"resetsAt":1794906000,"status":"allowed"}}},"session_id":"x"}"#;
     const RATE_REJECTED: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":99}}"#;
+
+    #[test]
+    fn replayed_user_message_reports_its_id() {
+        let line = r#"{"type":"user","isReplay":true,"uuid":"aaaa-1","parent_tool_use_id":null,"message":{"role":"user","content":"diga BANANA"}}"#;
+        assert_eq!(parse_line(line), [TurnEvent::UserRead("aaaa-1".into())]);
+    }
 
     #[test]
     fn parses_text_delta() {

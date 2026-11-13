@@ -15,6 +15,7 @@ use crate::domain::{
 };
 use crate::infrastructure::{skills::SqliteSkills, sqlite::SqliteStore};
 use async_trait::async_trait;
+use crate::domain::account::Provider;
 use std::sync::{Arc, Mutex};
 
 pub struct World {
@@ -33,7 +34,7 @@ impl World {
     pub fn with_accounts(accounts: Vec<Account>) -> World {
         let store = Arc::new(SqliteStore::memory());
         for a in &accounts {
-            AccountRepository::insert(&*store, &a.id, &a.name, &Identity::default(), None).unwrap();
+            AccountRepository::insert(&*store, &a.id, &a.name, a.provider, &Identity::default(), None).unwrap();
         }
         ConversationRepository::insert(&*store, "c1", "Nova conversa", "opus", "/tmp", KIND_CHAT, None).unwrap();
         let skills = Arc::new(SqliteSkills::new(store.clone(), "/pasta/inexistente".into(), "/pasta/inexistente".into()));
@@ -155,30 +156,43 @@ impl IdGenerator for SequentialIds {
 pub struct FakeGateway {
     login: Result<Identity, String>,
     pub discarded: Arc<Mutex<Vec<String>>>,
+    /// Tipos de conta cujo CLI "não está instalado".
+    pub missing: Vec<Provider>,
+    /// Quem está no login do computador, quando difere do login aberto no navegador.
+    pub machine: Option<Identity>,
 }
 
 impl FakeGateway {
     pub fn logged_in(identity: Identity) -> Self {
-        FakeGateway { login: Ok(identity), discarded: Arc::default() }
+        FakeGateway { login: Ok(identity), discarded: Arc::default(), missing: vec![], machine: None }
     }
 
     pub fn failing(message: &str) -> Self {
-        FakeGateway { login: Err(message.into()), discarded: Arc::default() }
+        FakeGateway { login: Err(message.into()), discarded: Arc::default(), missing: vec![], machine: None }
     }
 }
 
 #[async_trait]
 impl AccountGateway for FakeGateway {
-    fn prepare_profile(&self, account_id: &str) -> AppResult<String> {
+    fn installed(&self, provider: Provider) -> bool {
+        !self.missing.contains(&provider)
+    }
+    fn prepare_profile(&self, provider: Provider, account_id: &str) -> AppResult<String> {
+        if provider == Provider::Gemini {
+            return Err(AppError("um único login por computador".into()));
+        }
         Ok(format!("/perfis/{account_id}"))
     }
-    fn discard_profile(&self, config_dir: &str) {
+    fn discard_profile(&self, _provider: Provider, config_dir: &str) {
         self.discarded.lock().unwrap().push(config_dir.to_owned());
     }
-    async fn identity(&self, _config_dir: Option<&str>) -> Identity {
-        self.login.clone().unwrap_or_default()
+    async fn identity(&self, _provider: Provider, config_dir: Option<&str>) -> Identity {
+        match (&self.machine, config_dir) {
+            (Some(machine), None) => machine.clone(),
+            _ => self.login.clone().unwrap_or_default(),
+        }
     }
-    async fn login(&self, _config_dir: &str) -> AppResult<Identity> {
+    async fn login(&self, _provider: Provider, _config_dir: &str) -> AppResult<Identity> {
         self.login.clone().map_err(AppError)
     }
 }
@@ -188,7 +202,7 @@ pub struct FakeUsage;
 
 #[async_trait]
 impl UsageProbe for FakeUsage {
-    async fn usage(&self, _config_dir: Option<&str>) -> AppResult<RateInfo> {
+    async fn usage(&self, _provider: Provider, _config_dir: Option<&str>) -> AppResult<RateInfo> {
         Ok(RateInfo { status: "allowed".into(), resets_at: None, util_5h: Some(0.5), util_7d: Some(0.2), resets_5h: Some(500), resets_7d: Some(900) })
     }
 }

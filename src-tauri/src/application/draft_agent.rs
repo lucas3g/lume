@@ -5,7 +5,7 @@ use super::{
     AppError, AppResult, TurnControl,
 };
 use crate::domain::{
-    account::pick_next,
+    account::{pick_next, Provider},
     chat::{TurnEnd, TurnRequest},
     extension::{parse_agent_draft, AgentDraft, Skill},
 };
@@ -46,10 +46,12 @@ impl DraftAgent {
             return Err(AppError("Dê um nome para o agente antes de gerar.".into()));
         }
         let catalog = self.skills.catalog()?;
-        let all = self.accounts.all()?;
+        // O rascunho usa um modelo do Claude; contas de outros serviços ficam de fora.
+        let all: Vec<_> = self.accounts.all()?.into_iter().filter(|a| a.provider == Provider::Claude).collect();
         let account = pick_next(&all, self.clock.now(), &[], true)
-            .ok_or_else(|| AppError("Nenhuma conta disponível para gerar.".into()))?;
+            .ok_or_else(|| AppError("Nenhuma conta do Claude disponível para gerar.".into()))?;
         let request = TurnRequest {
+            provider: Provider::Claude,
             config_dir: account.config_dir.clone(),
             cwd: self.chat_dir.clone(),
             model: DRAFT_MODEL.into(),

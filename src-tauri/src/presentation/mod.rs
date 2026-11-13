@@ -11,7 +11,10 @@ use crate::application::{
     draft_agent::DraftAgent,
     extensions::{ManageAgents, ManageConnectors, ManageSkills},
     history::ManageHistory,
-    ports::{Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings, SwitchLog, VersionControl},
+    ports::{
+        AccountGateway, ChatEngine, Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings, SwitchLog, UsageProbe,
+        VersionControl,
+    },
     projects::ManageProjects,
     send_message::SendMessage,
     store::BrowseStore,
@@ -22,6 +25,9 @@ use crate::application::{
     AppError, AppResult, RunningTurns,
 };
 use crate::infrastructure::{
+    antigravity_cli::{AntigravityAccounts, AntigravityEngine, AntigravityUsage},
+    codex_cli::{CodexAccounts, CodexEngine, CodexUsage},
+    providers::ByProvider,
     claude_cli::{
         accounts::ClaudeCliAccounts, connectors::ClaudeCliConnectors, engine::ClaudeCliEngine, find_cli,
         plugins::ClaudeCliPlugins, usage::OauthUsage,
@@ -107,14 +113,30 @@ impl Container {
             icons: Arc::new(FaviconFetcher::new(data_dir.join("icons"))),
         });
         let files: Arc<dyn FileLoader> = Arc::new(FsFileLoader);
+        // Cada tipo de conta é atendido pelo CLI do seu serviço.
+        let gateway: Arc<dyn AccountGateway> = Arc::new(ByProvider::<dyn AccountGateway> {
+            claude: Arc::new(ClaudeCliAccounts::new(cli.clone(), profiles_dir.clone(), main_config.clone())),
+            chatgpt: Arc::new(CodexAccounts::new(profiles_dir)),
+            gemini: Arc::new(AntigravityAccounts),
+        });
+        let usage: Arc<dyn UsageProbe> = Arc::new(ByProvider::<dyn UsageProbe> {
+            claude: Arc::new(OauthUsage::new(cli.clone(), main_config.clone())),
+            chatgpt: Arc::new(CodexUsage),
+            gemini: Arc::new(AntigravityUsage),
+        });
+        let engine: Arc<dyn ChatEngine> = Arc::new(ByProvider::<dyn ChatEngine> {
+            claude: Arc::new(ClaudeCliEngine::new(cli.clone())),
+            chatgpt: Arc::new(CodexEngine),
+            gemini: Arc::new(AntigravityEngine),
+        });
 
         Ok(Container {
             accounts: ManageAccounts {
                 accounts: store.clone(),
-                gateway: Arc::new(ClaudeCliAccounts::new(cli.clone(), profiles_dir, main_config.clone())),
+                gateway,
                 events: events.clone(),
                 ids: ids.clone(),
-                usage: Arc::new(OauthUsage::new(cli.clone(), main_config.clone())),
+                usage,
             },
             conversations: ManageConversations {
                 conversations: store.clone(),
@@ -130,7 +152,7 @@ impl Container {
             skills: ManageSkills { skills: skills.clone() },
             agents: ManageAgents { agents: store.clone(), conversations: store.clone(), ids: ids.clone() },
             draft_agent: DraftAgent {
-                engine: Arc::new(ClaudeCliEngine::new(cli.clone())),
+                engine: engine.clone(),
                 accounts: store.clone(),
                 skills: skills.clone(),
                 clock: clock.clone(),
@@ -173,7 +195,7 @@ impl Container {
                 conversations: store.clone(),
                 switches: store.clone(),
                 settings: store.clone(),
-                engine: Arc::new(ClaudeCliEngine::new(cli)),
+                engine,
                 prepare: PrepareTurn {
                     settings: store.clone(),
                     history: index,
@@ -231,6 +253,7 @@ pub fn start_background_work(container: Arc<Container>) {
     let c = container.clone();
     tauri::async_runtime::spawn(async move {
         let _ = c.accounts.ensure_default().await;
+        let _ = c.accounts.verify_machine_logins().await;
     });
     let c = container.clone();
     tauri::async_runtime::spawn(async move {

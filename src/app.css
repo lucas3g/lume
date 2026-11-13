@@ -57,6 +57,9 @@
 html, body {
   height: 100%;
   margin: 0;
+  /* A janela nunca rola: cada área (conversa, página, painel) rola dentro do próprio espaço. */
+  overflow: hidden;
+  overscroll-behavior: none;
   background: var(--bg);
   color: var(--text);
   font: 13.5px/1.55 var(--font);

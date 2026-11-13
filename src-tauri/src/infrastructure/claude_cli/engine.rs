@@ -2,10 +2,10 @@
 
 use super::{command, stream::{parse_line, Observed}};
 use crate::application::{ports::{ChatEngine, TurnListener}, TurnControl};
-use crate::domain::chat::{Attachment, AttachmentKind, PermissionDecision, TurnEnd, TurnEvent, TurnRequest};
+use crate::domain::chat::{Attachment, AttachmentKind, Injection, PermissionDecision, TurnEnd, TurnEvent, TurnRequest};
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::PathBuf, process::Stdio};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, Command},
@@ -31,6 +31,9 @@ impl ClaudeCliEngine {
             "--output-format",
             "stream-json",
             "--verbose",
+            // Ecoa cada mensagem do usuário quando é lida: é como se sabe que uma
+            // mensagem mandada no meio do turno entrou na conversa.
+            "--replay-user-messages",
             "--include-partial-messages",
             "--forward-subagent-text",
             "--model",
@@ -85,14 +88,25 @@ fn attachment_block(attachment: &Attachment) -> Value {
 
 /// Mensagem do usuário: só o texto, ou os anexos seguidos do texto.
 fn user_message(request: &TurnRequest) -> Value {
-    let content = if request.attachments.is_empty() {
-        json!(request.prompt)
-    } else {
-        let mut blocks: Vec<Value> = request.attachments.iter().map(attachment_block).collect();
-        blocks.push(json!({ "type": "text", "text": request.prompt }));
-        Value::Array(blocks)
-    };
-    json!({ "type": "user", "message": { "role": "user", "content": content } })
+    json!({ "type": "user", "message": { "role": "user", "content": user_content(&request.prompt, &request.attachments) } })
+}
+
+/// Mensagem mandada durante o turno; o `uuid` volta no eco quando o CLI a lê.
+fn injected_message(injection: &Injection) -> Value {
+    json!({
+        "type": "user",
+        "uuid": injection.id,
+        "message": { "role": "user", "content": user_content(&injection.prompt, &injection.attachments) }
+    })
+}
+
+fn user_content(prompt: &str, attachments: &[Attachment]) -> Value {
+    if attachments.is_empty() {
+        return json!(prompt);
+    }
+    let mut blocks: Vec<Value> = attachments.iter().map(attachment_block).collect();
+    blocks.push(json!({ "type": "text", "text": prompt }));
+    Value::Array(blocks)
 }
 
 async fn write_line(stdin: &mut Option<ChildStdin>, message: Value) {
@@ -160,6 +174,8 @@ impl ChatEngine for ClaudeCliEngine {
         let mut observed = Observed::default();
         // Pedidos de autorização em aberto: id → argumentos originais da ferramenta.
         let mut pending: HashMap<String, String> = HashMap::new();
+        // Mensagens mandadas durante o turno que o CLI ainda não leu.
+        let mut unread: HashSet<String> = HashSet::new();
         loop {
             tokio::select! {
                 _ = control.cancel.notified() => {
@@ -171,6 +187,15 @@ impl ChatEngine for ClaudeCliEngine {
                         write_line(&mut stdin, permission_response(&decision, &input)).await;
                     }
                 }
+                Some((injection, ack)) = control.injections.recv() => {
+                    // Depois do resultado sem nada por ler, o stdin já fechou e o processo está saindo.
+                    let open = stdin.is_some();
+                    if open {
+                        write_line(&mut stdin, injected_message(&injection)).await;
+                        unread.insert(injection.id);
+                    }
+                    let _ = ack.send(open);
+                }
                 line = lines.next_line() => {
                     let Ok(Some(line)) = line else { break };
                     for event in parse_line(&line) {
@@ -178,7 +203,10 @@ impl ChatEngine for ClaudeCliEngine {
                             TurnEvent::Permission { request_id, input, .. } => {
                                 pending.insert(request_id.clone(), input.clone());
                             }
-                            TurnEvent::Result { .. } => stdin = None,
+                            // Só interessa o eco das mensagens mandadas no meio do turno.
+                            TurnEvent::UserRead(id) if !unread.remove(id) => continue,
+                            // Uma mensagem que chegou no fim vira mais uma resposta no mesmo processo.
+                            TurnEvent::Result { .. } if unread.is_empty() => stdin = None,
                             _ => {}
                         }
                         observed.record(&event);
@@ -204,6 +232,7 @@ mod tests {
 
     fn request(prompt: &str, resume: Option<String>) -> TurnRequest {
         TurnRequest {
+            provider: crate::domain::account::Provider::Claude,
             config_dir: None,
             cwd: std::env::temp_dir().to_string_lossy().into_owned(),
             model: "haiku".into(),
@@ -285,6 +314,61 @@ mod tests {
         let TurnEnd::Done { text, .. } = end else { panic!("turno falhou: {end:?}") };
         assert!(text.contains("abacaxi-72"), "leu o texto anexado: {text}");
         assert!(text.to_lowercase().contains("vermelh"), "viu a imagem: {text}");
+    }
+
+    #[tokio::test]
+    #[ignore = "consome uso da conta real"]
+    async fn real_cli_reads_messages_sent_during_the_turn() {
+        let mut req = request("Use a ferramenta Bash para rodar: sleep 6; echo pronto. Depois responda em uma frase.", None);
+        req.tools = "Bash".into();
+        req.allowed_tools = vec!["Bash".into()];
+        let (mut control, _handle) = TurnControl::new();
+        let (inject, injections) = tokio::sync::mpsc::unbounded_channel();
+        control.injections = injections;
+        let sender = tokio::spawn(async move {
+            let mut accepted = vec![];
+            for (delay, id, text) in [(3, "11111111-1111-4111-8111-111111111111", "Ao final, diga também a palavra BANANA.")] {
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                let (ack, rx) = tokio::sync::oneshot::channel();
+                let injection = Injection { id: id.into(), prompt: text.into(), attachments: vec![] };
+                inject.send((injection, ack)).unwrap();
+                accepted.push(rx.await.unwrap_or(false));
+            }
+            accepted
+        });
+        let mut read = vec![];
+        let end = engine().run_turn(&req, &mut control, &mut |e| if let TurnEvent::UserRead(id) = e { read.push(id.clone()) }).await;
+        assert_eq!(sender.await.unwrap(), [true]);
+        assert_eq!(read, ["11111111-1111-4111-8111-111111111111"], "só o eco da mensagem mandada no meio do turno");
+        let TurnEnd::Done { text, .. } = end else { panic!("turno falhou: {end:?}") };
+        assert!(text.contains("BANANA"), "leu a mensagem: {text}");
+    }
+
+    #[tokio::test]
+    #[ignore = "consome uso da conta real"]
+    async fn real_cli_answers_a_message_that_arrives_at_the_end() {
+        let req = request("Escreva um parágrafo de 4 frases sobre o mar.", None);
+        let (mut control, _handle) = TurnControl::new();
+        let (inject, injections) = tokio::sync::mpsc::unbounded_channel();
+        control.injections = injections;
+        let mut sent = false;
+        let mut read = vec![];
+        let mut inject = Some(inject);
+        let end = engine()
+            .run_turn(&req, &mut control, &mut |e| {
+                // Manda assim que o texto começa a chegar: o CLI pode já ter terminado de responder.
+                if let (TurnEvent::Delta(_), false) = (e, sent) {
+                    sent = true;
+                    let (ack, _rx) = tokio::sync::oneshot::channel();
+                    let injection = Injection { id: "22222222-2222-4222-8222-222222222222".into(), prompt: "Agora diga apenas: BANANA".into(), attachments: vec![] };
+                    let _ = inject.take().unwrap().send((injection, ack));
+                }
+                if let TurnEvent::UserRead(id) = e { read.push(id.clone()) }
+            })
+            .await;
+        let TurnEnd::Done { text, .. } = end else { panic!("turno falhou: {end:?}") };
+        assert_eq!(read.len(), 1, "a mensagem foi lida");
+        assert!(text.contains("BANANA"), "respondeu à mensagem: {text}");
     }
 
     /// Usa o Claude Code real e a conta deste computador: `cargo test -- --ignored`.

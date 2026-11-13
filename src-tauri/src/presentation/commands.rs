@@ -3,7 +3,7 @@
 use super::{windows, Container};
 use crate::application::{extensions::SkillView, flags, store::ServerPage, tasks::TaskInput, AppError, AppResult};
 use crate::domain::{
-    account::Account,
+    account::{Account, Provider, ProviderInfo, UsageLimit},
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
     history::{HistSession, HistoryStatus},
@@ -26,8 +26,13 @@ pub fn list_accounts(app: App<'_>) -> AppResult<Vec<Account>> {
 }
 
 #[tauri::command]
-pub async fn add_account(app: App<'_>, name: String) -> AppResult<()> {
-    app.accounts.add(&name).await
+pub async fn add_account(app: App<'_>, name: String, provider: Option<Provider>) -> AppResult<()> {
+    app.accounts.add(&name, provider.unwrap_or_default()).await
+}
+
+#[tauri::command]
+pub fn list_providers(app: App<'_>) -> Vec<ProviderInfo> {
+    app.accounts.providers()
 }
 
 #[tauri::command]
@@ -64,6 +69,11 @@ pub async fn login_account_again(app: App<'_>, id: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn refresh_usage(app: App<'_>) -> AppResult<usize> {
     app.accounts.refresh_usage().await
+}
+
+#[tauri::command]
+pub async fn account_limits(app: App<'_>, id: String) -> AppResult<Vec<UsageLimit>> {
+    app.accounts.limits(&id).await
 }
 
 #[tauri::command]
@@ -116,6 +126,28 @@ pub fn set_conversation_mode(app: App<'_>, id: String, mode: String) -> AppResul
     app.conversations.set_permission_mode(&id, &mode)
 }
 
+/// De onde vem a imagem a copiar.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum ImageSource {
+    /// Imagem colada numa mensagem já gravada: o conteúdo é lido do banco.
+    Stored { message_id: i64, index: usize },
+    /// Mensagem ainda não gravada (só existe na tela): o conteúdo vem junto.
+    Inline { data: String },
+}
+
+/// Copia uma imagem colada para a área de transferência do sistema.
+#[tauri::command]
+pub async fn copy_image(app: App<'_>, source: ImageSource) -> AppResult<()> {
+    let data = match source {
+        ImageSource::Stored { message_id, index } => app.conversations.message_image(message_id, index)?,
+        ImageSource::Inline { data } => data,
+    };
+    tauri::async_runtime::spawn_blocking(move || crate::infrastructure::clipboard::copy_image(&data))
+        .await
+        .map_err(|e| AppError(e.to_string()))?
+}
+
 /// Imagem colada no campo de mensagem: já chega com o conteúdo em base64.
 #[derive(Deserialize)]
 pub struct PastedImage {
@@ -146,6 +178,37 @@ pub fn send_message(
         return Err(AppError("Aguarde a resposta em andamento.".into()));
     }
     Ok(())
+}
+
+/// Prazo para o motor confirmar a entrega; motores que não leem mensagens no meio do turno não respondem.
+const INJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Entrega a mensagem ao turno em andamento para o agente ler assim que puder.
+/// `false` quando não há turno ou o motor não aceita: a interface envia depois, ao fim do turno.
+#[tauri::command]
+pub async fn inject_message(
+    app: App<'_>,
+    conversation_id: String,
+    id: String,
+    text: String,
+    attachments: Vec<String>,
+    images: Vec<PastedImage>,
+) -> AppResult<bool> {
+    let text = text.trim().to_owned();
+    let text = if text.is_empty() { "Veja as imagens anexadas.".to_owned() } else { text };
+    let pasted: Vec<Attachment> = images
+        .into_iter()
+        .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
+        .collect();
+    let (injection, meta) = app.send_message.injection(&id, &text, &attachments, pasted)?;
+    let Some(accepted) = app.running.inject(&conversation_id, injection, (text, meta)) else {
+        return Ok(false);
+    };
+    let accepted = matches!(tokio::time::timeout(INJECT_TIMEOUT, accepted).await, Ok(Ok(true)));
+    if !accepted {
+        app.running.forget_injection(&conversation_id, &id);
+    }
+    Ok(accepted)
 }
 
 // ---- tarefas agendadas

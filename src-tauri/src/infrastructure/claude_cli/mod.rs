@@ -92,7 +92,7 @@ pub(crate) fn run_cli(cli: &Path, config_dir: Option<&str>, args: &[&str], timeo
 /// PATH do shell de login do usuário. Um app aberto pelo Finder herda um PATH
 /// mínimo, sem `npx`, `node` e afins, de que os conectores locais dependem.
 #[cfg(unix)]
-fn shell_path() -> Option<&'static str> {
+pub(crate) fn shell_path() -> Option<&'static str> {
     static PATH: OnceLock<Option<String>> = OnceLock::new();
     PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
@@ -108,7 +108,7 @@ fn shell_path() -> Option<&'static str> {
 }
 
 #[cfg(not(unix))]
-fn shell_path() -> Option<&'static str> {
+pub(crate) fn shell_path() -> Option<&'static str> {
     None
 }
 

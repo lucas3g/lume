@@ -10,13 +10,13 @@ use super::{
         Settings, SkillRepository, SwitchLog,
     },
     turn_setup::PrepareTurn,
-    AppError, AppResult, ChatEvent, TurnControl,
+    AppError, AppResult, ChatEvent, PendingUsers, TurnControl,
 };
 use crate::domain::{
     account::{earliest_reset, pick_next, Account},
     workspace::context_percent,
     chat::{
-        tool_message, Attachment, Conversation, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
+        tool_message, Attachment, Conversation, Injection, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
         ROLE_TOOL, ROLE_USER,
     },
 };
@@ -125,14 +125,24 @@ impl SendMessage {
             self.emit(conversation_id, ChatEvent::Account { id: account.id.clone(), name: account.name.clone() });
             tried.push(account.id.clone());
 
+            // A sessão só existe no serviço que a criou: uma conta de outro tipo começa
+            // uma sessão nova e recebe o diálogo já gravado como contexto.
+            let foreign_session = conversation.cli_session_id.is_some() && conversation.session_provider != account.provider;
+            let extra_system = if foreign_session {
+                let sections = [setup.extra_system.clone(), self.prepare.dialogue(&conversation)?];
+                Some(sections.into_iter().flatten().collect::<Vec<_>>().join("\n\n")).filter(|s| !s.is_empty())
+            } else {
+                setup.extra_system.clone()
+            };
             let request = TurnRequest {
+                provider: account.provider,
                 config_dir: account.config_dir.clone(),
                 cwd: conversation.cwd.clone(),
                 model: setup.model.clone(),
-                resume: conversation.cli_session_id.clone(),
+                resume: conversation.cli_session_id.clone().filter(|_| !foreign_session),
                 prompt: text.to_owned(),
                 attachments: attachments.clone(),
-                extra_system: setup.extra_system.clone(),
+                extra_system,
                 tools: setup.tools.clone(),
                 effort: setup.effort.clone(),
                 permission_mode: setup.permission_mode.clone(),
@@ -144,10 +154,11 @@ impl SendMessage {
             };
             let mut journal = Journal::default();
             let answer = control.answer.clone();
+            let pending_users = control.pending_users.clone();
             let end = self
                 .engine
                 .run_turn(&request, &mut control, &mut |event| {
-                    self.forward(conversation_id, &account.id, &mut journal, &answer, event)
+                    self.forward(conversation_id, &account.id, &mut journal, &answer, &pending_users, event)
                 })
                 .await;
 
@@ -165,6 +176,9 @@ impl SendMessage {
                         )?;
                     }
                     self.conversations.update(conversation_id, None, session_id.as_deref(), None)?;
+                    if session_id.is_some() {
+                        self.conversations.set_session_provider(conversation_id, account.provider)?;
+                    }
                     self.emit(conversation_id, ChatEvent::Done { text });
                     return Ok(());
                 }
@@ -290,6 +304,7 @@ impl SendMessage {
         account_id: &str,
         journal: &mut Journal,
         answer: &UnboundedSender<PermissionDecision>,
+        pending_users: &PendingUsers,
         event: &TurnEvent,
     ) {
         match event {
@@ -339,8 +354,29 @@ impl SendMessage {
                     let _ = self.connectors.set_status(key, status);
                 }
             }
+            TurnEvent::UserRead(id) => {
+                let record = pending_users.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+                if let Some((text, meta)) = record {
+                    // O que o agente disse até aqui fica antes da mensagem, como na conversa real.
+                    self.record_segment(conversation_id, account_id, journal);
+                    if self.conversations.add_message(conversation_id, ROLE_USER, &text, None, meta.as_deref()).is_ok() {
+                        journal.recorded = true;
+                        self.emit(conversation_id, ChatEvent::Injected { id: id.clone() });
+                    }
+                }
+            }
             TurnEvent::Session(_) | TurnEvent::ApiError(_) | TurnEvent::Result { .. } => {}
         }
+    }
+}
+
+impl SendMessage {
+    /// Monta a mensagem a entregar durante o turno e o registro dos anexos para gravá-la.
+    pub fn injection(&self, id: &str, text: &str, attachment_paths: &[String], pasted: Vec<Attachment>) -> AppResult<(Injection, Option<String>)> {
+        let mut attachments = attachment_paths.iter().map(|p| self.files.load(p)).collect::<AppResult<Vec<_>>>()?;
+        let meta = user_meta(&attachments, attachment_paths, &pasted);
+        attachments.extend(pasted);
+        Ok((Injection { id: id.to_owned(), prompt: text.to_owned(), attachments }, meta))
     }
 }
 
@@ -371,7 +407,7 @@ pub fn make_title(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::application::fakes::*;
-    use crate::domain::{account::sample, chat::{AttachmentKind, RateInfo, TurnRequest}, history::Snippet};
+    use crate::domain::{account::{sample, Provider}, chat::{AttachmentKind, RateInfo, TurnRequest}, history::Snippet};
 
     fn use_case(world: &World, engine: ScriptedEngine) -> SendMessage {
         SendMessage {
@@ -426,6 +462,59 @@ mod tests {
         let events = world.events.chat_events();
         assert!(events.contains(&ChatEvent::Reset), "o texto parcial é descartado");
         assert_eq!(events.last(), Some(&ChatEvent::Done { text: "resposta".into() }));
+    }
+
+    #[tokio::test]
+    async fn message_read_mid_turn_is_recorded_between_the_answers() {
+        let world = World::with_accounts(vec![sample("pessoal", 1)]);
+        let engine = ScriptedEngine::new(|_, _| {
+            let events = vec![
+                TurnEvent::Delta("Vou começar.".into()),
+                TurnEvent::UserRead("primeira".into()),
+                TurnEvent::UserRead("desconhecida".into()),
+                TurnEvent::Delta("Feito, com BANANA.".into()),
+            ];
+            (events, TurnEnd::Done { session_id: None, text: "Vou começar.Feito, com BANANA.".into() })
+        });
+        let control = TurnControl::new().0;
+        control.pending_users.lock().unwrap().insert("primeira".into(), ("diga BANANA".into(), None));
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], control).await.unwrap();
+
+        let messages = world.store.messages("c1").unwrap();
+        let shown: Vec<(&str, &str)> = messages.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect();
+        assert_eq!(shown, [("user", "olá"), ("assistant", "Vou começar."), ("user", "diga BANANA"), ("assistant", "Feito, com BANANA.")]);
+        assert!(world.events.chat_events().contains(&ChatEvent::Injected { id: "primeira".into() }));
+    }
+
+    #[tokio::test]
+    async fn account_of_another_service_starts_its_own_session_with_the_dialogue() {
+        let mut gpt = sample("gpt", 2);
+        gpt.provider = Provider::ChatGpt;
+        let world = World::with_accounts(vec![sample("claude", 1), gpt]);
+        let engine = ScriptedEngine::new(|req, call| match call {
+            1 => {
+                assert_eq!((req.provider, req.resume.as_deref()), (Provider::Claude, None));
+                (vec![], TurnEnd::Done { session_id: Some("sessao-claude".into()), text: "o número é 417".into() })
+            }
+            2 => {
+                assert_eq!(req.resume.as_deref(), Some("sessao-claude"), "o mesmo serviço retoma a sessão");
+                (vec![], TurnEnd::Limited { resets_at: Some(5000) })
+            }
+            _ => {
+                assert_eq!(req.provider, Provider::ChatGpt);
+                assert_eq!(req.resume, None, "a sessão do Claude não existe no Codex");
+                assert!(req.extra_system.as_deref().unwrap().contains("417"), "o diálogo anterior vai como contexto");
+                (vec![], TurnEnd::Done { session_id: Some("sessao-codex".into()), text: "417".into() })
+            }
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "guarde 417", &[], vec![], TurnControl::new().0).await.unwrap();
+        assert_eq!(world.conversation("c1").session_provider, Provider::Claude);
+        uc.execute("c1", "qual era?", &[], vec![], TurnControl::new().0).await.unwrap();
+
+        let conversation = world.conversation("c1");
+        assert_eq!(conversation.cli_session_id.as_deref(), Some("sessao-codex"));
+        assert_eq!(conversation.session_provider, Provider::ChatGpt, "a próxima mensagem retoma a sessão do Codex");
     }
 
     #[tokio::test]

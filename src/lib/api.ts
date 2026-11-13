@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Account, AccountConnector, Agent, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
+  MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -16,7 +16,8 @@ export const api = {
   environment: () => invoke<{ cli_found: boolean }>("environment"),
 
   listAccounts: () => invoke<Account[]>("list_accounts"),
-  addAccount: (name: string) => invoke<void>("add_account", { name }),
+  addAccount: (name: string, provider: Provider) => invoke<void>("add_account", { name, provider }),
+  listProviders: () => invoke<ProviderInfo[]>("list_providers"),
   removeAccount: (id: string) => invoke<void>("remove_account", { id }),
   setAccountEnabled: (id: string, enabled: boolean) => invoke<void>("set_account_enabled", { id, enabled }),
   renameAccount: (id: string, name: string) => invoke<void>("rename_account", { id, name }),
@@ -25,6 +26,7 @@ export const api = {
   loginAccountAgain: (id: string) => invoke<void>("login_account_again", { id }),
   listSwitches: () => invoke<Switch[]>("list_switches"),
   refreshUsage: () => invoke<number>("refresh_usage"),
+  accountLimits: (id: string) => invoke<UsageLimit[]>("account_limits", { id }),
 
   listConversations: () => invoke<Conversation[]>("list_conversations"),
   createConversation: (model: string) => invoke<Conversation>("create_conversation", { model }),
@@ -35,8 +37,13 @@ export const api = {
   setConversationModel: (id: string, model: string) => invoke<void>("set_conversation_model", { id, model }),
   setConversationEffort: (id: string, effort: string) => invoke<void>("set_conversation_effort", { id, effort }),
   setConversationMode: (id: string, mode: string) => invoke<void>("set_conversation_mode", { id, mode }),
+  /** Mensagem gravada: o backend lê a imagem do banco. Só a que ainda não foi gravada manda o conteúdo. */
+  copyImage: (source: { message_id: number; index: number } | { data: string }) => invoke<void>("copy_image", { source }),
   sendMessage: (conversationId: string, text: string, attachments: string[], images: PastedImage[]) =>
     invoke<void>("send_message", { conversationId, text, attachments, images }),
+  /** Entrega a mensagem ao turno em andamento; `false` se o agente não puder lê-la agora. */
+  injectMessage: (conversationId: string, id: string, text: string, attachments: string[], images: PastedImage[]) =>
+    invoke<boolean>("inject_message", { conversationId, id, text, attachments, images }),
   cancelMessage: (conversationId: string) => invoke<void>("cancel_message", { conversationId }),
   startFolderSession: (folder: string, model: string) => invoke<Conversation>("start_folder_session", { folder, model }),
   startIsolatedSession: (projectId: string, model: string) =>

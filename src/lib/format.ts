@@ -40,6 +40,15 @@ export function formatWhen(seconds: number): string {
   return `${day}, ${timeFormat.format(date)}`;
 }
 
+const weekdayFormat = new Intl.DateTimeFormat("pt-BR", { weekday: "short" });
+
+/** Quando um limite zera: "às 13:50" se for hoje, senão "qua., 07:00". */
+export function formatReset(seconds: number): string {
+  const date = new Date(seconds * 1000);
+  const time = timeFormat.format(date);
+  return date.toDateString() === new Date().toDateString() ? `às ${time}` : `${weekdayFormat.format(date)}, ${time}`;
+}
+
 export function percent(fraction: number | null): number {
   return Math.round(Math.min(Math.max(fraction ?? 0, 0), 1) * 100);
 }

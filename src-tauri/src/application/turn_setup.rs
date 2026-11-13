@@ -58,6 +58,12 @@ impl PrepareTurn {
         if conversation.cli_session_id.is_some() {
             return Ok(None);
         }
+        self.dialogue(conversation)
+    }
+
+    /// O diálogo já gravado (menos a mensagem que está sendo enviada), para quem não
+    /// consegue retomar a sessão: uma conta de outro serviço assume a conversa por ele.
+    pub fn dialogue(&self, conversation: &Conversation) -> AppResult<Option<String>> {
         let mut messages = self.conversations.messages(&conversation.id)?;
         messages.pop();
         Ok(transcript_prompt(&messages))

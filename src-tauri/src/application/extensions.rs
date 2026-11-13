@@ -8,7 +8,7 @@ use super::{
     AppError, AppResult,
 };
 use crate::domain::{
-    account::pick_next,
+    account::{pick_next, Provider},
     extension::{icon_media_type, root_domain, AccountConnector, SERVER_OFF_PREFIX},
 };
 use crate::domain::extension::{
@@ -181,9 +181,10 @@ impl ManageConnectors {
         Ok(Some(format!("data:{};base64,{encoded}", icon_media_type(&bytes))))
     }
 
-    /// Perfil da conta que atende a próxima mensagem (sem conta: o login do computador).
+    /// Perfil da conta do Claude que atende a próxima mensagem (sem conta: o login do computador).
+    /// Os conectores da conta são do Claude Code; contas de outros serviços não têm os seus aqui.
     fn active_config_dir(&self) -> AppResult<Option<String>> {
-        let all = self.accounts.all()?;
+        let all: Vec<_> = self.accounts.all()?.into_iter().filter(|a| a.provider == Provider::Claude).collect();
         Ok(pick_next(&all, self.clock.now(), &[], false).and_then(|a| a.config_dir.clone()))
     }
 

@@ -8,7 +8,7 @@ use crate::application::{
     AppError, AppResult,
 };
 use crate::domain::{
-    account::{Account, Identity},
+    account::{Account, Identity, Provider},
     chat::{Conversation, Message, RateInfo, Switch, DEFAULT_PERMISSION_MODE},
     extension::{connector_key, Agent, Connector},
     project::{Project, ProjectFile},
@@ -62,11 +62,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hist_fts USING fts5(
 ";
 
 const ACCOUNT_COLUMNS: &str =
-    "id,name,email,plan,config_dir,priority,enabled,auth_ok,limited_until,util_5h,util_7d,resets_5h,login_expires_at,resets_7d";
-const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode";
+    "id,name,email,plan,config_dir,priority,enabled,auth_ok,limited_until,util_5h,util_7d,resets_5h,login_expires_at,resets_7d,provider";
+const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 10] = [
+const MIGRATIONS: [&str; 12] = [
+    "ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
+    "ALTER TABLE conversations ADD COLUMN session_provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
     "ALTER TABLE accounts ADD COLUMN resets_7d INTEGER",
     "ALTER TABLE projects ADD COLUMN folder TEXT",
@@ -131,6 +133,7 @@ fn account_row(r: &Row<'_>) -> rusqlite::Result<Account> {
         resets_5h: r.get(11)?,
         login_expires_at: r.get(12)?,
         resets_7d: r.get(13)?,
+        provider: Provider::parse(&r.get::<_, String>(14)?),
     })
 }
 
@@ -149,6 +152,7 @@ fn conversation_row(r: &Row<'_>) -> rusqlite::Result<Conversation> {
         updated_at: r.get(10)?,
         effort: r.get(11)?,
         permission_mode: r.get(12)?,
+        session_provider: Provider::parse(&r.get::<_, String>(13)?),
     })
 }
 
@@ -164,12 +168,12 @@ impl AccountRepository for SqliteStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    fn insert(&self, id: &str, name: &str, identity: &Identity, config_dir: Option<&str>) -> AppResult<()> {
+    fn insert(&self, id: &str, name: &str, provider: Provider, identity: &Identity, config_dir: Option<&str>) -> AppResult<()> {
         let c = self.conn();
         let next: i64 = c.query_row("SELECT COALESCE(MAX(priority),0)+1 FROM accounts", [], |r| r.get(0))?;
         c.execute(
-            "INSERT INTO accounts(id,name,email,plan,config_dir,priority,login_expires_at) VALUES(?,?,?,?,?,?,?)",
-            params![id, name, identity.email, identity.plan, config_dir, next, identity.login_expires_at],
+            "INSERT INTO accounts(id,name,email,plan,config_dir,priority,login_expires_at,provider) VALUES(?,?,?,?,?,?,?,?)",
+            params![id, name, identity.email, identity.plan, config_dir, next, identity.login_expires_at, provider.as_str()],
         )?;
         Ok(())
     }
@@ -201,6 +205,12 @@ impl AccountRepository for SqliteStore {
     fn set_auth(&self, id: &str, ok: bool) -> AppResult<()> {
         self.conn()
             .execute("UPDATE accounts SET auth_ok=? WHERE id=?", params![ok as i64, id])?;
+        Ok(())
+    }
+
+    fn set_config_dir(&self, id: &str, config_dir: Option<&str>) -> AppResult<()> {
+        self.conn()
+            .execute("UPDATE accounts SET config_dir=? WHERE id=?", params![config_dir, id])?;
         Ok(())
     }
 
@@ -277,6 +287,12 @@ impl ConversationRepository for SqliteStore {
              model=COALESCE(?,model), updated_at=? WHERE id=?",
             params![title, session, model, self.clock.now(), id],
         )?;
+        Ok(())
+    }
+
+    fn set_session_provider(&self, id: &str, provider: Provider) -> AppResult<()> {
+        self.conn()
+            .execute("UPDATE conversations SET session_provider=? WHERE id=?", params![provider.as_str(), id])?;
         Ok(())
     }
 
@@ -374,6 +390,14 @@ impl ConversationRepository for SqliteStore {
             [conversation_id],
             |r| r.get(0),
         )?)
+    }
+
+    fn message_meta(&self, message_id: i64) -> AppResult<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT meta FROM messages WHERE id=?", [message_id], |r| r.get(0))
+            .optional()?
+            .flatten())
     }
 }
 

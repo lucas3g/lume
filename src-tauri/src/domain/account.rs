@@ -1,11 +1,69 @@
 //! Conta do Claude e as regras do pool: qual conta usar e quando ela volta.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Serviço de IA de uma conta; define qual CLI instalado no computador atende por ela.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    /// Assinatura do Claude, pelo Claude Code.
+    #[default]
+    Claude,
+    /// Assinatura do ChatGPT, pelo Codex.
+    ChatGpt,
+    /// Conta Google (Gemini), pelo Antigravity.
+    Gemini,
+}
+
+impl Provider {
+    pub const ALL: [Provider; 3] = [Provider::Claude, Provider::ChatGpt, Provider::Gemini];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Claude => "claude",
+            Provider::ChatGpt => "chatgpt",
+            Provider::Gemini => "gemini",
+        }
+    }
+
+    /// Tipo gravado no banco; o desconhecido vale Claude, como as contas antigas.
+    pub fn parse(text: &str) -> Provider {
+        Provider::ALL.into_iter().find(|p| p.as_str() == text).unwrap_or_default()
+    }
+
+    /// Nome do serviço como o usuário o conhece.
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::Claude => "Claude",
+            Provider::ChatGpt => "ChatGPT",
+            Provider::Gemini => "Gemini",
+        }
+    }
+
+    /// Nome do CLI que atende as contas deste tipo.
+    pub fn cli_label(self) -> &'static str {
+        match self {
+            Provider::Claude => "Claude Code",
+            Provider::ChatGpt => "Codex",
+            Provider::Gemini => "Antigravity",
+        }
+    }
+}
+
+/// Um tipo de conta e se o CLI dele está instalado neste computador.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProviderInfo {
+    pub id: Provider,
+    pub label: String,
+    pub cli: String,
+    pub installed: bool,
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Account {
     pub id: String,
     pub name: String,
+    pub provider: Provider,
     pub email: Option<String>,
     pub plan: Option<String>,
     /// Diretório de configuração isolado; `None` é o login padrão do computador.
@@ -20,6 +78,26 @@ pub struct Account {
     pub resets_7d: Option<i64>,
     /// Quando o login da conta vence e precisa ser refeito.
     pub login_expires_at: Option<i64>,
+}
+
+/// Um limite de uso da conta como o provedor o apresenta: sessão, semana ou semana de um modelo.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct UsageLimit {
+    /// "session", "weekly_all" ou "weekly_scoped".
+    pub kind: String,
+    /// Modelo a que o limite se restringe (ex.: "Fable"); `None` vale para todos.
+    pub model: Option<String>,
+    /// Fração usada, de 0 a 1.
+    pub used: f64,
+    pub resets_at: Option<i64>,
+}
+
+impl UsageLimit {
+    /// Os limites que dá para deduzir só das duas janelas guardadas de um turno.
+    pub fn from_windows(util_5h: Option<f64>, resets_5h: Option<i64>, util_7d: Option<f64>, resets_7d: Option<i64>) -> Vec<UsageLimit> {
+        let window = |kind: &str, used: Option<f64>, resets_at| used.map(|used| UsageLimit { kind: kind.into(), model: None, used, resets_at });
+        [window("session", util_5h, resets_5h), window("weekly_all", util_7d, resets_7d)].into_iter().flatten().collect()
+    }
 }
 
 /// Uso da janela de 5 h a partir do qual a conta é poupada enquanto houver outra livre.
@@ -68,6 +146,7 @@ pub(crate) fn sample(id: &str, priority: i64) -> Account {
     Account {
         id: id.into(),
         name: id.into(),
+        provider: Provider::Claude,
         email: None,
         plan: None,
         config_dir: None,
@@ -102,6 +181,15 @@ mod tests {
         list[2].auth_ok = false;
         assert!(pick_next(&list, 100, &[], true).is_none());
         assert_eq!(earliest_reset(&list, 100), Some(500));
+    }
+
+    #[test]
+    fn provider_round_trips_and_unknown_is_claude() {
+        for p in Provider::ALL {
+            assert_eq!(Provider::parse(p.as_str()), p);
+        }
+        assert_eq!(Provider::parse("outro"), Provider::Claude);
+        assert_eq!(serde_json::to_string(&Provider::ChatGpt).unwrap(), "\"chatgpt\"");
     }
 
     #[test]

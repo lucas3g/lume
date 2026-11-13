@@ -1,8 +1,25 @@
 // Tipos espelhados do núcleo Rust (camadas domain e application).
 
+/** Serviço de IA de uma conta; cada um é atendido pelo CLI dele instalado no computador. */
+export type Provider = "claude" | "chatgpt" | "gemini";
+
+/** Um tipo de conta e se o CLI dele está instalado neste computador. */
+export interface ProviderInfo {
+  id: Provider;
+  /** Nome do serviço, ex.: "ChatGPT". */
+  label: string;
+  /** Nome do CLI que atende, ex.: "Codex". */
+  cli: string;
+  installed: boolean;
+}
+
+export const PROVIDER_LABEL: Record<Provider, string> = { claude: "Claude", chatgpt: "ChatGPT", gemini: "Gemini" };
+export const PROVIDER_CLI: Record<Provider, string> = { claude: "Claude Code", chatgpt: "Codex", gemini: "Antigravity" };
+
 export interface Account {
   id: string;
   name: string;
+  provider: Provider;
   email: string | null;
   plan: string | null;
   config_dir: string | null;
@@ -16,6 +33,16 @@ export interface Account {
   resets_7d: number | null;
   /** Quando o login da conta vence. */
   login_expires_at: number | null;
+}
+
+/** Um limite de uso da conta: sessão, semana ou semana de um modelo. */
+export interface UsageLimit {
+  kind: "session" | "weekly_all" | "weekly_scoped" | (string & {});
+  /** Modelo a que o limite se restringe; `null` vale para todos. */
+  model: string | null;
+  /** Fração usada, de 0 a 1. */
+  used: number;
+  resets_at: number | null;
 }
 
 export interface Conversation {
@@ -87,6 +114,7 @@ export type ChatEvent = { conversation_id: string } & (
   | { kind: "subagent"; text: string }
   | { kind: "tool"; name: string }
   | { kind: "step" }
+  | { kind: "injected"; id: string }
   | { kind: "permission"; request_id: string; tool: string; input: string; description: string }
   | { kind: "reset" }
   | { kind: "notice"; text: string }

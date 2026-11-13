@@ -73,7 +73,9 @@
 </div>
 
 <style>
-  .app { display: flex; height: 100vh; overflow: hidden; }
+  /* Presa às bordas da janela, e não a 100vh: a webview pode manter a altura antiga ao
+     redimensionar, o que deixava o app menor que a janela e a janela inteira rolando. */
+  .app { position: fixed; inset: 0; display: flex; overflow: hidden; }
   .content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .content :global(.split), .content :global(.page) { flex: 1; min-height: 0; }
   .banner { padding: 10px 24px; background: var(--warn-bg); color: var(--warn-text); font-size: 13px; }

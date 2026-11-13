@@ -2,7 +2,7 @@
 
 use super::command;
 use crate::application::{ports::AccountGateway, AppError, AppResult};
-use crate::domain::account::Identity;
+use crate::domain::account::{Identity, Provider};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::{
@@ -29,7 +29,7 @@ impl ClaudeCliAccounts {
     }
 }
 
-fn link_dir(target: &Path, link: &Path) {
+pub(crate) fn link_dir(target: &Path, link: &Path) {
     if link.exists() || !target.exists() {
         return;
     }
@@ -60,7 +60,11 @@ pub(crate) fn parse_iso_utc(text: &str) -> Option<i64> {
 
 #[async_trait]
 impl AccountGateway for ClaudeCliAccounts {
-    fn prepare_profile(&self, account_id: &str) -> AppResult<String> {
+    fn installed(&self, _provider: Provider) -> bool {
+        self.cli.is_file()
+    }
+
+    fn prepare_profile(&self, _provider: Provider, account_id: &str) -> AppResult<String> {
         let dir = self.profiles_dir.join(account_id);
         let io = |e: std::io::Error| AppError(format!("Não foi possível criar o perfil da conta: {e}"));
         std::fs::create_dir_all(&dir).map_err(io)?;
@@ -71,7 +75,7 @@ impl AccountGateway for ClaudeCliAccounts {
         Ok(dir.to_string_lossy().into_owned())
     }
 
-    fn discard_profile(&self, config_dir: &str) {
+    fn discard_profile(&self, _provider: Provider, config_dir: &str) {
         let dir = Path::new(config_dir);
         // Só remove perfis criados pelo app; os links são apagados sem seguir o destino.
         if dir.starts_with(&self.profiles_dir) {
@@ -79,7 +83,7 @@ impl AccountGateway for ClaudeCliAccounts {
         }
     }
 
-    async fn identity(&self, config_dir: Option<&str>) -> Identity {
+    async fn identity(&self, _provider: Provider, config_dir: Option<&str>) -> Identity {
         let output = command(&self.cli, config_dir).args(["auth", "status"]).output().await;
         let v: Value = output
             .ok()
@@ -94,7 +98,7 @@ impl AccountGateway for ClaudeCliAccounts {
     }
 
     /// Abre o login oficial (no navegador) para o perfil indicado.
-    async fn login(&self, config_dir: &str) -> AppResult<Identity> {
+    async fn login(&self, provider: Provider, config_dir: &str) -> AppResult<Identity> {
         let run = command(&self.cli, Some(config_dir))
             .args(["auth", "login", "--claudeai"])
             .stdin(Stdio::null())
@@ -103,7 +107,7 @@ impl AccountGateway for ClaudeCliAccounts {
             .await
             .map_err(|_| AppError("O login não foi concluído em 5 minutos.".into()))?
             .map_err(|e| AppError(format!("Não foi possível abrir o login: {e}")))?;
-        let identity = self.identity(Some(config_dir)).await;
+        let identity = self.identity(provider, Some(config_dir)).await;
         if identity.logged_in {
             return Ok(identity);
         }

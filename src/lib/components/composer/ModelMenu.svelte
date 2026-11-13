@@ -1,16 +1,21 @@
 <script lang="ts">
   import { dismissable } from "../../actions";
-  import { EFFORTS, MODELS, MORE_MODELS, modelLabel } from "../../types";
+  import { EFFORTS, MODELS, MORE_MODELS, PROVIDER_CLI, PROVIDER_LABEL, modelLabel, type Provider } from "../../types";
 
   interface Props {
     model: string;
     effort: string;
     /** O agente da conversa fixa o modelo. */
     locked: boolean;
+    /** Tipo da conta que atende a próxima mensagem; fora do Claude vale o modelo do CLI dela. */
+    provider?: Provider;
     onmodel: (model: string) => void;
     oneffort: (effort: string) => void;
   }
-  let { model, effort, locked, onmodel, oneffort }: Props = $props();
+  let { model, effort, locked, provider = "claude", onmodel, oneffort }: Props = $props();
+
+  /** Contas do ChatGPT e do Gemini usam o modelo configurado no próprio CLI. */
+  const foreign = $derived(provider !== "claude");
 
   let open = $state(false);
   let submenu = $state<"effort" | "more" | null>(null);
@@ -35,7 +40,7 @@
 
 <div class="anchor" use:dismissable={close}>
   <button type="button" class="trigger" class:on={open} aria-haspopup="menu" aria-expanded={open} onclick={() => (open ? close() : (open = true))}>
-    <span>{modelLabel(model)}</span>
+    <span>{foreign ? `Padrão do ${PROVIDER_CLI[provider]}` : modelLabel(model)}</span>
     <span class="muted">{effortLabel}</span>
   </button>
 
@@ -66,6 +71,7 @@
       {/if}
 
       <div class="menu" role="menu" aria-label="Modelo">
+        {#if foreign}<p class="hint">A conta da vez é do {PROVIDER_LABEL[provider]}: a resposta sai do modelo configurado no {PROVIDER_CLI[provider]}. A escolha abaixo vale quando uma conta do Claude atender.</p>{/if}
         {#if locked}<p class="hint">O modelo é definido pelo agente desta conversa.</p>{/if}
         {#each MODELS as m (m.id)}
           <button type="button" role="menuitemradio" aria-checked={model === m.id} class="item" disabled={locked} onclick={() => pickModel(m.id)}>

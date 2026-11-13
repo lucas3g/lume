@@ -4,6 +4,18 @@ Cliente desktop do Claude com várias contas: quando o limite de uma conta acaba
 
 Feito com Tauri 2 (núcleo em Rust) e Svelte 5. O motor das conversas é o Claude Code CLI oficial, que precisa estar instalado no computador.
 
+## Tipos de conta
+
+Cada conta tem um tipo, e o Lume conversa pelo CLI desse serviço instalado no computador:
+
+| Tipo | CLI | Login | Uso da conta |
+|---|---|---|---|
+| Claude | Claude Code (`claude`) | perfil isolado por conta | sessão, semana e por modelo |
+| ChatGPT | Codex (`codex`) | o login do computador ou perfil isolado (`CODEX_HOME`) | o último que o Codex gravou |
+| Gemini | Antigravity (`agy`) | só o login do computador (um por máquina) | não informado fora do terminal |
+
+Quando a conta seguinte é de outro serviço, ela abre uma sessão própria e recebe o diálogo já gravado como contexto. Contas do ChatGPT e do Gemini usam o modelo configurado no CLI delas e não pedem autorização a cada ação: o que passa do modo de permissão da conversa é recusado pelo próprio CLI. Skills, conectores e agentes do Lume valem só para contas do Claude.
+
 ## Desenvolvimento
 
 Requisitos: Rust, Node 24, pnpm e o Claude Code CLI.

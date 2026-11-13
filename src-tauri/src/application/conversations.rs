@@ -68,6 +68,14 @@ impl ManageConversations {
         self.conversations.messages(id)
     }
 
+    /// Conteúdo (base64) da imagem colada de posição `index` numa mensagem enviada.
+    pub fn message_image(&self, message_id: i64, index: usize) -> AppResult<String> {
+        let missing = || AppError("A imagem não foi encontrada.".into());
+        let meta = self.conversations.message_meta(message_id)?.ok_or_else(missing)?;
+        let meta: serde_json::Value = serde_json::from_str(&meta).map_err(|_| missing())?;
+        meta["images"][index]["data"].as_str().map(str::to_owned).ok_or_else(missing)
+    }
+
     pub fn set_model(&self, id: &str, model: &str) -> AppResult<()> {
         self.conversations.update(id, None, None, Some(model))
     }
@@ -97,6 +105,21 @@ mod tests {
         assert!(uc.set_permission_mode(&session.id, "qualquer").is_err());
         let saved = world.conversation(&session.id);
         assert_eq!((saved.effort.as_str(), saved.permission_mode.as_str()), ("max", "plan"));
+    }
+
+    #[test]
+    fn message_image_reads_the_pasted_image_stored_with_the_message() {
+        let world = World::with_accounts(vec![]);
+        let uc = ManageConversations { conversations: world.store.clone(), ids: Arc::new(SequentialIds::default()), chat_dir: "/tmp".into() };
+        let meta = r#"{"attachments":["a.png","b.png"],"images":[{"name":"a.png","data":"QQ=="},{"name":"b.png","data":"Qg=="}]}"#;
+        world.store.add_message("c1", "user", "veja", None, Some(meta)).unwrap();
+        world.store.add_message("c1", "assistant", "ok", None, None).unwrap();
+        let [user, reply] = [0, 1].map(|i| world.store.messages("c1").unwrap()[i].id);
+
+        assert_eq!(uc.message_image(user, 1).unwrap(), "Qg==");
+        assert!(uc.message_image(user, 2).is_err());
+        assert!(uc.message_image(reply, 0).is_err());
+        assert!(uc.message_image(9999, 0).is_err());
     }
 
     #[test]

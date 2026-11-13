@@ -274,7 +274,7 @@
 <NewConversationDialog open={choosing} onclose={() => (choosing = false)} onchat={startChat} onfolder={startInFolder} />
 
 <style>
-  nav { width: 272px; flex-shrink: 0; height: 100vh; padding: 14px 10px 10px; display: flex; flex-direction: column; gap: 14px; background: var(--bg-side); border-right: 1px solid var(--border); font-size: 13px; line-height: 1.4; }
+  nav { width: 272px; flex-shrink: 0; height: 100%; padding: 14px 10px 10px; display: flex; flex-direction: column; gap: 14px; background: var(--bg-side); border-right: 1px solid var(--border); font-size: 13px; line-height: 1.4; }
   .brand { display: flex; align-items: center; gap: 9px; padding: 2px 6px; }
   .name { flex: 1; font-family: var(--display); font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
   .search { width: 100%; min-height: 32px; }
