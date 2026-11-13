@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { flip } from "svelte/animate";
   import { api, errorMessage } from "../api";
   import LimitsDialog from "../components/LimitsDialog.svelte";
   import LoginCodeField from "../components/LoginCodeField.svelte";
@@ -18,39 +17,85 @@
   /** Conta com o diálogo de limites aberto. */
   let limitsOf = $state<Account | null>(null);
 
-  /** Conta sendo arrastada pela alça e a ordem que ela formaria se fosse solta agora. */
-  let dragging = $state<string | null>(null);
-  let dragOrder = $state<string[] | null>(null);
+  /**
+   * Arrastar pela alça: a linha segue o ponteiro (só `transform`, sem mexer no DOM) e as
+   * vizinhas deslizam para abrir a vaga. A ordem só é gravada ao soltar, depois que a linha
+   * assenta na vaga.
+   */
+  type Drag = { id: string; from: number; to: number; startY: number; dy: number; tops: number[]; heights: number[]; settling: boolean };
+  let drag = $state<Drag | null>(null);
+  const dragging = $derived(drag?.id ?? null);
   const rowEls: Record<string, HTMLElement> = {};
-  const shown = $derived(
-    dragOrder ? dragOrder.map((id) => accounts.list.find((a) => a.id === id)).filter((a): a is Account => !!a) : accounts.list,
-  );
+  const shown = $derived(accounts.list);
+  let frame = 0;
+  let pendingY = 0;
+  const SETTLE_MS = 180;
 
   function startDrag(event: PointerEvent, id: string) {
-    if (busy || event.button !== 0) return;
+    if (busy || drag || event.button !== 0) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    dragging = id;
-    dragOrder = accounts.list.map((a) => a.id);
+    const rects = accounts.list.map((a) => rowEls[a.id]?.getBoundingClientRect());
+    if (rects.some((r) => !r)) return;
+    const from = accounts.list.findIndex((a) => a.id === id);
+    drag = {
+      id,
+      from,
+      to: from,
+      startY: event.clientY,
+      dy: 0,
+      tops: rects.map((r) => r!.top),
+      heights: rects.map((r) => r!.height),
+      settling: false,
+    };
   }
 
-  /** A conta arrastada entra depois de todas as linhas cujo meio já ficou acima do ponteiro. */
+  /** Atualiza no máximo uma vez por quadro: a linha acompanha o ponteiro dentro da lista. */
   function moveDrag(event: PointerEvent) {
-    if (!dragging || !dragOrder) return;
-    const others = dragOrder.filter((id) => id !== dragging);
-    const index = others.filter((id) => {
-      const rect = rowEls[id]?.getBoundingClientRect();
-      return rect && rect.top + rect.height / 2 < event.clientY;
-    }).length;
-    const next = [...others.slice(0, index), dragging, ...others.slice(index)];
-    if (next.join() !== dragOrder.join()) dragOrder = next;
+    if (!drag || drag.settling) return;
+    pendingY = event.clientY;
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      const d = drag;
+      if (!d || d.settling) return;
+      const last = d.tops.length - 1;
+      const min = d.tops[0] - d.tops[d.from];
+      const max = d.tops[last] + d.heights[last] - (d.tops[d.from] + d.heights[d.from]);
+      d.dy = Math.min(max, Math.max(min, pendingY - d.startY));
+      const center = d.tops[d.from] + d.heights[d.from] / 2 + d.dy;
+      let to = 0;
+      for (let j = 0; j < d.tops.length; j++) if (j !== d.from && d.tops[j] + d.heights[j] / 2 < center) to++;
+      d.to = to;
+    });
+  }
+
+  /** Quanto cada linha se desloca enquanto a arrastada está na vaga `to`. */
+  function offsetOf(index: number): number {
+    const d = drag;
+    if (!d) return 0;
+    const h = d.heights[d.from];
+    if (index === d.from) return d.dy;
+    if (d.from < d.to && index > d.from && index <= d.to) return -h;
+    if (d.to < d.from && index >= d.to && index < d.from) return h;
+    return 0;
   }
 
   function endDrag() {
-    const order = dragOrder;
-    dragging = null;
-    dragOrder = null;
-    if (order && order.join() !== accounts.list.map((a) => a.id).join()) void run(() => reorderAccounts(order));
+    const d = drag;
+    if (!d || d.settling) return;
+    if (frame) cancelAnimationFrame(frame), (frame = 0);
+    // Assenta a linha exatamente na vaga e só então grava a nova ordem.
+    d.dy = d.to >= d.from ? d.tops[d.to] + d.heights[d.to] - (d.tops[d.from] + d.heights[d.from]) : d.tops[d.to] - d.tops[d.from];
+    d.settling = true;
+    setTimeout(() => {
+      const ids = accounts.list.map((a) => a.id);
+      const [moved] = ids.splice(d.from, 1);
+      ids.splice(d.to, 0, moved);
+      const changed = d.to !== d.from;
+      drag = null;
+      if (changed) void run(() => reorderAccounts(ids));
+    }, SETTLE_MS);
   }
 
   /** Pelo teclado, as setas sobem e descem a conta com a alça em foco. */
@@ -231,7 +276,14 @@
     <section class="card" aria-label="Contas cadastradas">
       {#each shown as a, i (a.id)}
         {@const state = stateOf(a)}
-        <div class="account" class:dragging={dragging === a.id} bind:this={rowEls[a.id]} animate:flip={{ duration: 150 }}>
+        <div
+          class="account"
+          class:dragging={dragging === a.id}
+          class:settling={drag?.settling && dragging === a.id}
+          class:shifting={drag && dragging !== a.id}
+          style:transform={drag ? `translate3d(0, ${offsetOf(i)}px, 0)` : null}
+          bind:this={rowEls[a.id]}
+        >
           <button
             type="button"
             class="order"
@@ -313,7 +365,7 @@
       {:else}
         <div class="empty muted">Nenhuma conta ainda. Adicione uma para começar.</div>
       {/each}
-      <div class="foot muted small">A conta 1 é usada primeiro. Use as setas para mudar a ordem.</div>
+      <div class="foot muted small">A conta 1 é usada primeiro. Segure e arraste pela alça (ou use as setas) para mudar a ordem.</div>
     </section>
 
     <div class="columns">
@@ -365,7 +417,10 @@
   .order { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; border: 0; border-radius: 6px; background: none; font: inherit; font-size: 13px; font-weight: 600; color: var(--muted); cursor: grab; touch-action: none; user-select: none; }
   .order:hover:not(:disabled) { background: var(--hover); color: var(--text-2); }
   .order:disabled { cursor: default; }
-  .account.dragging { position: relative; z-index: 1; background: var(--hover); box-shadow: 0 6px 18px rgb(0 0 0 / 0.35); }
+  .account { position: relative; }
+  .account.shifting { transition: transform 180ms cubic-bezier(0.2, 0, 0, 1); }
+  .account.dragging { z-index: 2; background: var(--surface); outline: 1px solid var(--border-strong); box-shadow: 0 12px 28px rgb(0 0 0 / 0.45); border-radius: 10px; will-change: transform; }
+  .account.dragging.settling { transition: transform 180ms cubic-bezier(0.2, 0, 0, 1); }
   .account.dragging .order { cursor: grabbing; color: var(--text-2); }
   .identity { min-width: 0; }
   .identity strong, .identity .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
