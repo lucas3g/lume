@@ -112,6 +112,7 @@ pub fn run() {
             commands::terminal_resize,
             commands::terminal_close,
             commands::list_account_connectors,
+            commands::submit_login_code,
             commands::link_connector,
             commands::unlink_connector,
             commands::set_server_enabled,

@@ -2,6 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { CodeScope } from "./state/logins.svelte";
 import type {
   Account, AccountConnector, Agent, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
   MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
@@ -24,6 +25,8 @@ export const api = {
   reorderAccounts: (ids: string[]) => invoke<void>("reorder_accounts", { ids }),
   refreshAccount: (id: string) => invoke<void>("refresh_account", { id }),
   loginAccountAgain: (id: string) => invoke<void>("login_account_again", { id }),
+  /** Entrega ao login em andamento o código de autenticação mostrado no navegador. */
+  submitLoginCode: (scope: CodeScope, code: string) => invoke<void>("submit_login_code", { scope, code }),
   listSwitches: () => invoke<Switch[]>("list_switches"),
   refreshUsage: () => invoke<number>("refresh_usage"),
   accountLimits: (id: string) => invoke<UsageLimit[]>("account_limits", { id }),

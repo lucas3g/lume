@@ -14,6 +14,7 @@ use crate::domain::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
+use crate::infrastructure::cli_output::CodeScope;
 use tauri::{AppHandle, State};
 
 type App<'a> = State<'a, Arc<Container>>;
@@ -502,6 +503,13 @@ pub fn terminal_close(app: App<'_>, id: String) {
 #[tauri::command(async)]
 pub fn list_account_connectors(app: App<'_>) -> AppResult<Vec<AccountConnector>> {
     app.connectors.account_list()
+}
+
+/// Entrega ao login em andamento (de conta ou de conector) o código de autenticação
+/// que o navegador mostrou para colar no CLI.
+#[tauri::command]
+pub fn submit_login_code(scope: CodeScope, code: String) -> AppResult<()> {
+    crate::infrastructure::cli_output::submit_login_code(scope, &code)
 }
 
 /// Abre o login do conector no navegador e espera a conclusão.

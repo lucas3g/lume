@@ -3,7 +3,7 @@
 use super::command;
 use crate::application::{ports::AccountGateway, AppError, AppResult};
 use crate::domain::account::{Identity, Provider};
-use crate::infrastructure::cli_output::{failure_detail, run_login};
+use crate::infrastructure::cli_output::{failure_detail, run_login, CodeScope};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::{
@@ -102,7 +102,7 @@ impl AccountGateway for ClaudeCliAccounts {
         let mut cmd = command(&self.cli, Some(config_dir));
         cmd.args(["auth", "login", "--claudeai"]);
         // Sem console, o Claude Code no Windows não abre o navegador: o Lume abre.
-        let run = run_login(cmd, true);
+        let run = run_login(cmd, true, Some(CodeScope::Account));
         let output = tokio::time::timeout(LOGIN_TIMEOUT, run)
             .await
             .map_err(|_| AppError("O login não foi concluído em 5 minutos.".into()))?

@@ -60,20 +60,22 @@ pub(crate) fn run_cli(cli: &Path, config_dir: Option<&str>, args: &[&str], timeo
     run_cli_with(cli, config_dir, args, timeout, slow, false)
 }
 
-/// Como `run_cli`, para logins: no Windows abre no navegador padrão a página de login que o CLI imprimir.
+/// Como `run_cli`, para logins: no Windows abre no navegador padrão a página de login que o
+/// CLI imprimir, e aceita o código de autenticação colado pelo usuário.
 pub(crate) fn run_cli_login(cli: &Path, config_dir: Option<&str>, args: &[&str], timeout: Duration, slow: &str) -> AppResult<String> {
     run_cli_with(cli, config_dir, args, timeout, slow, true)
 }
 
-fn run_cli_with(cli: &Path, config_dir: Option<&str>, args: &[&str], timeout: Duration, slow: &str, open_page: bool) -> AppResult<String> {
+fn run_cli_with(cli: &Path, config_dir: Option<&str>, args: &[&str], timeout: Duration, slow: &str, login: bool) -> AppResult<String> {
     let mut child = blocking_command(cli, config_dir)
         .args(args)
-        .stdin(Stdio::null())
+        // No login a entrada fica aberta para o código de autenticação colado pelo usuário.
+        .stdin(if login { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| AppError(format!("Não foi possível executar o Claude Code: {e}")))?;
-    let run = super::cli_output::BlockingRun::watch(&mut child, open_page);
+    let run = super::cli_output::BlockingRun::watch(&mut child, login);
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {

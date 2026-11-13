@@ -140,8 +140,9 @@ impl AccountGateway for CodexAccounts {
         let cli = find_cli().ok_or_else(missing_cli)?;
         let mut cmd = command(&cli, Some(config_dir));
         cmd.arg("login");
-        // O Codex abre o navegador por conta própria mesmo sem console; abrir aqui duplicaria a aba.
-        let run = run_login(cmd, false);
+        // O Codex abre o navegador por conta própria mesmo sem console (abrir aqui duplicaria a aba)
+        // e não pede código: a entrada fica vazia, como antes.
+        let run = run_login(cmd, false, None);
         let output = tokio::time::timeout(LOGIN_TIMEOUT, run)
             .await
             .map_err(|_| AppError("O login não foi concluído em 5 minutos.".into()))?

@@ -3,6 +3,8 @@
   import { flip } from "svelte/animate";
   import { api, errorMessage } from "../api";
   import LimitsDialog from "../components/LimitsDialog.svelte";
+  import LoginCodeField from "../components/LoginCodeField.svelte";
+  import { logins } from "../state/logins.svelte";
   import SettingRow from "../components/SettingRow.svelte";
   import Toggle from "../components/Toggle.svelte";
   import { formatTime, formatWhen, nowSeconds, percent } from "../format";
@@ -168,9 +170,14 @@
     }
   }
 
+  /** Executa um login; o do Claude mostra o campo do código de autenticação enquanto espera. */
+  function login(provider: Provider, action: () => Promise<void>) {
+    return logins.accountLogin(provider === "claude", () => run(action));
+  }
+
   async function add(event: SubmitEvent) {
     event.preventDefault();
-    await run(async () => {
+    await login(newProvider, async () => {
       await api.addAccount(newName, newProvider);
       newName = "";
       adding = false;
@@ -218,6 +225,7 @@
       </form>
     {/if}
 
+    {#if logins.account}<LoginCodeField scope="account" />{/if}
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
     <section class="card" aria-label="Contas cadastradas">
@@ -283,11 +291,11 @@
             <span class={`pill ${STATE_CLASS[state]}`}>{STATE_LABEL[state]}</span>
             <span class="muted">{detail(a)}</span>
             {#if (state === "login" || loginWarning(a)) && a.config_dir}
-              <button type="button" class="btn small enter" disabled={busy} onclick={() => run(() => api.loginAccountAgain(a.id))}>Entrar</button>
+              <button type="button" class="btn small enter" disabled={busy} onclick={() => login(a.provider, () => api.loginAccountAgain(a.id))}>Entrar</button>
             {:else if state === "login" && a.provider === "claude"}
-              <button type="button" class="btn small enter" title="O login deste computador agora é de outra conta: entre com o login desta para ela ter um perfil próprio" disabled={busy} onclick={() => run(() => api.loginAccountAgain(a.id))}>Entrar</button>
+              <button type="button" class="btn small enter" title="O login deste computador agora é de outra conta: entre com o login desta para ela ter um perfil próprio" disabled={busy} onclick={() => login(a.provider, () => api.loginAccountAgain(a.id))}>Entrar</button>
             {:else if state === "login" && a.provider !== "claude"}
-              <button type="button" class="btn small enter" title={`Refaça o login pelo ${PROVIDER_CLI[a.provider]} no terminal e confira aqui`} disabled={busy} onclick={() => run(() => api.loginAccountAgain(a.id))}>Conferir login</button>
+              <button type="button" class="btn small enter" title={`Refaça o login pelo ${PROVIDER_CLI[a.provider]} no terminal e confira aqui`} disabled={busy} onclick={() => login(a.provider, () => api.loginAccountAgain(a.id))}>Conferir login</button>
             {/if}
           </div>
 

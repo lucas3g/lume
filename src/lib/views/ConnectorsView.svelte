@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
   import ConnectorIcon from "../components/ConnectorIcon.svelte";
+  import LoginCodeField from "../components/LoginCodeField.svelte";
+  import { logins } from "../state/logins.svelte";
   import { activeAccount } from "../state/accounts.svelte";
   import { connectors } from "../state/connectors.svelte";
   import ConnectorCatalog from "../components/store/ConnectorCatalog.svelte";
@@ -82,7 +84,8 @@
     error = notice = null;
     if (connect) notice = `Conclua o login de ${c.display_name} no navegador.`;
     try {
-      await (connect ? api.linkConnector(c.name) : api.unlinkConnector(c.name));
+      // O vínculo fica marcado fora da tela: o campo do código volta se o usuário sair e retornar.
+      await (connect ? logins.connectorLogin(c.name, () => api.linkConnector(c.name)) : api.unlinkConnector(c.name));
       notice = null;
       await loadAccount();
     } catch (e) {
@@ -134,6 +137,7 @@
 
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
     {#if notice}<p class="muted small" role="status">{notice}</p>{/if}
+    {#if logins.connector}<LoginCodeField scope="connector" />{/if}
 
     {#if tab === "discover"}
       <ConnectorCatalog {account} loading={checking} {busy} onlink={(c, connect) => void link(c, connect)} onchange={() => void loadMine()} />

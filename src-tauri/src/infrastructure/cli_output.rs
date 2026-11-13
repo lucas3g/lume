@@ -1,17 +1,24 @@
-//! Leitura da saída dos CLIs e abertura da página de login no navegador padrão.
+//! Leitura da saída dos CLIs, abertura da página de login no navegador padrão e
+//! entrega do código de autenticação colado pelo usuário.
 //!
 //! No Windows o CLI do Claude roda sem console e não consegue abrir o navegador:
 //! ele só imprime o endereço de login. O Lume lê a saída e abre esse endereço.
+//! Esse endereço (e às vezes o próprio login) termina numa página com um código de
+//! autenticação, que o CLI espera receber pela entrada padrão.
 
+use crate::application::{AppError, AppResult};
 use std::{
     process::{ExitStatus, Output, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
 };
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+};
 
 /// Quanto esperar as saídas fecharem depois que o processo termina. Um processo filho
 /// do CLI (o navegador, por exemplo) pode herdar as saídas e mantê-las abertas.
@@ -100,19 +107,92 @@ pub(crate) fn failure_detail(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+// ---- código de autenticação ----
+
+/// Onde o login foi aberto, para o código colado chegar ao login certo: o de uma
+/// conta e o de um conector podem estar abertos ao mesmo tempo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodeScope {
+    Account,
+    Connector,
+}
+
+/// Login que espera o código: identificação da vaga e por onde o código chega.
+type WaitingLogin = (u64, UnboundedSender<String>);
+
+/// Login em andamento de cada lugar, que aceita o código colado pelo usuário.
+static LOGIN_INPUT: Mutex<[Option<WaitingLogin>; 2]> = Mutex::new([None, None]);
+static NEXT_LOGIN: AtomicU64 = AtomicU64::new(1);
+
+/// Vaga do login para receber o código; ao terminar, o login deixa de aceitá-lo.
+struct CodeSlot {
+    scope: CodeScope,
+    id: u64,
+}
+
+impl CodeSlot {
+    /// Abre a vaga do lugar; se outro login dali ainda espera o código, ele a mantém
+    /// e este segue sem receber código (só pelo retorno do navegador).
+    fn open(scope: CodeScope) -> Option<(CodeSlot, UnboundedReceiver<String>)> {
+        let mut slots = LOGIN_INPUT.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = &mut slots[scope as usize];
+        if slot.as_ref().is_some_and(|(_, tx)| !tx.is_closed()) {
+            return None;
+        }
+        let id = NEXT_LOGIN.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = unbounded_channel();
+        *slot = Some((id, tx));
+        Some((CodeSlot { scope, id }, rx))
+    }
+}
+
+impl Drop for CodeSlot {
+    fn drop(&mut self) {
+        let mut slots = LOGIN_INPUT.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = &mut slots[self.scope as usize];
+        if slot.as_ref().is_some_and(|(id, _)| *id == self.id) {
+            *slot = None;
+        }
+    }
+}
+
+/// Código como o CLI espera: sem espaços nem quebras de linha que vieram ao copiar.
+fn clean_code(code: &str) -> String {
+    code.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Linha escrita na entrada do CLI para cada código (a mesma no login assíncrono e no bloqueante).
+fn code_line(code: &str) -> String {
+    format!("{code}\n")
+}
+
+/// Entrega ao login em andamento no lugar indicado o código de autenticação mostrado no navegador.
+pub(crate) fn submit_login_code(scope: CodeScope, code: &str) -> AppResult<()> {
+    let code = clean_code(code);
+    if code.is_empty() {
+        return Err(AppError("Cole o código de autenticação mostrado no navegador.".into()));
+    }
+    let slots = LOGIN_INPUT.lock().unwrap_or_else(|e| e.into_inner());
+    match &slots[scope as usize] {
+        Some((_, tx)) if tx.send(code).is_ok() => Ok(()),
+        _ => Err(AppError("Nenhum login está esperando um código. Clique em Entrar de novo.".into())),
+    }
+}
+
 // ---- versão assíncrona (tokio) ----
 
-/// Tarefa de leitura que é cancelada se quem a criou desistir (ex.: tempo esgotado).
-struct Reader(tokio::task::JoinHandle<()>);
+/// Tarefa que é cancelada se quem a criou desistir (ex.: tempo esgotado).
+struct Task(tokio::task::JoinHandle<()>);
 
-impl Drop for Reader {
+impl Drop for Task {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-fn spawn_reader<R: AsyncRead + Unpin + Send + 'static>(pipe: Option<R>, sink: Captured, page: Arc<LoginPage>) -> Reader {
-    Reader(tokio::spawn(async move {
+fn spawn_reader<R: AsyncRead + Unpin + Send + 'static>(pipe: Option<R>, sink: Captured, page: Arc<LoginPage>) -> Task {
+    Task(tokio::spawn(async move {
         let Some(pipe) = pipe else { return };
         let mut reader = BufReader::new(pipe);
         let mut line = Vec::new();
@@ -123,10 +203,30 @@ fn spawn_reader<R: AsyncRead + Unpin + Send + 'static>(pipe: Option<R>, sink: Ca
     }))
 }
 
+/// Repassa ao CLI, pela entrada padrão, os códigos que o usuário colar.
+fn spawn_code_writer(stdin: Option<tokio::process::ChildStdin>, mut codes: UnboundedReceiver<String>) -> Task {
+    Task(tokio::spawn(async move {
+        let Some(mut stdin) = stdin else { return };
+        while let Some(code) = codes.recv().await {
+            if stdin.write_all(code_line(&code).as_bytes()).await.is_err() || stdin.flush().await.is_err() {
+                break;
+            }
+        }
+    }))
+}
+
 /// Executa o login de um CLI (que espera o navegador concluir) e devolve a saída.
 /// Com `open_page`, abre a página de login no navegador padrão (ver `LoginPage`).
-pub(crate) async fn run_login(mut cmd: tokio::process::Command, open_page: bool) -> std::io::Result<Output> {
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+/// Com `code`, o código de autenticação colado naquele lugar chega por `submit_login_code`;
+/// sem ele, a entrada fica vazia, como num CLI que nunca pede código.
+pub(crate) async fn run_login(mut cmd: tokio::process::Command, open_page: bool, code: Option<CodeScope>) -> std::io::Result<Output> {
+    let slot = code.and_then(CodeSlot::open);
+    let stdin = if slot.is_some() { Stdio::piped() } else { Stdio::null() };
+    let mut child = cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let (_slot, _writer) = match slot {
+        Some((slot, codes)) => (Some(slot), Some(spawn_code_writer(child.stdin.take(), codes))),
+        None => (None, None),
+    };
     let page = Arc::new(LoginPage::new(open_page));
     let outputs = Outputs { stdout: Captured::default(), stderr: Captured::default() };
     let mut readers = [
@@ -163,18 +263,38 @@ fn read_lines_blocking<R: std::io::Read + Send + 'static>(
 pub(crate) struct BlockingRun {
     outputs: Outputs,
     readers: Vec<std::thread::JoinHandle<()>>,
+    /// Em login, a vaga que recebe o código colado; sai junto com o processo.
+    _slot: Option<CodeSlot>,
 }
 
 impl BlockingRun {
-    /// Começa a ler as saídas do processo; com `open_page`, abre a página de login.
-    pub fn watch(child: &mut std::process::Child, open_page: bool) -> Self {
-        let page = Arc::new(LoginPage::new(open_page));
+    /// Começa a ler as saídas do processo. Em `login` (de conector), abre a página de login
+    /// no navegador e repassa à entrada padrão (que deve estar aberta) o código colado.
+    pub fn watch(child: &mut std::process::Child, login: bool) -> Self {
+        let page = Arc::new(LoginPage::new(login));
         let outputs = Outputs { stdout: Captured::default(), stderr: Captured::default() };
         let readers = [
             read_lines_blocking(child.stdout.take(), outputs.stdout.clone(), page.clone()),
             read_lines_blocking(child.stderr.take(), outputs.stderr.clone(), page),
         ];
-        BlockingRun { outputs, readers: readers.into_iter().flatten().collect() }
+        // Sem vaga (outro login de conector ainda espera o código), a entrada fecha: EOF.
+        let slot = if login { CodeSlot::open(CodeScope::Connector) } else { None };
+        let stdin = child.stdin.take();
+        let slot = slot.map(|(slot, mut codes)| {
+            if let Some(mut stdin) = stdin {
+                // A thread termina quando a vaga fecha (fim do processo) ou a entrada falha.
+                std::thread::spawn(move || {
+                    use std::io::Write;
+                    while let Some(code) = codes.blocking_recv() {
+                        if stdin.write_all(code_line(&code).as_bytes()).and_then(|_| stdin.flush()).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            slot
+        });
+        BlockingRun { outputs, readers: readers.into_iter().flatten().collect(), _slot: slot }
     }
 
     /// Depois que o processo terminou: espera um pouco as saídas fecharem e devolve o
@@ -190,7 +310,68 @@ impl BlockingRun {
 
 #[cfg(test)]
 mod tests {
-    use super::login_url;
+    use super::{clean_code, login_url, submit_login_code, CodeScope, CodeSlot};
+
+    /// Os testes do código de autenticação usam a mesma vaga global: um de cada vez.
+    static CODE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// O CLI pede o código sem quebra de linha e espera pela entrada padrão.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn login_waiting_for_a_code_receives_the_pasted_one() {
+        let _turn = CODE_TESTS.lock().await;
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "printf 'Paste code here if prompted > '; read code; echo \"got:$code\""]);
+        let login = tokio::spawn(super::run_login(cmd, false, Some(CodeScope::Account)));
+        // Espera o login abrir a vaga do código.
+        let mut tries = 0;
+        while submit_login_code(CodeScope::Account, "abc#123").is_err() {
+            tries += 1;
+            assert!(tries < 200, "o login não passou a aceitar o código");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let output = login.await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).ends_with("got:abc#123\n"));
+        assert!(submit_login_code(CodeScope::Account, "abc").is_err(), "o login terminou");
+    }
+
+    /// Sem lugar para o código (ex.: Codex), o CLI recebe a entrada vazia e não ocupa vaga.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn login_without_code_gets_empty_input() {
+        let _turn = CODE_TESTS.lock().await;
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "read code; echo \"got:$code\""]);
+        let output = super::run_login(cmd, false, None).await.unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "got:\n");
+    }
+
+    #[test]
+    fn pasted_code_reaches_only_the_login_in_progress() {
+        let _turn = CODE_TESTS.blocking_lock();
+        assert!(submit_login_code(CodeScope::Account, "abc").is_err(), "sem login em andamento");
+        let (slot, mut codes) = CodeSlot::open(CodeScope::Account).unwrap();
+        assert!(submit_login_code(CodeScope::Account, "  \n ").is_err(), "código vazio");
+        submit_login_code(CodeScope::Account, " IAmq#BQ2p\nvVjC ").unwrap();
+        assert_eq!(codes.try_recv().unwrap(), "IAmq#BQ2pvVjC");
+        drop(slot);
+        assert!(submit_login_code(CodeScope::Account, "abc").is_err(), "o login terminou");
+        assert_eq!(clean_code("a b\tc"), "abc");
+    }
+
+    #[test]
+    fn account_and_connector_logins_keep_their_own_codes() {
+        let _turn = CODE_TESTS.blocking_lock();
+        let (_account, mut account_codes) = CodeSlot::open(CodeScope::Account).unwrap();
+        let (_connector, mut connector_codes) = CodeSlot::open(CodeScope::Connector).unwrap();
+        // Um segundo login no mesmo lugar não toma a vaga de quem ainda espera.
+        assert!(CodeSlot::open(CodeScope::Account).is_none());
+        submit_login_code(CodeScope::Connector, "c1").unwrap();
+        submit_login_code(CodeScope::Account, "a1").unwrap();
+        assert_eq!(account_codes.try_recv().unwrap(), "a1");
+        assert_eq!(connector_codes.try_recv().unwrap(), "c1");
+        assert!(account_codes.try_recv().is_err());
+    }
 
     #[test]
     fn finds_authorization_url_printed_by_the_cli() {

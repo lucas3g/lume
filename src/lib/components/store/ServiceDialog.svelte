@@ -2,6 +2,8 @@
   import type { CatalogEntry } from "../../catalog";
   import type { AccountConnector } from "../../types";
   import ConnectorIcon from "../ConnectorIcon.svelte";
+  import LoginCodeField from "../LoginCodeField.svelte";
+  import { logins } from "../../state/logins.svelte";
   import BrandSky from "./BrandSky.svelte";
 
   interface Props {
@@ -85,6 +87,10 @@
           <button type="button" class="btn primary" disabled={busy} onclick={() => onlink(connector!, true)}>{busy ? "Aguardando o login…" : `Vincular ${connector.display_name}`}</button>
         {/if}
       </footer>
+      <!-- A janela é modal: o campo do código precisa estar nela, não na página atrás. -->
+      {#if logins.connector === connector.name}
+        <div class="code"><LoginCodeField scope="connector" /></div>
+      {/if}
     </div>
   {/if}
 </dialog>
@@ -93,6 +99,7 @@
   dialog { width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6); overflow: hidden; }
   dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   .content { position: relative; display: flex; flex-direction: column; max-height: calc(100vh - 50px); }
+  .code { padding: 0 24px 16px; }
   .close { position: absolute; top: 14px; right: 14px; background: var(--surface); border-color: var(--border); }
   .head { display: flex; flex-direction: column; gap: 6px; margin-top: -36px; padding: 0 24px 4px; }
   .lead { position: relative; align-self: flex-start; border-radius: 19px; background: var(--surface); box-shadow: 0 0 0 4px var(--surface); }
