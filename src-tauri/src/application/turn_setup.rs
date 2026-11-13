@@ -88,7 +88,9 @@ impl PrepareTurn {
         };
         let allowed_tools = own_tools.into_iter().chain(connector_tools).collect();
 
-        let snippets = if self.settings.flag(flags::USE_HISTORY, true) {
+        // O histórico ajuda a começar um assunto; no meio da conversa, ela mesma já é o contexto.
+        let starting = self.conversations.message_count(&conversation.id)? <= 1;
+        let snippets = if starting && self.settings.flag(flags::USE_HISTORY, true) {
             self.history.search(text, CONTEXT_SNIPPETS, conversation.cli_session_id.as_deref())
         } else {
             vec![]

@@ -111,7 +111,7 @@ impl HistoryIndex for SqliteHistoryIndex {
 
     /// Trechos mais relevantes, no máximo um por conversa.
     fn search(&self, text: &str, limit: usize, exclude_session: Option<&str>) -> Vec<Snippet> {
-        let Some(query) = fts_query(text) else { return vec![] };
+        let Some(query) = context_query(text) else { return vec![] };
         let conn = self.store.conn();
         let Ok(mut st) = conn.prepare(
             "SELECT f.session_id, COALESCE(s.title,'Conversa sem título'), snippet(hist_fts, 2, '', '', ' … ', 48)
@@ -222,18 +222,50 @@ fn desktop_titles(root: &Path) -> Vec<(String, String)> {
     out
 }
 
-/// Monta uma consulta FTS a partir de texto livre: palavras relevantes unidas por OR.
-fn fts_query(text: &str) -> Option<String> {
+/// Palavras comuns demais para indicar o assunto (português e inglês); casam com quase tudo.
+const STOPWORDS: &[&str] = &[
+    "agora", "ainda", "algo", "antes", "aqui", "cada", "coisa", "como", "depois", "entao", "então", "entre", "essa", "esse",
+    "esta", "está", "estão", "este", "estou", "favor", "faça", "fazer", "fica", "ficar", "isso", "isto", "mais", "mesmo",
+    "muito", "nada", "onde", "para", "pela", "pelo", "pode", "pois", "porque", "preciso", "qual", "quais", "quando",
+    "quero", "rode", "seria", "sendo", "sobre", "também", "tambem", "toda", "todo", "todos", "tudo", "veja", "você", "voce",
+    "about", "also", "been", "could", "does", "from", "have", "into", "just", "like", "make", "more", "only", "should",
+    "some", "that", "them", "then", "there", "they", "this", "were", "what", "when", "where", "which", "will", "with",
+    "would", "your",
+];
+
+/// Palavras relevantes do texto, sem repetição, já entre aspas para o FTS.
+fn query_words(text: &str, skip_common: bool) -> Vec<String> {
     let mut seen = HashSet::new();
-    let words: Vec<String> = text
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
+    text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| w.chars().count() >= MIN_WORD_CHARS)
         .map(str::to_lowercase)
+        .filter(|w| !skip_common || !STOPWORDS.contains(&w.as_str()))
         .filter(|w| seen.insert(w.clone()))
         .take(MAX_QUERY_WORDS)
         .map(|w| format!("\"{w}\""))
-        .collect();
+        .collect()
+}
+
+/// Consulta da busca na tela de histórico: qualquer uma das palavras digitadas.
+fn fts_query(text: &str) -> Option<String> {
+    let words = query_words(text, false);
     (!words.is_empty()).then(|| words.join(" OR "))
+}
+
+/// Consulta do contexto automático: um trecho só serve se tiver ao menos duas das palavras
+/// relevantes da mensagem, porque uma palavra solta casa com conversas que não têm nada a
+/// ver. Mensagem com menos de duas não busca.
+fn context_query(text: &str) -> Option<String> {
+    let words = query_words(text, true);
+    if words.len() < 2 {
+        return None;
+    }
+    let pairs: Vec<String> = words
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| words[i + 1..].iter().map(move |b| format!("({a} AND {b})")))
+        .collect();
+    Some(pairs.join(" OR "))
 }
 
 #[cfg(test)]
@@ -258,7 +290,7 @@ mod tests {
         let hits = index.search("qual índice usar na tabela de pedidos", 3, None);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Título do Desktop");
-        assert!(index.search("pedidos", 3, Some("abc")).is_empty());
+        assert!(index.search("índice de pedidos", 3, Some("abc")).is_empty(), "a própria sessão fica de fora");
 
         let status = index.status();
         assert_eq!((status.sessions, status.desktop_sessions), (1, 1));
@@ -276,5 +308,28 @@ mod tests {
         assert_eq!(fts_query("o que é isso?"), Some("\"isso\"".into()));
         assert_eq!(fts_query("a b c"), None);
         assert_eq!(fts_query("teste \"aspas\" teste"), Some("\"teste\" OR \"aspas\"".into()));
+    }
+
+    #[test]
+    fn context_query_needs_two_relevant_words() {
+        assert_eq!(context_query("o que é isso?"), None);
+        assert_eq!(context_query("pode commitar"), None, "uma palavra só não indica o assunto");
+        assert_eq!(
+            context_query("como ver o índice da tabela de pedidos"),
+            Some("(\"índice\" AND \"tabela\") OR (\"índice\" AND \"pedidos\") OR (\"tabela\" AND \"pedidos\")".into())
+        );
+    }
+
+    #[test]
+    fn search_needs_two_words_of_the_message() {
+        let dir = std::env::temp_dir().join(format!("lume-test-{}", uuid::Uuid::new_v4()));
+        let project = dir.join("projects/-tmp-loja");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("abc.jsonl"), SAMPLE).unwrap();
+        let index = SqliteHistoryIndex::new(Arc::new(SqliteStore::memory()), dir.join("projects"), dir.join("desktop"));
+        index.reindex(&mut |_, _| {});
+        assert!(index.search("criar um botão no mapa", 3, None).is_empty(), "só \"criar\" em comum");
+        assert_eq!(index.search("criar índice", 3, None).len(), 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
