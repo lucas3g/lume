@@ -9,6 +9,9 @@ use std::sync::Arc;
 
 const DEFAULT_ACCOUNT_NAME: &str = "Principal";
 
+/// Tamanho máximo do apelido de uma conta.
+const MAX_NAME: usize = 40;
+
 pub struct ManageAccounts {
     pub accounts: Arc<dyn AccountRepository>,
     pub gateway: Arc<dyn AccountGateway>,
@@ -99,6 +102,21 @@ impl ManageAccounts {
         Ok(())
     }
 
+    /// Muda o apelido da conta, que só existe no Lume; o login não é tocado.
+    pub fn rename(&self, id: &str, name: &str) -> AppResult<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError("Dê um nome para a conta.".into()));
+        }
+        if name.chars().count() > MAX_NAME {
+            return Err(AppError(format!("O nome pode ter no máximo {MAX_NAME} caracteres.")));
+        }
+        self.find(id)?;
+        self.accounts.set_name(id, name)?;
+        self.events.accounts_changed();
+        Ok(())
+    }
+
     pub fn reorder(&self, ids: &[String]) -> AppResult<()> {
         self.accounts.reorder(ids)?;
         self.events.accounts_changed();
@@ -163,6 +181,17 @@ mod tests {
 
     fn identity(email: &str) -> Identity {
         Identity { logged_in: true, email: Some(email.into()), plan: Some("max".into()), login_expires_at: Some(99) }
+    }
+
+    #[test]
+    fn renames_account_and_rejects_empty_or_long_names() {
+        let world = World::with_accounts(vec![crate::domain::account::sample("a", 1)]);
+        let uc = use_case(&world, FakeGateway::logged_in(identity("a@exemplo.com")));
+        uc.rename("a", "  Trabalho  ").unwrap();
+        assert_eq!(uc.list().unwrap()[0].name, "Trabalho");
+        assert!(uc.rename("a", "   ").is_err());
+        assert!(uc.rename("a", &"x".repeat(41)).is_err());
+        assert!(uc.rename("nao-existe", "Outra").is_err());
     }
 
     #[tokio::test]

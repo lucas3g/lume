@@ -41,6 +41,11 @@ pub fn set_account_enabled(app: App<'_>, id: String, enabled: bool) -> AppResult
 }
 
 #[tauri::command]
+pub fn rename_account(app: App<'_>, id: String, name: String) -> AppResult<()> {
+    app.accounts.rename(&id, &name)
+}
+
+#[tauri::command]
 pub fn reorder_accounts(app: App<'_>, ids: Vec<String>) -> AppResult<()> {
     app.accounts.reorder(&ids)
 }

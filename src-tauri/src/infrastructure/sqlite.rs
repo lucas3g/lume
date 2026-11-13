@@ -185,6 +185,11 @@ impl AccountRepository for SqliteStore {
         Ok(())
     }
 
+    fn set_name(&self, id: &str, name: &str) -> AppResult<()> {
+        self.conn().execute("UPDATE accounts SET name=? WHERE id=?", params![name, id])?;
+        Ok(())
+    }
+
     fn set_identity(&self, id: &str, identity: &Identity) -> AppResult<()> {
         self.conn().execute(
             "UPDATE accounts SET email=COALESCE(?,email), plan=COALESCE(?,plan), auth_ok=?, login_expires_at=? WHERE id=?",

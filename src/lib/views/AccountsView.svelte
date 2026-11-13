@@ -69,6 +69,25 @@
   }
 
   /** Executa uma ação de conta mostrando o erro, se houver. */
+  /** Conta com o nome em edição e o texto digitado. */
+  let renaming = $state<string | null>(null);
+  let renameTo = $state("");
+
+  function startRename(a: Account) {
+    renaming = a.id;
+    renameTo = a.name;
+  }
+
+  async function saveRename(event: SubmitEvent) {
+    event.preventDefault();
+    const id = renaming;
+    if (!id) return;
+    await run(async () => {
+      await api.renameAccount(id, renameTo);
+      renaming = null;
+    });
+  }
+
   async function run(action: () => Promise<void>) {
     error = null;
     busy = true;
@@ -135,10 +154,22 @@
           </div>
 
           <div class="identity">
-            <div class="row name">
-              <strong>{a.name}</strong>
-              {#if a.plan}<span class="plan">{a.plan}</span>{/if}
-            </div>
+            {#if renaming === a.id}
+              <form class="row name rename" onsubmit={saveRename}>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input class="input" aria-label="Novo nome da conta" bind:value={renameTo} maxlength="40" autofocus onkeydown={(e) => e.key === "Escape" && (renaming = null)} />
+                <button type="submit" class="btn small primary" disabled={!renameTo.trim() || busy}>Salvar</button>
+                <button type="button" class="btn small" onclick={() => (renaming = null)}>Cancelar</button>
+              </form>
+            {:else}
+              <div class="row name">
+                <strong>{a.name}</strong>
+                {#if a.plan}<span class="plan">{a.plan}</span>{/if}
+                <button type="button" class="btn icon edit" aria-label={`Renomear a conta ${a.name}`} title="Renomear" disabled={busy} onclick={() => startRename(a)}>
+                  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17z" /><path d="M13.5 6.5l3 3" /></svg>
+                </button>
+              </div>
+            {/if}
             <div class="muted small">{a.email ?? "E-mail não informado"}</div>
             {#if loginWarning(a)}<div class="warn small">{loginWarning(a)}</div>{/if}
           </div>
@@ -215,6 +246,9 @@
   .order .btn { width: 24px; min-height: 20px; }
   .identity { flex: 1 1 180px; min-width: 0; }
   .name { gap: 8px; }
+  .name .edit { width: 24px; min-height: 24px; opacity: 0; transition: opacity 0.15s; }
+  .account:hover .name .edit, .name .edit:focus-visible { opacity: 1; }
+  .rename .input { flex: 1; min-width: 0; min-height: 30px; }
   .plan { padding: 1px 8px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 12px; color: var(--text-2); text-transform: capitalize; }
   .usage { flex: 1 1 200px; display: flex; flex-direction: column; gap: 6px; }
   .usage-label { display: flex; justify-content: space-between; font-size: 12px; }

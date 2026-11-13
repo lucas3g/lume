@@ -19,6 +19,7 @@ export const api = {
   addAccount: (name: string) => invoke<void>("add_account", { name }),
   removeAccount: (id: string) => invoke<void>("remove_account", { id }),
   setAccountEnabled: (id: string, enabled: boolean) => invoke<void>("set_account_enabled", { id, enabled }),
+  renameAccount: (id: string, name: string) => invoke<void>("rename_account", { id, name }),
   reorderAccounts: (ids: string[]) => invoke<void>("reorder_accounts", { ids }),
   refreshAccount: (id: string) => invoke<void>("refresh_account", { id }),
   loginAccountAgain: (id: string) => invoke<void>("login_account_again", { id }),

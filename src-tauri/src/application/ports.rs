@@ -19,6 +19,7 @@ pub trait AccountRepository: Send + Sync {
     fn insert(&self, id: &str, name: &str, identity: &Identity, config_dir: Option<&str>) -> AppResult<()>;
     fn delete(&self, id: &str) -> AppResult<()>;
     fn set_enabled(&self, id: &str, enabled: bool) -> AppResult<()>;
+    fn set_name(&self, id: &str, name: &str) -> AppResult<()>;
     fn set_identity(&self, id: &str, identity: &Identity) -> AppResult<()>;
     fn set_auth(&self, id: &str, ok: bool) -> AppResult<()>;
     fn set_limited(&self, id: &str, until: Option<i64>) -> AppResult<()>;

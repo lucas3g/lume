@@ -212,12 +212,14 @@
     {#each accounts.list as a (a.id)}
       {@const state = stateOf(a)}
       <span class="account">
-        <span class="dot" class:ok={state === "active"} class:warn={state === "limited" || state === "login"}></span>
-        <span class="who" class:current={state === "active"}>{a.name}</span>
+        <span class="account-head">
+          <span class="dot" class:ok={state === "active"} class:warn={state === "limited" || state === "login"}></span>
+          <span class="who" class:current={state === "active"} title={a.name}>{a.name}</span>
+          <span class="note">{accountNote(a)}</span>
+        </span>
         <span class="meter" role="img" aria-label={`${a.name}: ${percent(a.util_5h)}% usado`}>
           <span class:full={state === "limited"} style:width={`${state === "limited" ? 100 : percent(a.util_5h)}%`}></span>
         </span>
-        <span class="note">{accountNote(a)}</span>
       </span>
     {:else}
       <span class="none">Nenhuma conta ainda</span>
@@ -277,16 +279,17 @@
   .pool-head { display: flex; align-items: center; }
   .pool-head .label { flex: 1; }
   .manage { font-size: 11px; color: var(--accent-text); }
-  .account { display: flex; align-items: center; gap: 8px; }
+  .account { display: flex; flex-direction: column; gap: 5px; }
+  .account-head { display: flex; align-items: center; gap: 8px; }
   .dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--faint); }
   .dot.ok { background: var(--ok); }
   .dot.warn { background: var(--warn); }
-  .who { width: 66px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .who.current { font-weight: 600; }
-  .meter { flex: 1; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+  .meter { display: block; width: 100%; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
   .meter span { display: block; height: 100%; border-radius: 2px; background: var(--bar); }
   .meter span.full { background: var(--warn); }
-  .note { width: 46px; flex-shrink: 0; text-align: right; font-size: 11px; color: var(--muted); }
+  .note { flex-shrink: 0; text-align: right; font-size: 11px; color: var(--muted); }
   .pool .none { margin: 0; padding: 0; border: 0; }
   @media (prefers-reduced-motion: reduce) { .toggle svg { transition: none; } }
 </style>

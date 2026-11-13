@@ -49,6 +49,7 @@ pub fn run() {
             commands::add_account,
             commands::remove_account,
             commands::set_account_enabled,
+            commands::rename_account,
             commands::reorder_accounts,
             commands::refresh_account,
             commands::login_account_again,
