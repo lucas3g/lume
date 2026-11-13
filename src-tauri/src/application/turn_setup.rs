@@ -30,6 +30,10 @@ use um bloco ```svg.";
 pub struct TurnSetup {
     pub model: String,
     pub extra_system: Option<String>,
+    /// Instruções do projeto e do agente, parte de `extra_system` que pode mudar no meio
+    /// da conversa. O CLI fixa o prompt de sistema quando a sessão abre e ignora o novo
+    /// ao retomá-la; quando ela muda, segue junto da mensagem.
+    pub standing: Option<String>,
     pub tools: String,
     pub effort: String,
     pub permission_mode: String,
@@ -108,7 +112,9 @@ impl PrepareTurn {
             None => None,
         };
         let earlier = self.earlier_dialogue(conversation)?;
-        let sections: Vec<String> = [Some(ARTIFACT_GUIDE.to_owned()), project_section, instructions, earlier, context_prompt(&snippets)]
+        let standing = [project_section, instructions].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
+        let standing = (!standing.is_empty()).then_some(standing);
+        let sections: Vec<String> = [Some(ARTIFACT_GUIDE.to_owned()), standing.clone(), earlier, context_prompt(&snippets)]
             .into_iter()
             .flatten()
             .collect();
@@ -116,6 +122,7 @@ impl PrepareTurn {
         Ok(TurnSetup {
             model: agent.and_then(|a| a.model).unwrap_or_else(|| conversation.model.clone()),
             extra_system: Some(sections.join("\n\n")),
+            standing,
             tools,
             effort: conversation.effort.clone(),
             permission_mode: conversation.permission_mode.clone(),

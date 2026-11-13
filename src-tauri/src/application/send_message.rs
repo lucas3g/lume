@@ -26,6 +26,8 @@ use tokio::sync::mpsc::UnboundedSender;
 const TITLE_MAX_CHARS: usize = 48;
 /// Usado quando o provedor não informa o horário do reset.
 const DEFAULT_LIMIT_SECONDS: i64 = 3600;
+/// Configuração com as instruções de projeto e agente que a sessão da conversa já conhece.
+const STANDING_PREFIX: &str = "standing_sent:";
 
 pub struct SendMessage {
     pub accounts: Arc<dyn AccountRepository>,
@@ -141,13 +143,22 @@ impl SendMessage {
             } else {
                 setup.extra_system.clone()
             };
+            let resume = conversation.cli_session_id.clone().filter(|_| !foreign_session);
+            let standing_key = format!("{STANDING_PREFIX}{conversation_id}");
+            let standing = setup.standing.clone().unwrap_or_default();
+            let prompt = match &resume {
+                Some(_) if self.settings.text(&standing_key).unwrap_or_default() != standing => {
+                    updated_instructions(&standing, text)
+                }
+                _ => text.to_owned(),
+            };
             let request = TurnRequest {
                 provider: account.provider,
                 config_dir: account.config_dir.clone(),
                 cwd: conversation.cwd.clone(),
                 model: setup.model.clone(),
-                resume: conversation.cli_session_id.clone().filter(|_| !foreign_session),
-                prompt: text.to_owned(),
+                resume,
+                prompt,
                 attachments: attachments.clone(),
                 extra_system,
                 tools: setup.tools.clone(),
@@ -203,6 +214,7 @@ impl SendMessage {
                         )?;
                     }
                     self.conversations.update(conversation_id, None, session_id.as_deref(), None)?;
+                    self.settings.set_text(&standing_key, &standing)?;
                     if session_id.is_some() {
                         self.conversations.set_session_provider(conversation_id, account.provider)?;
                     }
@@ -450,6 +462,16 @@ fn user_meta(files: &[Attachment], paths: &[String], pasted: &[Attachment]) -> O
     Some(serde_json::json!({ "attachments": names, "paths": paths, "images": images }).to_string())
 }
 
+/// Mensagem de uma sessão retomada cujas instruções de projeto ou agente mudaram depois
+/// que ela abriu: as novas vão na frente, valendo daqui em diante.
+fn updated_instructions(standing: &str, text: &str) -> String {
+    let rules = if standing.is_empty() { "Nenhuma instrução de projeto ou de agente está em vigor." } else { standing };
+    format!(
+        "[Aviso do aplicativo: as instruções desta conversa foram atualizadas e valem a partir desta mensagem, \
+         substituindo as anteriores de projeto e de agente.]\n{rules}\n\n[Mensagem do usuário]\n{text}"
+    )
+}
+
 pub fn make_title(text: &str) -> String {
     let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("Nova conversa").trim();
     if line.chars().count() <= TITLE_MAX_CHARS {
@@ -644,6 +666,36 @@ mod tests {
         assert_eq!(events[0], ChatEvent::Title { title: "Como indexar pedidos?".into() });
         assert!(events.contains(&ChatEvent::Context { titles: vec!["Índices".into()] }));
         assert!(world.store.messages("c1").unwrap()[1].meta.as_deref().unwrap().contains("Índices"));
+    }
+
+    #[tokio::test]
+    async fn resumed_session_gets_project_instructions_changed_after_it_opened() {
+        use crate::application::ports::ProjectRepository;
+        use crate::domain::project::Project;
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let mut project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: None };
+        ProjectRepository::save(&*world.store, &project).unwrap();
+        world.store.set_project("c1", Some("p1")).unwrap();
+        let engine = ScriptedEngine::new(|req, call| {
+            match call {
+                1 => assert_eq!(req.prompt, "oi", "sessão nova: as instruções vão no prompt de sistema"),
+                2 => assert_eq!(req.prompt, "tudo bem?", "nada mudou desde que a sessão abriu"),
+                3 => {
+                    assert_eq!(req.resume.as_deref(), Some("s1"));
+                    assert!(req.prompt.contains("Responda em português.") && req.prompt.ends_with("e agora?"));
+                }
+                _ => assert_eq!(req.prompt, "de novo", "a sessão já recebeu as instruções novas"),
+            }
+            (vec![], TurnEnd::Done { session_id: Some("s1".into()), text: "ok".into() })
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "oi", &[], vec![], TurnControl::new().0).await.unwrap();
+        uc.execute("c1", "tudo bem?", &[], vec![], TurnControl::new().0).await.unwrap();
+        project.instructions = "Responda em português.".into();
+        ProjectRepository::save(&*world.store, &project).unwrap();
+        uc.execute("c1", "e agora?", &[], vec![], TurnControl::new().0).await.unwrap();
+        uc.execute("c1", "de novo", &[], vec![], TurnControl::new().0).await.unwrap();
+        assert_eq!(world.store.messages("c1").unwrap()[4].content, "e agora?", "a conversa mostra só o que o usuário escreveu");
     }
 
     #[test]
