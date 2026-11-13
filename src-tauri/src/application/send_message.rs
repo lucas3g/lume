@@ -113,6 +113,14 @@ impl SendMessage {
 
         let mut tried: Vec<String> = vec![];
         let mut previous: Option<(Account, Handoff)> = None;
+        // Instruções de projeto e agente que a sessão já recebeu, para só reenviá-las quando mudarem.
+        let standing_key = format!("{STANDING_PREFIX}{conversation_id}");
+        let standing_print = fingerprint(setup.standing.as_deref());
+        let standing_changed = self.settings.text(&standing_key).unwrap_or_default() != standing_print;
+        // A sessão gravou a mensagem (e as instruções que foram junto); falhar aqui só faz reenviá-las.
+        let remember_standing = || {
+            let _ = self.settings.set_text(&standing_key, &standing_print);
+        };
 
         loop {
             let all = self.accounts.all()?;
@@ -144,12 +152,8 @@ impl SendMessage {
                 setup.extra_system.clone()
             };
             let resume = conversation.cli_session_id.clone().filter(|_| !foreign_session);
-            let standing_key = format!("{STANDING_PREFIX}{conversation_id}");
-            let standing = setup.standing.clone().unwrap_or_default();
             let prompt = match &resume {
-                Some(_) if self.settings.text(&standing_key).unwrap_or_default() != standing => {
-                    updated_instructions(&standing, text)
-                }
+                Some(_) if standing_changed => updated_instructions(setup.standing.as_deref().unwrap_or_default(), text),
                 _ => text.to_owned(),
             };
             let request = TurnRequest {
@@ -183,6 +187,7 @@ impl SendMessage {
             // Com a resposta já entregue, um limite ou login vencido no fim (enquanto os agentes
             // em segundo plano terminavam) não refaz a pergunta em outra conta: ela já foi respondida.
             if journal.answered && matches!(end, TurnEnd::Limited { .. } | TurnEnd::AuthError(_)) {
+                remember_standing();
                 let notice = match end {
                     TurnEnd::Limited { resets_at } => {
                         self.accounts.set_limited(&account.id, Some(resets_at.unwrap_or(now + DEFAULT_LIMIT_SECONDS)))?;
@@ -214,7 +219,7 @@ impl SendMessage {
                         )?;
                     }
                     self.conversations.update(conversation_id, None, session_id.as_deref(), None)?;
-                    self.settings.set_text(&standing_key, &standing)?;
+                    remember_standing();
                     if session_id.is_some() {
                         self.conversations.set_session_provider(conversation_id, account.provider)?;
                     }
@@ -247,6 +252,7 @@ impl SendMessage {
                     return Ok(());
                 }
                 TurnEnd::Cancelled => {
+                    remember_standing();
                     self.record_segment(conversation_id, &account.id, &mut journal);
                     self.emit(conversation_id, ChatEvent::Cancelled);
                     return Ok(());
@@ -460,6 +466,15 @@ fn user_meta(files: &[Attachment], paths: &[String], pasted: &[Attachment]) -> O
         .map(|a| serde_json::json!({ "name": a.name, "media_type": a.media_type, "data": a.data }))
         .collect();
     Some(serde_json::json!({ "attachments": names, "paths": paths, "images": images }).to_string())
+}
+
+/// Resumo das instruções em vigor; vazio quando não há nenhuma.
+fn fingerprint(standing: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    match standing.filter(|s| !s.is_empty()) {
+        Some(text) => Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect(),
+        None => String::new(),
+    }
 }
 
 /// Mensagem de uma sessão retomada cujas instruções de projeto ou agente mudaram depois
