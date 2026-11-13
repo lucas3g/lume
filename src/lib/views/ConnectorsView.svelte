@@ -5,7 +5,7 @@
   import LoginCodeField from "../components/LoginCodeField.svelte";
   import { logins } from "../state/logins.svelte";
   import { activeAccount } from "../state/accounts.svelte";
-  import { connectors } from "../state/connectors.svelte";
+  import { connectors, isLinked } from "../state/connectors.svelte";
   import ConnectorCatalog from "../components/store/ConnectorCatalog.svelte";
   import Toggle from "../components/Toggle.svelte";
   import type { AccountConnector, Connector } from "../types";
@@ -281,7 +281,7 @@
               {/if}
             </span>
             <span class="cell actions">
-              {#if c.status === "connected" && c.source !== "user"}
+              {#if isLinked(c) && c.source !== "user"}
                 <button type="button" class="btn icon" aria-label={`Desvincular ${c.display_name}`} title="Desvincular" disabled={busy !== null} onclick={() => link(c, false)}>
                   <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1M4 4l16 16" /></svg>
                 </button>

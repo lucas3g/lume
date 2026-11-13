@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLinked } from "../../state/connectors.svelte";
   import type { CatalogEntry } from "../../catalog";
   import type { AccountConnector } from "../../types";
   import ConnectorIcon from "../ConnectorIcon.svelte";
@@ -28,7 +29,7 @@
     if (event.target === dialog) onclose();
   }
 
-  const connected = $derived(connector?.status === "connected");
+  const connected = $derived(connector !== null && isLinked(connector));
   const lines = $derived(entry ? [...entry.can.map((text) => ({ text, asks: false })), ...(entry.asks ? [{ text: entry.asks, asks: true }] : [])] : []);
 </script>
 

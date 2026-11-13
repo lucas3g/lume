@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLinked } from "../../state/connectors.svelte";
   import { CATALOG, CATEGORY_LABEL, CATEGORY_ORDER, SUGGESTED, catalogOf, describe, isListed, matchesQuery, type CatalogEntry, type Category } from "../../catalog";
   import type { AccountConnector } from "../../types";
   import ConnectorIcon from "../ConnectorIcon.svelte";
@@ -43,7 +44,7 @@
   const entries = $derived<Entry[]>(
     account
       .filter(isListed)
-      .map((c) => ({ key: c.name, connector: c, entry: catalogOf(c), name: c.display_name, description: describe(c), category: catalogOf(c)?.category ?? null, connected: c.status === "connected" }))
+      .map((c) => ({ key: c.name, connector: c, entry: catalogOf(c), name: c.display_name, description: describe(c), category: catalogOf(c)?.category ?? null, connected: isLinked(c) }))
       .sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
   );
 

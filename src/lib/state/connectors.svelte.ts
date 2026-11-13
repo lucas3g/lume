@@ -4,6 +4,11 @@
 import { api } from "../api";
 import type { AccountConnector } from "../types";
 
+/** Vinculado à conta: chega às conversas. */
+export function isLinked(c: Pick<AccountConnector, "status">): boolean {
+  return c.status === "connected";
+}
+
 class ConnectorsState {
   account = $state<AccountConnector[]>([]);
   /** Verificação em andamento. */
