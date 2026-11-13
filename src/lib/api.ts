@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Account, AccountConnector, Agent, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PluginListing, Project, ProjectFile, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
+  MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -33,8 +33,8 @@ export const api = {
   setConversationModel: (id: string, model: string) => invoke<void>("set_conversation_model", { id, model }),
   setConversationEffort: (id: string, effort: string) => invoke<void>("set_conversation_effort", { id, effort }),
   setConversationMode: (id: string, mode: string) => invoke<void>("set_conversation_mode", { id, mode }),
-  sendMessage: (conversationId: string, text: string, attachments: string[]) =>
-    invoke<void>("send_message", { conversationId, text, attachments }),
+  sendMessage: (conversationId: string, text: string, attachments: string[], images: PastedImage[]) =>
+    invoke<void>("send_message", { conversationId, text, attachments, images }),
   cancelMessage: (conversationId: string) => invoke<void>("cancel_message", { conversationId }),
   startFolderSession: (folder: string, model: string) => invoke<Conversation>("start_folder_session", { folder, model }),
   decidePermission: (decision: {
@@ -88,6 +88,14 @@ export const api = {
   workspaceDiff: (conversationId: string, path: string) => invoke<string>("workspace_diff", { conversationId, path }),
   workspaceCommit: (conversationId: string, message: string) =>
     invoke<void>("workspace_commit", { conversationId, message }),
+
+  terminalOpen: (conversationId: string, cols: number, rows: number) =>
+    invoke<string>("terminal_open", { conversationId, cols, rows }),
+  terminalWrite: (id: string, data: string) => invoke<void>("terminal_write", { id, data }),
+  terminalResize: (id: string, cols: number, rows: number) => invoke<void>("terminal_resize", { id, cols, rows }),
+  terminalClose: (id: string) => invoke<void>("terminal_close", { id }),
+  onTerminalOutput: (handler: (p: { id: string; data: string }) => void): Promise<UnlistenFn> =>
+    listen<{ id: string; data: string }>("terminal-output", (e) => handler(e.payload)),
 
   listAccountConnectors: () => invoke<AccountConnector[]>("list_account_connectors"),
   linkConnector: (name: string) => invoke<void>("link_connector", { name }),

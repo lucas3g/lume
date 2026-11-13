@@ -3,7 +3,7 @@
 import { api } from "../api";
 import type { FileView, WorkspaceStatus } from "../types";
 
-export type Panel = "environment" | "files" | "changes";
+export type Panel = "environment" | "files" | "changes" | "terminal";
 
 export const workspace = $state({
   /** Painel aberto à direita; `null` é fechado. */
@@ -12,6 +12,8 @@ export const workspace = $state({
   status: null as WorkspaceStatus | null,
   /** Arquivo aberto no centro, acima do chat. */
   openFile: null as FileView | null,
+  /** Texto que o painel pede para inserir no campo de mensagem (ex.: comentário em um diff). */
+  composerInsert: null as string | null,
 });
 
 export function togglePanel(panel: Panel): void {

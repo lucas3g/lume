@@ -205,6 +205,17 @@ pub trait EventSink: Send + Sync {
     fn chat(&self, conversation_id: &str, event: ChatEvent);
     fn accounts_changed(&self);
     fn history_progress(&self, done: usize, total: usize);
+    /// Bytes que um terminal produziu.
+    fn terminal_output(&self, terminal_id: &str, data: &[u8]);
+}
+
+/// Terminais interativos (pseudo-TTY) com o shell do usuário.
+pub trait TerminalPort: Send + Sync {
+    /// Abre um terminal na pasta; `on_output` recebe o que ele produz até fechar.
+    fn open(&self, id: &str, cwd: &str, cols: u16, rows: u16, on_output: Box<dyn Fn(&[u8]) + Send>) -> AppResult<()>;
+    fn write(&self, id: &str, data: &[u8]) -> AppResult<()>;
+    fn resize(&self, id: &str, cols: u16, rows: u16) -> AppResult<()>;
+    fn close(&self, id: &str);
 }
 
 pub trait Clock: Send + Sync {

@@ -14,6 +14,7 @@ use tauri_plugin_notification::NotificationExt;
 pub const CHAT_EVENT: &str = "chat";
 pub const ACCOUNTS_CHANGED: &str = "accounts-changed";
 pub const HISTORY_PROGRESS: &str = "history-progress";
+pub const TERMINAL_OUTPUT: &str = "terminal-output";
 const NOTICE_MAX_CHARS: usize = 140;
 
 #[derive(Serialize, Clone)]
@@ -21,6 +22,13 @@ struct ChatPayload {
     conversation_id: String,
     #[serde(flatten)]
     event: ChatEvent,
+}
+
+#[derive(Serialize, Clone)]
+struct TerminalPayload {
+    id: String,
+    /// Saída em base64: o terminal produz bytes, não só texto.
+    data: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -109,6 +117,12 @@ impl EventSink for TauriEvents {
 
     fn history_progress(&self, done: usize, total: usize) {
         let _ = self.app.emit(HISTORY_PROGRESS, ProgressPayload { done, total });
+    }
+
+    fn terminal_output(&self, terminal_id: &str, data: &[u8]) {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(data);
+        let _ = self.app.emit(TERMINAL_OUTPUT, TerminalPayload { id: terminal_id.to_owned(), data });
     }
 }
 

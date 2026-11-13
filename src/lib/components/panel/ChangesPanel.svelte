@@ -18,13 +18,40 @@
   const status = $derived(workspace.status);
   const files = $derived(status?.files ?? []);
 
-  /** Linhas do diff, sem o cabeçalho do git, com o tipo de cada uma. */
-  const lines = $derived(
-    diff
+  /** Linha do diff com um comentário em edição e o texto digitado. */
+  let commentAt = $state<number | null>(null);
+  let comment = $state("");
+
+  /** Linhas do diff, sem o cabeçalho do git, com o tipo e o número no arquivo novo. */
+  const lines = $derived.by(() => {
+    let next = 0;
+    return diff
       .split("\n")
       .filter((l) => !/^(diff --git|index |--- |\+\+\+ |new file|deleted file|similarity|rename )/.test(l))
-      .map((text) => ({ text, kind: text.startsWith("+") ? "add" : text.startsWith("-") ? "del" : text.startsWith("@@") ? "hunk" : "" })),
-  );
+      .map((text, index) => {
+        const hunk = text.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
+        if (hunk) next = Number(hunk[1]);
+        const kind = text.startsWith("+") ? "add" : text.startsWith("-") ? "del" : hunk ? "hunk" : "";
+        const number = kind === "del" || kind === "hunk" ? null : next++;
+        return { index, text, kind, number };
+      });
+  });
+
+  function toggleComment(index: number) {
+    commentAt = commentAt === index ? null : index;
+    comment = "";
+  }
+
+  /** Manda o comentário para o campo de mensagem, com o arquivo, a linha e o trecho. */
+  function sendComment(event: SubmitEvent) {
+    event.preventDefault();
+    const line = lines.find((l) => l.index === commentAt);
+    if (!line || !selected || !comment.trim()) return;
+    const where = line.number ? `linha ${line.number}` : "trecho removido";
+    workspace.composerInsert = `Em \`${selected}\` (${where}):\n\`\`\`\n${line.text.slice(1)}\n\`\`\`\n${comment.trim()}`;
+    commentAt = null;
+    comment = "";
+  }
 
   async function show(file: ChangedFile) {
     selected = file.path;
@@ -83,7 +110,20 @@
       {/each}
     </div>
 
-    <pre class="diff">{#each lines as line}<span class={line.kind}>{line.text || " "}</span>{/each}</pre>
+    <div class="diff" aria-label="Diff; clique em uma linha para comentar">
+      {#each lines as line (line.index)}
+        <button type="button" class={`line ${line.kind}`} class:on={commentAt === line.index} onclick={() => toggleComment(line.index)}>
+          <span class="num">{line.number ?? ""}</span><span class="code">{line.text || " "}</span>
+        </button>
+        {#if commentAt === line.index}
+          <form class="comment" onsubmit={sendComment}>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input class="input" bind:value={comment} placeholder="O que o agente deve mudar aqui?" autofocus />
+            <button type="submit" class="btn small primary" disabled={!comment.trim()}>Enviar ao agente</button>
+          </form>
+        {/if}
+      {/each}
+    </div>
 
     <form onsubmit={commit}>
       <label for="commit-message" class="small muted">Mensagem do commit</label>
@@ -109,10 +149,15 @@
   .add { color: var(--ok-text); font-size: 11.5px; }
   .del { color: var(--danger-text); font-size: 11.5px; }
   .diff { flex: 1; min-height: 0; margin: 0; padding: 10px 0; overflow: auto; background: var(--bg); font-family: var(--mono); font-size: 12px; line-height: 1.75; user-select: text; }
-  .diff span { display: block; padding: 0 14px; white-space: pre; color: var(--text-2); }
-  .diff .add { background: var(--ok-bg); color: var(--ok-text); font-size: 12px; }
-  .diff .del { background: var(--danger-bg); color: var(--danger-text); font-size: 12px; }
-  .diff .hunk { color: var(--muted); }
+  .line { display: flex; width: 100%; min-width: max-content; padding: 0 14px 0 0; border: 0; background: transparent; text-align: left; font: inherit; color: var(--text-2); cursor: pointer; }
+  .line:hover, .line.on { outline: 1px solid var(--border-strong); outline-offset: -1px; }
+  .num { width: 44px; flex-shrink: 0; padding-right: 8px; text-align: right; font-size: 11px; color: var(--faint); user-select: none; }
+  .code { white-space: pre; }
+  .line.add { background: var(--ok-bg); color: var(--ok-text); }
+  .line.del { background: var(--danger-bg); color: var(--danger-text); }
+  .line.hunk { color: var(--muted); }
+  .comment { display: flex; gap: 6px; padding: 6px 14px 8px 44px; background: var(--surface); font-family: var(--font); }
+  .comment .input { flex: 1; min-height: 30px; font-size: 12.5px; }
   form { padding: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
   form .input { width: 100%; font-size: 12.5px; }
 </style>

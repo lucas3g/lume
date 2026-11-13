@@ -130,6 +130,7 @@ impl EventSink for RecordingEvents {
     }
     fn accounts_changed(&self) {}
     fn history_progress(&self, _done: usize, _total: usize) {}
+    fn terminal_output(&self, _terminal_id: &str, _data: &[u8]) {}
 }
 
 pub struct FixedClock(pub i64);

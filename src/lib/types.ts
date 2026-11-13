@@ -34,6 +34,13 @@ export interface Conversation {
   updated_at: number;
 }
 
+/** Imagem colada no campo de mensagem, já em base64. */
+export interface PastedImage {
+  name: string;
+  media_type: string;
+  data: string;
+}
+
 export type Role = "user" | "assistant" | "notice" | "tool";
 
 export interface Message {

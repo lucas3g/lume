@@ -9,6 +9,7 @@
   import ChangesPanel from "../components/panel/ChangesPanel.svelte";
   import EnvironmentPanel from "../components/panel/EnvironmentPanel.svelte";
   import FilesPanel from "../components/panel/FilesPanel.svelte";
+  import TerminalPanel from "../components/panel/TerminalPanel.svelte";
   import PermissionCard from "../components/PermissionCard.svelte";
   import PlanCard from "../components/PlanCard.svelte";
   import QuestionCard from "../components/QuestionCard.svelte";
@@ -22,7 +23,7 @@
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
   import { parseToolUse } from "../tools";
-  import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type View } from "../types";
+  import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
   import { onMount } from "svelte";
 
   interface Props {
@@ -42,6 +43,9 @@
   let openArtifact = $state<Artifact | null>(null);
   /** Caminhos dos arquivos a enviar com a próxima mensagem. */
   let attachments = $state<string[]>([]);
+  /** Imagens coladas, com a prévia (data URL) para a miniatura. */
+  let pasted = $state<(PastedImage & { preview: string })[]>([]);
+  let pastedCount = 0;
   let scroller = $state<HTMLElement>();
 
 
@@ -56,7 +60,7 @@
   const projectId = $derived(conversation ? conversation.project_id : projects.pendingId);
   const agentModel = $derived(agents.list.find((a) => a.id === agentId)?.model ?? null);
   const effort = $derived(conversation?.effort ?? newEffort);
-  const canSend = $derived(draft.trim().length > 0 && !turn);
+  const canSend = $derived((draft.trim().length > 0 || pasted.length > 0) && !turn);
   /** Lista de comandos: aparece enquanto o texto é só "/" seguido do começo de um nome. */
   const commandQuery = $derived(commandsDismissed ? null : (draft.match(/^\/(\S*)$/)?.[1] ?? null));
   const commandMatches = $derived(
@@ -79,7 +83,32 @@
     { id: "environment", label: "Ambiente", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01", needsFolder: false },
     { id: "files", label: "Arquivos", icon: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", needsFolder: true },
     { id: "changes", label: "Alterações", icon: "M12 4v8M8 8h8M8 18h8M5 3h14v18H5z", needsFolder: true },
+    { id: "terminal", label: "Terminal", icon: "M4 5h16v14H4zM7 9l3 3-3 3M12 15h5", needsFolder: true },
   ];
+
+  /** Imagens coladas no campo entram como anexos, com miniatura. */
+  async function onPaste(event: ClipboardEvent) {
+    const files = [...(event.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    const read = (file: File) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    for (const file of files) {
+      const preview = await read(file);
+      const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+      pastedCount += 1;
+      pasted = [...pasted, { name: file.name || `imagem-${pastedCount}.${ext}`, media_type: file.type, data: preview.split(",")[1] ?? "", preview }];
+    }
+  }
+
+  function removePasted(index: number) {
+    pasted = pasted.filter((_, i) => i !== index);
+  }
 
   function meta(message: Message, key: "context" | "attachments"): string[] {
     if (!message.meta) return [];
@@ -146,10 +175,20 @@
     if (!canSend) return;
     const text = draft.trim();
     const files = attachments;
+    const images = pasted.map(({ name, media_type, data }) => ({ name, media_type, data }));
     draft = "";
     attachments = [];
-    await send(text, { model, agentId, projectId, effort, attachments: files });
+    pasted = [];
+    await send(text, { model, agentId, projectId, effort, attachments: files, images });
   }
+
+  // Um painel pediu para inserir texto no campo (ex.: comentário em uma linha do diff).
+  $effect(() => {
+    const insert = workspace.composerInsert;
+    if (!insert) return;
+    workspace.composerInsert = null;
+    draft = draft.trim() ? `${draft.trimEnd()}\n\n${insert}` : insert;
+  });
 
   function pickCommand(name: string) {
     draft = `/${name} `;
@@ -389,6 +428,16 @@
               <button type="button" class="btn small" onclick={stopEditing}>Cancelar</button>
             </div>
           {/if}
+          {#if pasted.length}
+            <div class="thumbs" role="list" aria-label="Imagens coladas">
+              {#each pasted as image, i (image.preview)}
+                <span class="thumb" role="listitem">
+                  <img src={image.preview} alt={image.name} />
+                  <button type="button" aria-label={`Remover a imagem ${image.name}`} onclick={() => removePasted(i)}>×</button>
+                </span>
+              {/each}
+            </div>
+          {/if}
           {#if attachments.length}
             <div class="files">
               {#each attachments as path (path)}
@@ -403,7 +452,7 @@
             <button type="button" class="tool" aria-label="Anexar arquivos" title="Anexar arquivos" onclick={attach}>
               <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
-            <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos" bind:value={draft} onkeydown={onKeydown}></textarea>
+            <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos · cole imagens aqui" bind:value={draft} onkeydown={onKeydown} onpaste={onPaste}></textarea>
             {#if turn}
               <button type="button" class="send stop" aria-label="Parar a resposta" title="Parar" onclick={cancel}>
                 <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5" /></svg>
@@ -460,6 +509,8 @@
         <EnvironmentPanel {conversation} artifacts={allArtifacts} onopenartifact={(a) => (openArtifact = a)} {onnavigate} />
       {:else if conversation && panel === "files"}
         <FilesPanel {conversation} />
+      {:else if conversation && panel === "terminal"}
+        {#key conversation.id}<TerminalPanel {conversation} />{/key}
       {:else if conversation}
         <ChangesPanel {conversation} />
       {/if}
@@ -559,6 +610,10 @@
   .commands .mono { flex-shrink: 0; font-size: 12.5px; }
   .commands .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 
+  .thumbs { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 4px 0; }
+  .thumb { position: relative; width: 72px; height: 72px; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; background: var(--bg); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb button { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 13px; line-height: 1; }
   .files { display: flex; flex-wrap: wrap; gap: 6px; }
   .user .files { margin-bottom: 8px; }
   .file { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); font-size: 12px; color: var(--text-2); white-space: nowrap; }

@@ -14,7 +14,7 @@ use crate::domain::{
     account::{earliest_reset, pick_next, Account},
     workspace::context_percent,
     chat::{
-        tool_message, Conversation, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
+        tool_message, Attachment, Conversation, PermissionDecision, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
         ROLE_TOOL, ROLE_USER,
     },
 };
@@ -71,19 +71,22 @@ enum Handoff {
 }
 
 impl SendMessage {
-    /// `attachment_paths`: arquivos escolhidos pelo usuário para acompanhar a mensagem.
+    /// `attachment_paths`: arquivos escolhidos pelo usuário; `pasted`: anexos que já
+    /// chegaram com conteúdo (ex.: imagens coladas no campo de mensagem).
     pub async fn execute(
         &self,
         conversation_id: &str,
         text: &str,
         attachment_paths: &[String],
+        pasted: Vec<Attachment>,
         mut control: TurnControl,
     ) -> AppResult<()> {
         let conversation = self
             .conversations
             .get(conversation_id)?
             .ok_or_else(|| AppError("Conversa não encontrada.".into()))?;
-        let attachments = attachment_paths.iter().map(|p| self.files.load(p)).collect::<AppResult<Vec<_>>>()?;
+        let mut attachments = attachment_paths.iter().map(|p| self.files.load(p)).collect::<AppResult<Vec<_>>>()?;
+        attachments.extend(pasted);
         let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
         let title = self.store_user_message(&conversation, text, &names)?;
         let setup = self.prepare.prepare(&conversation, text)?;
@@ -343,7 +346,7 @@ pub fn make_title(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::application::fakes::*;
-    use crate::domain::{account::sample, chat::{Attachment, TurnRequest}, history::Snippet};
+    use crate::domain::{account::sample, chat::{AttachmentKind, TurnRequest}, history::Snippet};
 
     fn use_case(world: &World, engine: ScriptedEngine) -> SendMessage {
         SendMessage {
@@ -379,7 +382,7 @@ mod tests {
                 (vec![TurnEvent::Delta("resposta".into())], TurnEnd::Done { session_id: Some("s1".into()), text: "resposta".into() })
             }
         });
-        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
 
         let accounts = world.store.all().unwrap();
         assert_eq!(accounts[0].limited_until, Some(5000));
@@ -404,7 +407,7 @@ mod tests {
     async fn reports_earliest_reset_when_every_account_is_limited() {
         let world = World::with_accounts(vec![sample("a", 1), sample("b", 2)]);
         let engine = ScriptedEngine::new(|_, n| (vec![], TurnEnd::Limited { resets_at: Some(2000 + n as i64) }));
-        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
         assert_eq!(world.events.chat_events().last(), Some(&ChatEvent::Exhausted { resets_at: Some(2001) }));
     }
 
@@ -414,7 +417,7 @@ mod tests {
         world.store.set_flag(flags::AUTO_SWITCH, false).unwrap();
         let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Limited { resets_at: None }));
         let calls = engine.calls.clone();
-        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
         assert_eq!(*calls.lock().unwrap(), 1);
         assert!(matches!(world.events.chat_events().last(), Some(ChatEvent::Error { .. })));
         assert_eq!(world.store.all().unwrap()[0].limited_until, Some(1000 + DEFAULT_LIMIT_SECONDS));
@@ -427,7 +430,7 @@ mod tests {
             1 => (vec![], TurnEnd::AuthError("login".into())),
             _ => (vec![], TurnEnd::Done { session_id: None, text: "ok".into() }),
         });
-        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
         assert!(!world.store.all().unwrap()[0].auth_ok);
         assert!(world.store.messages("c1").unwrap()[1].content.contains("precisa de novo login"));
     }
@@ -440,7 +443,7 @@ mod tests {
             assert!(req.extra_system.as_deref().unwrap().contains("[Índices]"));
             (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })
         });
-        use_case(&world, engine).execute("c1", "Como indexar pedidos?", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "Como indexar pedidos?", &[], vec![], TurnControl::new().0).await.unwrap();
         let events = world.events.chat_events();
         assert_eq!(events[0], ChatEvent::Title { title: "Como indexar pedidos?".into() });
         assert!(events.contains(&ChatEvent::Context { titles: vec!["Índices".into()] }));
@@ -467,7 +470,7 @@ mod tests {
             ];
             (events, TurnEnd::Done { session_id: None, text: "Vou ler o arquivo.Pronto.".into() })
         });
-        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
 
         let messages = world.store.messages("c1").unwrap();
         let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
@@ -486,14 +489,14 @@ mod tests {
 
         let world = World::with_accounts(vec![sample("a", 1)]);
         let (control, _handle) = TurnControl::new();
-        use_case(&world, ScriptedEngine::new(script)).execute("c1", "olá", &[], control).await.unwrap();
+        use_case(&world, ScriptedEngine::new(script)).execute("c1", "olá", &[], vec![], control).await.unwrap();
         assert!(world.events.chat_events().iter().any(|e| matches!(e, ChatEvent::Permission { tool, .. } if tool == "Edit")));
 
         let world = World::with_accounts(vec![sample("a", 1)]);
         world.store.allow_tool("c1", "Edit").unwrap();
         let engine = ScriptedEngine::new(script);
         let decisions = engine.decisions.clone();
-        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
         assert!(!world.events.chat_events().iter().any(|e| matches!(e, ChatEvent::Permission { .. })), "não pergunta de novo");
         assert_eq!(*decisions.lock().unwrap(), [PermissionDecision::new("r1", true)]);
     }
@@ -506,14 +509,14 @@ mod tests {
             assert_eq!(req.config_dir, None);
             (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })
         });
-        use_case(&world, engine).execute("c1", "olá", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
         let messages = world.store.messages("c1").unwrap();
         assert_eq!(messages[1].content, "A conta a está quase no limite · usando b");
         assert_eq!(messages[2].account_id.as_deref(), Some("b"));
 
         world.store.set_flag(flags::SWITCH_EARLY, false).unwrap();
         let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Done { session_id: None, text: "ok".into() }));
-        use_case(&world, engine).execute("c1", "de novo", &[], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "de novo", &[], vec![], TurnControl::new().0).await.unwrap();
         assert_eq!(world.store.messages("c1").unwrap().last().unwrap().account_id.as_deref(), Some("a"));
     }
 
@@ -524,13 +527,22 @@ mod tests {
             assert_eq!(req.attachments, [Attachment::text("nota.md", "conteúdo")]);
             (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })
         });
-        use_case(&world, engine).execute("c1", "resuma", &["nota.md".into()], TurnControl::new().0).await.unwrap();
+        use_case(&world, engine).execute("c1", "resuma", &["nota.md".into()], vec![], TurnControl::new().0).await.unwrap();
         assert_eq!(world.store.messages("c1").unwrap()[0].meta.as_deref(), Some(r#"{"attachments":["nota.md"]}"#));
 
+        let pasted = Attachment { name: "colada.png".into(), kind: AttachmentKind::Image, media_type: "image/png".into(), data: "AAAA".into() };
+        let engine = ScriptedEngine::new(|req, _| {
+            assert_eq!(req.attachments.len(), 2, "arquivo escolhido e imagem colada");
+            assert_eq!(req.attachments[1].name, "colada.png");
+            (vec![], TurnEnd::Done { session_id: None, text: "ok".into() })
+        });
+        use_case(&world, engine).execute("c1", "veja", &["nota.md".into()], vec![pasted], TurnControl::new().0).await.unwrap();
+        assert!(world.store.messages("c1").unwrap()[2].meta.as_deref().unwrap().contains("colada.png"));
+
         let missing = use_case(&world, ScriptedEngine::new(|_, _| unreachable!()))
-            .execute("c1", "resuma", &["sumiu.txt".into()], TurnControl::new().0)
+            .execute("c1", "resuma", &["sumiu.txt".into()], vec![], TurnControl::new().0)
             .await;
         assert!(missing.is_err(), "arquivo ilegível impede o envio");
-        assert_eq!(world.store.messages("c1").unwrap().len(), 2, "e nada é gravado");
+        assert_eq!(world.store.messages("c1").unwrap().len(), 4, "e nada é gravado");
     }
 }

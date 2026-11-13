@@ -27,7 +27,7 @@
     error = null;
     try {
       const conversation = await api.createConversation(DEFAULT_MODEL);
-      await api.sendMessage(conversation.id, message, []);
+      await api.sendMessage(conversation.id, message, [], []);
       text = "";
       await api.quickEntrySent(conversation.id);
     } catch (e) {

@@ -1,7 +1,7 @@
 // Estado das conversas: lista, mensagens da conversa aberta e respostas em andamento.
 
 import { api, errorMessage } from "../api";
-import { DEFAULT_MODEL, type ChatEvent, type Conversation, type Message } from "../types";
+import { DEFAULT_MODEL, type ChatEvent, type Conversation, type Message, type PastedImage } from "../types";
 import { loadProjects } from "./projects.svelte";
 
 /** Resposta em andamento de uma conversa. */
@@ -110,6 +110,8 @@ export interface SendOptions {
   effort?: string;
   /** Caminhos dos arquivos anexados. */
   attachments?: string[];
+  /** Imagens coladas no campo de mensagem. */
+  images?: PastedImage[];
 }
 
 function fileName(path: string): string {
@@ -143,7 +145,7 @@ export function cancelEdit(): void {
 }
 
 export async function send(text: string, options: SendOptions = {}): Promise<void> {
-  const { model = DEFAULT_MODEL, agentId = null, projectId = null, effort, attachments = [] } = options;
+  const { model = DEFAULT_MODEL, agentId = null, projectId = null, effort, attachments = [], images = [] } = options;
   if (chat.editing) {
     const { messageId } = chat.editing;
     chat.editing = null;
@@ -170,11 +172,12 @@ export async function send(text: string, options: SendOptions = {}): Promise<voi
   }
   chat.outcomes[id] = null;
   chat.turns[id] = { text: "", status: null, account: null, context: [] };
-  const sent = localMessage("user", text);
-  if (attachments.length) sent.meta = JSON.stringify({ attachments: attachments.map(fileName) });
+  const sent = localMessage("user", text || "Veja as imagens anexadas.");
+  const names = [...attachments.map(fileName), ...images.map((i) => i.name)];
+  if (names.length) sent.meta = JSON.stringify({ attachments: names });
   chat.messages.push(sent);
   try {
-    await api.sendMessage(id, text, attachments);
+    await api.sendMessage(id, text, attachments, images);
   } catch (e) {
     delete chat.turns[id];
     chat.outcomes[id] = { kind: "error", message: errorMessage(e) };

@@ -4,14 +4,14 @@ use super::{windows, Container};
 use crate::application::{extensions::SkillView, flags, store::ServerPage, AppError, AppResult, ChatEvent};
 use crate::domain::{
     account::Account,
-    chat::{needs_user, Conversation, Message, PermissionDecision, Switch},
+    chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, Connector},
     history::{HistSession, HistoryStatus},
     project::{MemoryFile, Project, ProjectFile},
     store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tauri::{AppHandle, State};
 
@@ -103,19 +103,38 @@ pub fn set_conversation_mode(app: App<'_>, id: String, mode: String) -> AppResul
     app.conversations.set_permission_mode(&id, &mode)
 }
 
+/// Imagem colada no campo de mensagem: já chega com o conteúdo em base64.
+#[derive(Deserialize)]
+pub struct PastedImage {
+    name: String,
+    media_type: String,
+    data: String,
+}
+
 /// Inicia o turno em segundo plano; o andamento chega pelos eventos de conversa.
 #[tauri::command]
-pub fn send_message(app: App<'_>, conversation_id: String, text: String, attachments: Vec<String>) -> AppResult<()> {
+pub fn send_message(
+    app: App<'_>,
+    conversation_id: String,
+    text: String,
+    attachments: Vec<String>,
+    images: Vec<PastedImage>,
+) -> AppResult<()> {
     let text = text.trim().to_owned();
-    if text.is_empty() {
+    if text.is_empty() && images.is_empty() {
         return Err(AppError("Escreva uma mensagem.".into()));
     }
+    let text = if text.is_empty() { "Veja as imagens anexadas.".to_owned() } else { text };
+    let pasted: Vec<Attachment> = images
+        .into_iter()
+        .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
+        .collect();
     let Some(control) = app.running.start(&conversation_id) else {
         return Err(AppError("Aguarde a resposta em andamento.".into()));
     };
     let container = Arc::clone(&app);
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = container.send_message.execute(&conversation_id, &text, &attachments, control).await {
+        if let Err(e) = container.send_message.execute(&conversation_id, &text, &attachments, pasted, control).await {
             container.events.chat(&conversation_id, ChatEvent::Error { message: e.0 });
         }
         container.running.finish(&conversation_id);
@@ -321,6 +340,28 @@ pub fn workspace_diff(app: App<'_>, conversation_id: String, path: String) -> Ap
 #[tauri::command(async)]
 pub fn workspace_commit(app: App<'_>, conversation_id: String, message: String) -> AppResult<()> {
     app.workspace.commit(&conversation_id, &message)
+}
+
+// ---- terminal integrado
+
+#[tauri::command(async)]
+pub fn terminal_open(app: App<'_>, conversation_id: String, cols: u16, rows: u16) -> AppResult<String> {
+    app.terminals.open(&conversation_id, cols, rows)
+}
+
+#[tauri::command(async)]
+pub fn terminal_write(app: App<'_>, id: String, data: String) -> AppResult<()> {
+    app.terminals.write(&id, data.as_bytes())
+}
+
+#[tauri::command(async)]
+pub fn terminal_resize(app: App<'_>, id: String, cols: u16, rows: u16) -> AppResult<()> {
+    app.terminals.resize(&id, cols, rows)
+}
+
+#[tauri::command(async)]
+pub fn terminal_close(app: App<'_>, id: String) {
+    app.terminals.close(&id);
 }
 
 // ---- conectores
