@@ -31,6 +31,18 @@ pnpm tauri build --bundles app   # macOS: src-tauri/target/release/bundle/macos/
 
 O instalador para Windows é compilado pelo GitHub Actions (`.github/workflows/build-windows.yml`) e fica disponível como artefato da execução.
 
+## Publicar uma versão
+
+Uma tag `vX.Y.Z` dispara `.github/workflows/release.yml`, que publica no GitHub Releases o `.dmg` (macOS), o instalador NSIS (Windows) e o `latest.json` consultado pelo updater do app. Versões instaladas avisam e atualizam sozinhas.
+
+O workflow precisa dos segredos `TAURI_SIGNING_PRIVATE_KEY` (conteúdo de `~/.tauri/lume.key`) e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (vazio) no repositório. A chave pública correspondente está em `src-tauri/tauri.conf.json`; sem a privada não dá para assinar atualizações.
+
+```sh
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/lume.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
+git tag v0.2.0 && git push origin v0.2.0
+```
+
 ## Arquitetura
 
 O núcleo (`src-tauri/src`) segue Clean Architecture, com as dependências apontando para dentro:
