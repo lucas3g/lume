@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open as pickFiles } from "@tauri-apps/plugin-dialog";
+  import { open as pickFiles, save as pickSave } from "@tauri-apps/plugin-dialog";
   import { tick } from "svelte";
   import { extractArtifacts, versionsOf, type Artifact } from "../artifacts";
   import ArtifactPanel from "../components/ArtifactPanel.svelte";
@@ -18,7 +18,7 @@
   import { activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
   import { api } from "../api";
-  import { activeConversation, cancel, chat, decide, send, setAgent, setEffort, setMode, setModel } from "../state/chat.svelte";
+  import { activeConversation, branchAt, cancel, cancelEdit, chat, decide, regenerate, send, setAgent, setEffort, setMode, setModel, startEdit } from "../state/chat.svelte";
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
   import { parseToolUse } from "../tools";
@@ -94,6 +94,45 @@
 
   function contextLabel(count: number): string {
     return count === 1 ? "Usou 1 conversa anterior como contexto" : `Usou ${count} conversas anteriores como contexto`;
+  }
+
+  function edit(message: Message) {
+    startEdit(message);
+    draft = message.content;
+  }
+
+  function stopEditing() {
+    cancelEdit();
+    draft = "";
+  }
+
+  async function copyText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* sem área de transferência disponível */
+    }
+  }
+
+  /** Ramo com tudo até esta mensagem, inclusive. */
+  const branchAfter = (message: Message) => branchAt(message.id + 1);
+
+  /** A conversa em Markdown, para guardar ou compartilhar. */
+  function toMarkdown(): string {
+    const parts = chat.messages.map((m) => {
+      if (m.role === "user") return `## Você\n\n${m.content}`;
+      if (m.role === "assistant") return `## Assistente\n\n${m.content}`;
+      if (m.role === "notice") return `> ${m.content}`;
+      const tool = parseToolUse(m.content);
+      return tool ? `> Ferramenta: ${tool.name}` : "";
+    });
+    return `# ${conversation?.title ?? "Conversa"}\n\n${parts.filter(Boolean).join("\n\n")}\n`;
+  }
+
+  async function exportConversation() {
+    const base = (conversation?.title ?? "conversa").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 60);
+    const path = await pickSave({ title: "Exportar conversa", defaultPath: `${base}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
+    if (path) await api.saveTextFile(path, toMarkdown());
   }
 
   async function attach() {
@@ -199,6 +238,11 @@
         <span class="slash" aria-hidden="true">/</span>
       {/if}
       <h1>{conversation?.title ?? "Nova conversa"}</h1>
+      {#if chat.messages.length}
+        <button type="button" class="btn icon" aria-label="Exportar a conversa em Markdown" title="Exportar (.md)" onclick={exportConversation}>
+          <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M4 19h16" /></svg>
+        </button>
+      {/if}
       <div class="panels" role="group" aria-label="Painel lateral">
         {#each PANELS as p (p.id)}
           {#if isAgent || !p.needsFolder}
@@ -240,11 +284,18 @@
         {#each chat.messages as message (message.id)}
           {#if message.role === "user"}
             {@const names = meta(message, "attachments")}
-            <div class="user">
-              {#if names.length}
-                <div class="files">{#each names as n}<span class="file">{n}</span>{/each}</div>
+            <div class="user-wrap">
+              <div class="user">
+                {#if names.length}
+                  <div class="files">{#each names as n}<span class="file">{n}</span>{/each}</div>
+                {/if}
+                {message.content}
+              </div>
+              {#if !turn}
+                <div class="msg-actions">
+                  <button type="button" onclick={() => edit(message)}>Editar</button>
+                </div>
               {/if}
-              {message.content}
             </div>
           {:else if message.role === "tool"}
             {@const tool = parseToolUse(message.content)}
@@ -258,6 +309,13 @@
                 <div class="context" title={titles.join("\n")}>{contextLabel(titles.length)}</div>
               {/if}
               <div class="markdown">{@html renderMarkdown(message.content)}</div>
+              {#if !turn}
+                <div class="msg-actions">
+                  <button type="button" onclick={() => copyText(message.content)}>Copiar</button>
+                  <button type="button" onclick={() => regenerate(message)}>Regenerar</button>
+                  <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
+                </div>
+              {/if}
               {#each extractArtifacts(message.content) as artifact (artifact.code)}
                 <button type="button" class="artifact" onclick={() => (openArtifact = artifact)}>
                   <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-text)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5" /></svg>
@@ -325,6 +383,12 @@
         {/if}
 
         <div class="composer">
+          {#if chat.editing}
+            <div class="editing">
+              <span>Editando a mensagem: ao enviar, a conversa continua em um ramo novo a partir dela.</span>
+              <button type="button" class="btn small" onclick={stopEditing}>Cancelar</button>
+            </div>
+          {/if}
           {#if attachments.length}
             <div class="files">
               {#each attachments as path (path)}
@@ -430,7 +494,15 @@
   .welcome { padding: 96px 0 0; text-align: center; display: flex; flex-direction: column; gap: 8px; }
   .welcome h2 { font-family: var(--display); font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
 
-  .user { align-self: flex-end; max-width: 520px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 14px 14px 4px 14px; background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .user-wrap { align-self: flex-end; max-width: 520px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .user { padding: 10px 14px; border: 1px solid var(--border); border-radius: 14px 14px 4px 14px; background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
+  .user-wrap:hover .msg-actions, .user-wrap:focus-within .msg-actions, .assistant:hover .msg-actions, .assistant:focus-within .msg-actions { opacity: 1; }
+  .msg-actions button { min-height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; font-size: 12px; color: var(--muted); }
+  .msg-actions button:hover { background: var(--hover); color: var(--text); }
+  .editing { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--muted); }
+  .editing span { flex: 1; }
+  @media (prefers-reduced-motion: reduce) { .msg-actions { transition: none; } }
   .assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; color: var(--text-body); }
   .context { align-self: flex-start; padding: 2px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--muted); }
   .notice { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }

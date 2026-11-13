@@ -8,6 +8,7 @@ use crate::domain::chat::{Conversation, Message, EFFORTS, KIND_CHAT, PERMISSION_
 use std::sync::Arc;
 
 pub const NEW_CONVERSATION_TITLE: &str = "Nova conversa";
+const BRANCH_SUFFIX: &str = " · ramo";
 
 pub struct ManageConversations {
     pub conversations: Arc<dyn ConversationRepository>,
@@ -39,6 +40,19 @@ impl ManageConversations {
             return Err(AppError("Modo de permissão desconhecido.".into()));
         }
         self.conversations.set_permission_mode(id, mode)
+    }
+
+    /// Nova conversa com as mesmas configurações e as mensagens anteriores a
+    /// `before_message`; o diálogo copiado vira contexto do primeiro turno.
+    pub fn branch(&self, id: &str, before_message: i64) -> AppResult<Conversation> {
+        let source = self.get(id)?;
+        let new_id = self.ids.new_id();
+        let title = match source.title.strip_suffix(BRANCH_SUFFIX) {
+            Some(base) => format!("{base}{BRANCH_SUFFIX}"),
+            None => format!("{}{BRANCH_SUFFIX}", source.title),
+        };
+        self.conversations.copy(id, &new_id, &title, before_message)?;
+        self.get(&new_id)
     }
 
     /// O usuário liberou de vez uma ferramenta nesta conversa.
@@ -83,5 +97,24 @@ mod tests {
         assert!(uc.set_permission_mode(&session.id, "qualquer").is_err());
         let saved = world.conversation(&session.id);
         assert_eq!((saved.effort.as_str(), saved.permission_mode.as_str()), ("max", "plan"));
+    }
+
+    #[test]
+    fn branch_copies_settings_and_earlier_messages_without_the_session() {
+        let world = World::with_accounts(vec![]);
+        let uc = ManageConversations { conversations: world.store.clone(), ids: Arc::new(SequentialIds::default()), chat_dir: "/tmp".into() };
+        world.store.update("c1", Some("Índices"), Some("sessao-1"), None).unwrap();
+        world.store.set_effort("c1", "high").unwrap();
+        for (role, text) in [("user", "oi"), ("assistant", "olá"), ("user", "tchau"), ("assistant", "até")] {
+            world.store.add_message("c1", role, text, None, None).unwrap();
+        }
+        let third = world.store.messages("c1").unwrap()[2].id;
+
+        let branch = uc.branch("c1", third).unwrap();
+        assert_eq!((branch.title.as_str(), branch.effort.as_str(), branch.cli_session_id), ("Índices · ramo", "high", None));
+        let copied: Vec<String> = world.store.messages(&branch.id).unwrap().into_iter().map(|m| m.content).collect();
+        assert_eq!(copied, ["oi", "olá"]);
+        assert_eq!(world.store.messages("c1").unwrap().len(), 4, "a original fica intacta");
+        assert_eq!(uc.branch(&branch.id, i64::MAX).unwrap().title, "Índices · ramo", "o sufixo não se acumula");
     }
 }

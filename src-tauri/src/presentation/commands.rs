@@ -71,6 +71,12 @@ pub fn create_conversation(app: App<'_>, model: String) -> AppResult<Conversatio
     app.conversations.create(&model)
 }
 
+/// Nova conversa com as mensagens anteriores a `before_message` (editar, regenerar ou ramificar).
+#[tauri::command]
+pub fn branch_conversation(app: App<'_>, id: String, before_message: i64) -> AppResult<Conversation> {
+    app.conversations.branch(&id, before_message)
+}
+
 #[tauri::command]
 pub fn delete_conversation(app: App<'_>, id: String) -> AppResult<()> {
     app.running.cancel(&id);

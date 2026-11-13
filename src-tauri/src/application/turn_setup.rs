@@ -3,11 +3,11 @@
 
 use super::{
     flags,
-    ports::{AgentRepository, ConnectorRepository, HistoryIndex, ProjectRepository, Settings, SkillRepository},
+    ports::{AgentRepository, ConnectorRepository, ConversationRepository, HistoryIndex, ProjectRepository, Settings, SkillRepository},
     AppResult,
 };
 use crate::domain::{
-    chat::Conversation,
+    chat::{transcript_prompt, Conversation},
     extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
     history::context_prompt,
     project::project_prompt,
@@ -49,9 +49,20 @@ pub struct PrepareTurn {
     pub agents: Arc<dyn AgentRepository>,
     pub projects: Arc<dyn ProjectRepository>,
     pub connectors: Arc<dyn ConnectorRepository>,
+    pub conversations: Arc<dyn ConversationRepository>,
 }
 
 impl PrepareTurn {
+    /// Sem sessão no provedor, o diálogo já gravado (menos a mensagem que está sendo enviada) vira contexto.
+    fn earlier_dialogue(&self, conversation: &Conversation) -> AppResult<Option<String>> {
+        if conversation.cli_session_id.is_some() {
+            return Ok(None);
+        }
+        let mut messages = self.conversations.messages(&conversation.id)?;
+        messages.pop();
+        Ok(transcript_prompt(&messages))
+    }
+
     pub fn prepare(&self, conversation: &Conversation, text: &str) -> AppResult<TurnSetup> {
         let agent = match &conversation.agent_id {
             Some(id) => self.agents.get(id)?,
@@ -88,7 +99,8 @@ impl PrepareTurn {
             Some(p) => project_prompt(p, &self.projects.knowledge(&p.id)?),
             None => None,
         };
-        let sections: Vec<String> = [Some(ARTIFACT_GUIDE.to_owned()), project_section, instructions, context_prompt(&snippets)]
+        let earlier = self.earlier_dialogue(conversation)?;
+        let sections: Vec<String> = [Some(ARTIFACT_GUIDE.to_owned()), project_section, instructions, earlier, context_prompt(&snippets)]
             .into_iter()
             .flatten()
             .collect();
@@ -125,7 +137,23 @@ mod tests {
             agents: world.store.clone(),
             projects: world.store.clone(),
             connectors: world.store.clone(),
+            conversations: world.store.clone(),
         }
+    }
+
+    #[test]
+    fn earlier_dialogue_is_context_only_while_there_is_no_provider_session() {
+        let world = World::with_accounts(vec![]);
+        world.store.add_message("c1", "user", "Guarde o número 417.", None, None).unwrap();
+        world.store.add_message("c1", "assistant", "Guardado.", None, None).unwrap();
+        world.store.add_message("c1", "user", "Qual número?", None, None).unwrap();
+        let system = prepare(&world).prepare(&world.conversation("c1"), "Qual número?").unwrap().extra_system.unwrap();
+        assert!(system.contains("Usuário: Guarde o número 417.\n\nAssistente: Guardado."));
+        assert!(!system.contains("Usuário: Qual número?"), "a mensagem atual não se repete");
+
+        world.store.update("c1", None, Some("s1"), None).unwrap();
+        let system = prepare(&world).prepare(&world.conversation("c1"), "Qual número?").unwrap().extra_system.unwrap();
+        assert!(!system.contains("Guarde o número"), "com sessão, o provedor já tem o contexto");
     }
 
     #[test]

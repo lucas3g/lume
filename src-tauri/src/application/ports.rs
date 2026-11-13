@@ -32,6 +32,9 @@ pub trait ConversationRepository: Send + Sync {
     /// Libera de vez uma ferramenta nesta conversa.
     fn allow_tool(&self, id: &str, tool: &str) -> AppResult<()>;
     fn update(&self, id: &str, title: Option<&str>, session: Option<&str>, model: Option<&str>) -> AppResult<()>;
+    /// Cria `new_id` com as configurações de `source_id` (sem a sessão do provedor)
+    /// e as mensagens de id menor que `before_message`.
+    fn copy(&self, source_id: &str, new_id: &str, title: &str, before_message: i64) -> AppResult<()>;
     fn set_agent(&self, id: &str, agent_id: Option<&str>) -> AppResult<()>;
     fn set_project(&self, id: &str, project_id: Option<&str>) -> AppResult<()>;
     fn set_context_percent(&self, id: &str, percent: i64) -> AppResult<()>;

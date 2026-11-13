@@ -54,6 +54,7 @@ pub fn run() {
             commands::list_conversations,
             commands::create_conversation,
             commands::delete_conversation,
+            commands::branch_conversation,
             commands::list_messages,
             commands::set_conversation_model,
             commands::set_conversation_effort,

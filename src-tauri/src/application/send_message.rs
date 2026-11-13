@@ -359,6 +359,7 @@ mod tests {
                 agents: world.store.clone(),
                 projects: world.store.clone(),
                 connectors: world.store.clone(),
+                conversations: world.store.clone(),
             },
             skills: world.skills.clone(),
             connectors: world.store.clone(),

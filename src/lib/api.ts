@@ -27,6 +27,8 @@ export const api = {
   listConversations: () => invoke<Conversation[]>("list_conversations"),
   createConversation: (model: string) => invoke<Conversation>("create_conversation", { model }),
   deleteConversation: (id: string) => invoke<void>("delete_conversation", { id }),
+  branchConversation: (id: string, beforeMessage: number) =>
+    invoke<Conversation>("branch_conversation", { id, beforeMessage }),
   listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
   setConversationModel: (id: string, model: string) => invoke<void>("set_conversation_model", { id, model }),
   setConversationEffort: (id: string, effort: string) => invoke<void>("set_conversation_effort", { id, effort }),

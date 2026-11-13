@@ -217,6 +217,37 @@ pub fn needs_user(tool: &str) -> bool {
     tool == TOOL_ASK || tool == TOOL_EXIT_PLAN
 }
 
+/// Tamanho máximo da transcrição enviada como contexto de uma conversa ramificada.
+const MAX_TRANSCRIPT_CHARS: usize = 60_000;
+
+/// Texto anexado ao prompt de sistema quando a conversa não tem sessão do
+/// provedor (ramo de outra conversa, ou importada): o diálogo até aqui.
+/// Fica com o fim da conversa se ela não couber inteira.
+pub fn transcript_prompt(messages: &[Message]) -> Option<String> {
+    let mut lines: Vec<String> = messages
+        .iter()
+        .filter_map(|m| match m.role.as_str() {
+            ROLE_USER => Some(format!("Usuário: {}", m.content.trim())),
+            ROLE_ASSISTANT => Some(format!("Assistente: {}", m.content.trim())),
+            ROLE_TOOL => serde_json::from_str::<serde_json::Value>(&m.content)
+                .ok()
+                .and_then(|v| v["name"].as_str().map(|n| format!("[o assistente usou a ferramenta {n}]"))),
+            _ => None,
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut total: usize = lines.iter().map(|l| l.chars().count() + 2).sum();
+    while total > MAX_TRANSCRIPT_CHARS && lines.len() > 1 {
+        total -= lines.remove(0).chars().count() + 2;
+    }
+    Some(format!(
+        "A conversa a seguir já aconteceu entre o usuário e você; continue a partir dela como se lembrasse de tudo.\n\n{}",
+        lines.join("\n\n")
+    ))
+}
+
 /// Conteúdo de uma mensagem de ferramenta: o que foi chamado e o que voltou.
 pub fn tool_message(name: &str, input: &str, output: Option<&str>, is_error: bool) -> String {
     let input: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
@@ -230,6 +261,28 @@ pub fn tool_message(name: &str, input: &str, output: Option<&str>, is_error: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message(role: &str, content: &str) -> Message {
+        Message { id: 1, role: role.into(), content: content.into(), account_id: None, meta: None, created_at: 0 }
+    }
+
+    #[test]
+    fn transcript_keeps_dialogue_and_names_tools() {
+        let messages = [
+            message(ROLE_USER, "Oi"),
+            message(ROLE_NOTICE, "troca de conta"),
+            message(ROLE_TOOL, &tool_message("Read", "{}", Some("x"), false)),
+            message(ROLE_ASSISTANT, "Olá!"),
+        ];
+        let text = transcript_prompt(&messages).unwrap();
+        assert!(text.contains("Usuário: Oi\n\n[o assistente usou a ferramenta Read]\n\nAssistente: Olá!"));
+        assert!(!text.contains("troca de conta"));
+        assert_eq!(transcript_prompt(&[message(ROLE_NOTICE, "x")]), None);
+
+        let long: Vec<Message> = (0..5).map(|i| message(ROLE_USER, &format!("{i}{}", "x".repeat(20_000)))).collect();
+        let text = transcript_prompt(&long).unwrap();
+        assert!(!text.contains("Usuário: 0") && text.contains("Usuário: 4"), "fica com o fim da conversa");
+    }
 
     #[test]
     fn tool_message_keeps_input_as_json_and_truncates_output() {

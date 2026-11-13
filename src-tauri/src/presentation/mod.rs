@@ -149,6 +149,7 @@ impl Container {
                     agents: store.clone(),
                     projects: store.clone(),
                     connectors: store.clone(),
+                    conversations: store.clone(),
                 },
                 skills,
                 connectors: store.clone(),

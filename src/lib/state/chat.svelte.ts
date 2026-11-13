@@ -38,6 +38,8 @@ export const chat = $state({
   turns: {} as Record<string, Turn>,
   outcomes: {} as Record<string, Outcome>,
   permissions: {} as Record<string, PermissionRequest>,
+  /** Mensagem do usuário sendo editada: o envio ramifica a conversa antes dela. */
+  editing: null as { messageId: number; original: string } | null,
 });
 
 let localId = -1;
@@ -56,6 +58,7 @@ export async function loadConversations(): Promise<void> {
 
 export async function openConversation(id: string | null): Promise<void> {
   chat.activeId = id;
+  chat.editing = null;
   chat.messages = id ? await api.listMessages(id) : [];
 }
 
@@ -113,8 +116,39 @@ function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
+/** Nova conversa com as mensagens anteriores a `beforeMessage`, já aberta. */
+export async function branchAt(beforeMessage: number): Promise<string | null> {
+  const id = chat.activeId;
+  if (!id) return null;
+  const branch = await api.branchConversation(id, beforeMessage);
+  chat.conversations.unshift(branch);
+  chat.activeId = branch.id;
+  chat.messages = await api.listMessages(branch.id);
+  return branch.id;
+}
+
+/** Repete a pergunta que gerou a resposta, em um ramo novo da conversa. */
+export async function regenerate(assistantMessage: Message): Promise<void> {
+  const asked = [...chat.messages].reverse().find((m) => m.role === "user" && m.id < assistantMessage.id);
+  if (!asked || !(await branchAt(asked.id))) return;
+  await send(asked.content);
+}
+
+export function startEdit(message: Message): void {
+  chat.editing = { messageId: message.id, original: message.content };
+}
+
+export function cancelEdit(): void {
+  chat.editing = null;
+}
+
 export async function send(text: string, options: SendOptions = {}): Promise<void> {
   const { model = DEFAULT_MODEL, agentId = null, projectId = null, effort, attachments = [] } = options;
+  if (chat.editing) {
+    const { messageId } = chat.editing;
+    chat.editing = null;
+    await branchAt(messageId);
+  }
   let id = chat.activeId;
   if (!id) {
     const created = await api.createConversation(model);

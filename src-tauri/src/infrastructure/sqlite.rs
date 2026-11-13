@@ -268,6 +268,25 @@ impl ConversationRepository for SqliteStore {
         Ok(())
     }
 
+    fn copy(&self, source_id: &str, new_id: &str, title: &str, before_message: i64) -> AppResult<()> {
+        let now = self.clock.now();
+        let c = self.conn();
+        c.execute(
+            "INSERT INTO conversations(id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,
+             context_percent,effort,permission_mode,created_at,updated_at)
+             SELECT ?,?,NULL,model,cwd,agent_id,kind,allowed_tools,project_id,NULL,effort,permission_mode,?,?
+             FROM conversations WHERE id=?",
+            params![new_id, title, now, now, source_id],
+        )?;
+        c.execute(
+            "INSERT INTO messages(conversation_id,role,content,account_id,meta,created_at)
+             SELECT ?,role,content,account_id,meta,created_at FROM messages
+             WHERE conversation_id=? AND id<? ORDER BY id",
+            params![new_id, source_id, before_message],
+        )?;
+        Ok(())
+    }
+
     fn set_agent(&self, id: &str, agent_id: Option<&str>) -> AppResult<()> {
         self.conn()
             .execute("UPDATE conversations SET agent_id=? WHERE id=?", params![agent_id, id])?;
