@@ -119,8 +119,8 @@
         <p class="muted">Quando o limite de uma conta acaba, a conversa continua na próxima da lista, sem perder o contexto.</p>
       </div>
       <div class="row">
-        <button type="button" class="btn" disabled={refreshing} onclick={refreshUsage}>{refreshing ? "Consultando…" : "Atualizar uso"}</button>
-        <button type="button" class="btn primary" disabled={busy} onclick={() => (adding = !adding)}>Adicionar conta</button>
+        <button type="button" class="btn" title="Consulta no provedor o uso atual de cada conta" disabled={refreshing} onclick={refreshUsage}>{refreshing ? "Consultando…" : "Atualizar uso"}</button>
+        <button type="button" class="btn primary" title="Entra com outra assinatura; o login abre no navegador" disabled={busy} onclick={() => (adding = !adding)}>Adicionar conta</button>
       </div>
     </header>
 
@@ -144,11 +144,11 @@
         {@const state = stateOf(a)}
         <div class="account">
           <div class="order">
-            <button type="button" class="btn icon" aria-label={`Subir ${a.name} na prioridade`} disabled={i === 0 || busy} onclick={() => run(() => moveAccount(a.id, -1))}>
+            <button type="button" class="btn icon" aria-label={`Subir ${a.name} na prioridade`} title={`Subir ${a.name} na prioridade`} disabled={i === 0 || busy} onclick={() => run(() => moveAccount(a.id, -1))}>
               <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6" /></svg>
             </button>
             <span>{i + 1}</span>
-            <button type="button" class="btn icon" aria-label={`Descer ${a.name} na prioridade`} disabled={i === accounts.list.length - 1 || busy} onclick={() => run(() => moveAccount(a.id, 1))}>
+            <button type="button" class="btn icon" aria-label={`Descer ${a.name} na prioridade`} title={`Descer ${a.name} na prioridade`} disabled={i === accounts.list.length - 1 || busy} onclick={() => run(() => moveAccount(a.id, 1))}>
               <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
             </button>
           </div>
@@ -197,7 +197,7 @@
           <div class="row actions">
             <Toggle checked={a.enabled} label={`Usar a conta ${a.name}`} onchange={(v) => run(() => api.setAccountEnabled(a.id, v))} />
             {#if a.config_dir}
-              <button type="button" class="btn icon" aria-label={`Remover a conta ${a.name}`} disabled={busy} onclick={() => run(() => api.removeAccount(a.id))}>
+              <button type="button" class="btn icon" aria-label={`Remover a conta ${a.name}`} title={`Remover a conta ${a.name}`} disabled={busy} onclick={() => run(() => api.removeAccount(a.id))}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
             {:else}

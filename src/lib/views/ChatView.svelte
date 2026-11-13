@@ -435,7 +435,7 @@
               {#each pasted as image, i (image.preview)}
                 <span class="thumb" role="listitem">
                   <img src={image.preview} alt={image.name} />
-                  <button type="button" aria-label={`Remover a imagem ${image.name}`} onclick={() => removePasted(i)}>×</button>
+                  <button type="button" aria-label={`Remover a imagem ${image.name}`} title={`Remover a imagem ${image.name}`} onclick={() => removePasted(i)}>×</button>
                 </span>
               {/each}
             </div>
@@ -445,7 +445,7 @@
               {#each attachments as path (path)}
                 <span class="file">
                   {baseName(path)}
-                  <button type="button" aria-label={`Remover o anexo ${baseName(path)}`} onclick={() => (attachments = attachments.filter((p) => p !== path))}>×</button>
+                  <button type="button" aria-label={`Remover o anexo ${baseName(path)}`} title={`Remover o anexo ${baseName(path)}`} onclick={() => (attachments = attachments.filter((p) => p !== path))}>×</button>
                 </span>
               {/each}
             </div>

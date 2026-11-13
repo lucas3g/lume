@@ -109,7 +109,7 @@
         <h1>Tarefas agendadas</h1>
         <p class="muted">Prompts que rodam sozinhos enquanto o Lume estiver aberto, cada rodada em uma conversa nova, com a troca de contas de sempre.</p>
       </div>
-      <button type="button" class="btn primary" onclick={startNew}>Nova tarefa</button>
+      <button type="button" class="btn primary" title="Agendar um pedido para rodar sozinho em uma conversa nova" onclick={startNew}>Nova tarefa</button>
     </header>
 
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
@@ -176,7 +176,7 @@
             <button type="button" class="btn small" disabled={busy} onclick={() => runNow(t)}>Rodar agora</button>
             <button type="button" class="btn small" onclick={() => startEdit(t)}>Editar</button>
             <Toggle checked={t.enabled} label={`Ativar ${t.name}`} onchange={(v) => run(() => api.setTaskEnabled(t.id, v))} />
-            <button type="button" class="btn icon" aria-label={`Excluir ${t.name}`} onclick={() => run(() => api.deleteTask(t.id))}>
+            <button type="button" class="btn icon" aria-label={`Excluir ${t.name}`} title={`Excluir ${t.name}`} onclick={() => run(() => api.deleteTask(t.id))}>
               <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
             </button>
           </div>

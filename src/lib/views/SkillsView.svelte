@@ -91,8 +91,8 @@
         <p class="muted">Instruções prontas que o assistente carrega quando a tarefa pede. Escolha quais valem para todos e quais cada agente pode usar.</p>
       </div>
       <div class="tabs" role="tablist" aria-label="Skills">
-        <button type="button" role="tab" aria-selected={tab === "installed"} class:on={tab === "installed"} onclick={() => (tab = "installed")}>Instaladas</button>
-        <button type="button" role="tab" aria-selected={tab === "store"} class:on={tab === "store"} onclick={() => (tab = "store")}>Loja</button>
+        <button type="button" role="tab" aria-selected={tab === "installed"} class:on={tab === "installed"} title="Skills instaladas e agentes criados" onclick={() => (tab = "installed")}>Instaladas</button>
+        <button type="button" role="tab" aria-selected={tab === "store"} class:on={tab === "store"} title="Plugins dos marketplaces do Claude Code" onclick={() => (tab = "store")}>Loja</button>
       </div>
       {#if tab === "installed"}
         <button type="button" class="btn primary" onclick={() => edit(null)}>Novo agente</button>
@@ -142,7 +142,7 @@
               <div class="suggested">
                 <span class="muted small">Skills recomendadas (ligadas ao salvar):</span>
                 {#each suggested as s (s)}
-                  <span class="chip">{s}<button type="button" aria-label={`Não usar ${s}`} onclick={() => (suggested = suggested.filter((x) => x !== s))}>×</button></span>
+                  <span class="chip">{s}<button type="button" aria-label={`Não usar ${s}`} title={`Não usar ${s}`} onclick={() => (suggested = suggested.filter((x) => x !== s))}>×</button></span>
                 {/each}
               </div>
             {/if}

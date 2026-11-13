@@ -7,7 +7,7 @@
   let { checked, label, onchange }: Props = $props();
 </script>
 
-<button type="button" role="switch" aria-checked={checked} aria-label={label} class:on={checked} onclick={() => onchange(!checked)}>
+<button type="button" role="switch" aria-checked={checked} aria-label={label} title={label} class:on={checked} onclick={() => onchange(!checked)}>
   <span></span>
 </button>
 

@@ -54,18 +54,18 @@
     <span class="title" role="status">{feedback ?? artifact.title}</span>
     {#if versions.length > 1}
       <div class="versions">
-        <button type="button" class="btn icon" aria-label="Versão anterior" disabled={index === 0} onclick={() => index--}>
+        <button type="button" class="btn icon" aria-label="Versão anterior" title="Versão anterior" disabled={index === 0} onclick={() => index--}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
         </button>
         <span>Versão {index + 1} de {versions.length}</span>
-        <button type="button" class="btn icon" aria-label="Próxima versão" disabled={index === versions.length - 1} onclick={() => index++}>
+        <button type="button" class="btn icon" aria-label="Próxima versão" title="Próxima versão" disabled={index === versions.length - 1} onclick={() => index++}>
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
         </button>
       </div>
     {/if}
     <button type="button" class="btn small" onclick={copy}>Copiar</button>
     <button type="button" class="btn small" onclick={exportFile}>Exportar</button>
-    <button type="button" class="btn icon" aria-label="Fechar o artifact" onclick={onclose}>
+    <button type="button" class="btn icon" aria-label="Fechar o artifact" title="Fechar o artifact" onclick={onclose}>
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>
   </header>

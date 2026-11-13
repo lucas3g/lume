@@ -37,23 +37,52 @@
   const PASTA = "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z";
   const BALAO = "M4 5h16v11H9l-5 4z";
 
-  const SHORTCUTS: { id: View; label: string; icon: string }[] = [
-    { id: "skills", label: "Skills e agentes", icon: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11" },
-    { id: "connectors", label: "Conectores", icon: "M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" },
-    { id: "tasks", label: "Tarefas agendadas", icon: "M8 3v3M16 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 14l2 2 4-4" },
-    { id: "history", label: "Histórico importado", icon: "M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" },
+  const SHORTCUTS: { id: View; label: string; hint: string; icon: string }[] = [
+    { id: "skills", label: "Skills e agentes", hint: "Skills instaladas, agentes com instruções próprias e a loja de plugins", icon: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11" },
+    { id: "connectors", label: "Conectores", hint: "Serviços e servidores MCP que o assistente pode usar", icon: "M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" },
+    { id: "tasks", label: "Tarefas agendadas", hint: "Pedidos que rodam sozinhos em horários definidos", icon: "M8 3v3M16 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 14l2 2 4-4" },
+    { id: "history", label: "Histórico importado", hint: "Conversas antigas do Claude Code e do Claude Desktop usadas como contexto", icon: "M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" },
   ];
 
   const matches = $derived(
     chat.conversations.filter((c) => c.title.toLowerCase().includes(search.trim().toLowerCase())),
   );
 
-  /** Conversas agrupadas por projeto; "Sem projeto" vem por último. */
+  type ProjectOrder = "recent" | "name" | "created";
+  const ORDER_LABEL: Record<ProjectOrder, string> = { recent: "Alterados recentemente", name: "Nome (A–Z)", created: "Ordem de criação" };
+  const ORDER_KEY = "lume.projectOrder";
+
+  function savedOrder(): ProjectOrder {
+    try {
+      const saved = localStorage.getItem(ORDER_KEY);
+      return saved === "recent" || saved === "name" || saved === "created" ? saved : "created";
+    } catch {
+      return "created";
+    }
+  }
+  /** Ordem dos projetos na lista, lembrada neste computador. */
+  let order = $state<ProjectOrder>(savedOrder());
+  let ordering = $state(false);
+
+  function chooseOrder(next: ProjectOrder) {
+    order = next;
+    ordering = false;
+    try {
+      localStorage.setItem(ORDER_KEY, next);
+    } catch {
+      // Sem armazenamento local a escolha vale só até fechar o app.
+    }
+  }
+
+  /** Conversas agrupadas por projeto, na ordem escolhida; "Sem projeto" vem por último. */
   const groups = $derived.by(() => {
     const known = new Set(projects.list.map((p) => p.id));
     const of = (id: string) =>
       matches.filter((c) => (c.project_id && known.has(c.project_id) ? c.project_id : NO_PROJECT) === id);
     const named = projects.list.map((p) => ({ id: p.id, name: p.name, icon: PASTA, project: p as Project | null, conversations: of(p.id) }));
+    const latest = (g: { conversations: Conversation[] }) => Math.max(0, ...g.conversations.map((c) => c.updated_at));
+    if (order === "recent") named.sort((a, b) => latest(b) - latest(a));
+    if (order === "name") named.sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
     const loose = { id: NO_PROJECT, name: "Sem projeto", icon: BALAO, project: null as Project | null, conversations: of(NO_PROJECT) };
     const all = [...named, loose];
     return search.trim() ? all.filter((g) => g.conversations.length) : all;
@@ -119,7 +148,7 @@
   <div class="brand">
     <Logo />
     <span class="name">Lume</span>
-    <button type="button" class="btn icon" aria-label="Buscar conversas" aria-pressed={searching} onclick={toggleSearch}>
+    <button type="button" class="btn icon" aria-label="Buscar conversas" title="Buscar conversas" aria-pressed={searching} onclick={toggleSearch}>
       <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" /></svg>
     </button>
   </div>
@@ -130,7 +159,7 @@
   {/if}
 
   <div class="create">
-    <button type="button" class="btn grow" aria-haspopup="dialog" onclick={() => (choosing = true)}>
+    <button type="button" class="btn grow" title="Começar uma conversa ou abrir uma pasta de projeto" aria-haspopup="dialog" onclick={() => (choosing = true)}>
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
       Nova conversa
     </button>
@@ -138,7 +167,7 @@
 
   <div class="shortcuts">
     {#each SHORTCUTS as item (item.id)}
-      <button type="button" class="item" class:active={view === item.id} aria-current={view === item.id ? "page" : undefined} onclick={() => onnavigate(item.id)}>
+      <button type="button" class="item" class:active={view === item.id} aria-current={view === item.id ? "page" : undefined} title={item.hint} onclick={() => onnavigate(item.id)}>
         <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d={item.icon} /></svg>
         {item.label}
       </button>
@@ -150,7 +179,22 @@
   <div class="projects">
     <div class="heading">
       <span class="label">Projetos</span>
-      <button type="button" class="btn icon tiny" aria-label="Novo projeto" onclick={() => openProject(null)}>
+      <span class="order">
+        <button type="button" class="btn icon tiny" aria-label={`Ordenar projetos: ${ORDER_LABEL[order]}`} title={`Ordem: ${ORDER_LABEL[order]}`} aria-haspopup="menu" aria-expanded={ordering} onclick={() => (ordering = !ordering)}>
+          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h5" /></svg>
+        </button>
+        {#if ordering}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="menu" role="menu" tabindex="-1" aria-label="Ordem dos projetos" onkeydown={(e) => e.key === "Escape" && (ordering = false)}>
+            {#each Object.entries(ORDER_LABEL) as [key, label] (key)}
+              <button type="button" role="menuitemradio" aria-checked={order === key} class:on={order === key} onclick={() => chooseOrder(key as ProjectOrder)}>
+                <span class="tick" aria-hidden="true">{order === key ? "✓" : ""}</span>{label}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </span>
+      <button type="button" class="btn icon tiny" aria-label="Novo projeto" title="Novo projeto" onclick={() => openProject(null)}>
         <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
       </button>
     </div>
@@ -158,7 +202,7 @@
     {#each groups as g (g.id)}
       <div class="group">
         <div class="group-head" class:active={view === "project" && projects.selectedId === g.id && g.id !== NO_PROJECT}>
-          <button type="button" class="toggle" aria-expanded={!collapsed[g.id]} aria-label={`${collapsed[g.id] ? "Expandir" : "Recolher"} ${g.name}`} onclick={() => (collapsed[g.id] = !collapsed[g.id])}>
+          <button type="button" class="toggle" aria-expanded={!collapsed[g.id]} aria-label={`${collapsed[g.id] ? "Expandir" : "Recolher"} ${g.name}`} title={`${collapsed[g.id] ? "Expandir" : "Recolher"} ${g.name}`} onclick={() => (collapsed[g.id] = !collapsed[g.id])}>
             <svg aria-hidden="true" class:closed={collapsed[g.id]} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
           </button>
           {#if g.id === NO_PROJECT}
@@ -195,7 +239,7 @@
                 <span class="ellipsis">{c.title}</span>
               </button>
               <span class="when">{when(c)}</span>
-              <button type="button" class="btn icon tiny remove" aria-label={`Excluir a conversa ${c.title}`} onclick={() => removeConversation(c.id)}>
+              <button type="button" class="btn icon tiny remove" aria-label={`Excluir a conversa ${c.title}`} title={`Excluir a conversa ${c.title}`} onclick={() => removeConversation(c.id)}>
                 <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
             </div>
@@ -207,7 +251,7 @@
     {/each}
   </div>
 
-  <button type="button" class="pool" class:active={view === "accounts"} onclick={() => onnavigate("accounts")}>
+  <button type="button" class="pool" class:active={view === "accounts"} title="Contas da assinatura e uso de cada uma; clique para gerenciar" onclick={() => onnavigate("accounts")}>
     <span class="pool-head"><span class="label">Contas</span><span class="manage">Gerenciar</span></span>
     {#each accounts.list as a (a.id)}
       {@const state = stateOf(a)}
@@ -245,6 +289,12 @@
   .projects { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
   .heading { display: flex; align-items: center; padding: 0 4px 0 8px; }
   .heading .label { flex: 1; }
+  .order { position: relative; }
+  .menu { position: absolute; top: 26px; right: 0; z-index: 5; min-width: 200px; padding: 4px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; }
+  .menu button { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); font-size: 12.5px; text-align: left; }
+  .menu button:hover { background: var(--hover); color: var(--text); }
+  .menu button.on { color: var(--text); font-weight: 500; }
+  .menu .tick { width: 12px; color: var(--accent-text); }
   .tiny { width: 22px; min-height: 22px; }
   .group { display: flex; flex-direction: column; gap: 1px; }
   .group-head { display: flex; align-items: center; gap: 4px; min-height: 28px; padding: 0 8px 0 4px; border-radius: 6px; color: var(--text-2); }

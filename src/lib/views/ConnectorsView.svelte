@@ -127,8 +127,8 @@
         <p class="muted">Serviços e ferramentas que o assistente pode usar. Os da conta acompanham a conta que atende a próxima mensagem.</p>
       </div>
       <div class="tabs" role="tablist" aria-label="Conectores">
-        <button type="button" role="tab" aria-selected={tab === "mine"} class:on={tab === "mine"} onclick={() => (tab = "mine")}>Meus</button>
-        <button type="button" role="tab" aria-selected={tab === "discover"} class:on={tab === "discover"} onclick={() => (tab = "discover")}>Descobrir</button>
+        <button type="button" role="tab" aria-selected={tab === "mine"} class:on={tab === "mine"} title="Conectores da conta ativa, do Claude Code e do Lume" onclick={() => (tab = "mine")}>Meus</button>
+        <button type="button" role="tab" aria-selected={tab === "discover"} class:on={tab === "discover"} title="Catálogo de serviços para vincular à conta" onclick={() => (tab = "discover")}>Descobrir</button>
       </div>
     </header>
 
@@ -140,8 +140,8 @@
     {:else}
       <div class="toolbar">
         <input class="input grow" type="search" aria-label="Procurar conector" placeholder="Procurar" bind:value={filter} />
-        <button type="button" class="btn" onclick={importDesktop}>Importar do Claude Desktop</button>
-        <button type="button" class="btn primary" onclick={() => (adding = !adding)}>Adicionar</button>
+        <button type="button" class="btn" title="Traz os servidores MCP configurados no Claude Desktop; entram desligados" onclick={importDesktop}>Importar do Claude Desktop</button>
+        <button type="button" class="btn primary" title="Cadastrar um servidor MCP pela configuração (comando local ou endereço)" onclick={() => (adding = !adding)}>Adicionar</button>
         <button type="button" class="btn icon" aria-label="Verificar de novo" title="Verificar de novo" disabled={checking} onclick={loadAccount}>
           <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.5-5.8M20 4v5h-5" /></svg>
         </button>

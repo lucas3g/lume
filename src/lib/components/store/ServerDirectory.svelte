@@ -112,7 +112,7 @@
       <h2 id="community-title">Outro serviço</h2>
       <p class="muted small">Registro público de servidores MCP. Qualquer serviço que ofereça conexão para agentes entra pelo endereço dele.</p>
     </div>
-    <button type="button" class="btn icon" aria-label="Fechar" onclick={onclose}>
+    <button type="button" class="btn icon" aria-label="Fechar" title="Fechar" onclick={onclose}>
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>
   </header>
@@ -138,7 +138,7 @@
           {#if s.install.kind === "unsupported"}
             <span class="tag" title={s.install.reason}>Sem suporte</span>
           {:else}
-            <button type="button" class="plus" aria-label={open === s.name ? `Cancelar ${title(s)}` : `Adicionar ${title(s)}`} aria-expanded={open === s.name} onclick={() => toggle(s)}>
+            <button type="button" class="plus" aria-label={open === s.name ? `Cancelar ${title(s)}` : `Adicionar ${title(s)}`} title={open === s.name ? `Cancelar ${title(s)}` : `Adicionar ${title(s)}`} aria-expanded={open === s.name} onclick={() => toggle(s)}>
               {#if open === s.name}
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
               {:else}

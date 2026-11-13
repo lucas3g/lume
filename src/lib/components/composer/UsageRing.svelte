@@ -35,7 +35,7 @@
 </script>
 
 <span class="wrap" use:dismissable={() => (open = false)}>
-  <button type="button" class="ring" class:on={open} aria-haspopup="dialog" aria-expanded={open} aria-label={summary} onclick={() => (open = !open)}>
+  <button type="button" class="ring" class:on={open} aria-haspopup="dialog" aria-expanded={open} aria-label={summary} title={summary} onclick={() => (open = !open)}>
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="8" cy="8" r={RADIUS} fill="none" stroke="var(--border-strong)" stroke-width="2" />
       <circle cx="8" cy="8" r={RADIUS} fill="none" stroke={tone(used)} stroke-width="2" stroke-linecap="round" stroke-dasharray={LENGTH} stroke-dashoffset={LENGTH * (1 - used / 100)} transform="rotate(-90 8 8)" />

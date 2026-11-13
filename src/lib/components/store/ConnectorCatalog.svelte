@@ -110,7 +110,7 @@
             <ul class="feat">
               {#each suggested as e (e.key)}
                 <li>
-                  <button type="button" class="feat-card" aria-label={e.name} aria-haspopup="dialog" onclick={() => (selected = e.key)}>
+                  <button type="button" class="feat-card" aria-label={e.name} title={e.name} aria-haspopup="dialog" onclick={() => (selected = e.key)}>
                     <BrandSky color={e.entry?.color ?? null} />
                     <span class="feat-icon"><ConnectorIcon name={e.name} endpoint={e.connector.endpoint} size={44} /></span>
                     <span class="name">{e.name}</span>
@@ -127,7 +127,7 @@
           <ul class="grid">
             {#each shown as e (e.key)}
               <li>
-                <button type="button" class="tile" aria-haspopup="dialog" aria-label={e.connected ? `${e.name}, vinculado` : e.name} onclick={() => (selected = e.key)}>
+                <button type="button" class="tile" aria-haspopup="dialog" aria-label={e.connected ? `${e.name}, vinculado` : e.name} title={e.connected ? `${e.name}, vinculado` : e.name} onclick={() => (selected = e.key)}>
                   <span class="tile-head">
                     <span class="tile-icon">
                       <ConnectorIcon name={e.name} endpoint={e.connector.endpoint} size={36} />

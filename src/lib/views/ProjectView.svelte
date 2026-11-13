@@ -186,7 +186,7 @@
           <div class="line">
             <span class="grow">{f.name}</span>
             <span class="muted small">{f.size.toLocaleString("pt-BR")} caracteres</span>
-            <button type="button" class="btn icon" aria-label={`Remover ${f.name}`} onclick={() => removeFile(f)}>
+            <button type="button" class="btn icon" aria-label={`Remover ${f.name}`} title={`Remover ${f.name}`} onclick={() => removeFile(f)}>
               <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
             </button>
           </div>
@@ -211,7 +211,7 @@
             <div class="line" class:on={memoryOpen === m.name}>
               <button type="button" class="grow link-text" onclick={() => openMemory(m.name)}>{m.name}</button>
               <span class="muted small">{m.modified ? formatWhen(m.modified) : ""}</span>
-              <button type="button" class="btn icon" aria-label={`Apagar ${m.name}`} onclick={() => removeMemory(m.name)}>
+              <button type="button" class="btn icon" aria-label={`Apagar ${m.name}`} title={`Apagar ${m.name}`} onclick={() => removeMemory(m.name)}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
             </div>

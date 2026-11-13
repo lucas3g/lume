@@ -33,7 +33,7 @@
   {#if connector}
     <div class="content">
       <BrandSky color={entry?.color ?? null} height={112} />
-      <button type="button" class="btn icon close" aria-label="Fechar detalhe" onclick={onclose}>
+      <button type="button" class="btn icon close" aria-label="Fechar detalhe" title="Fechar detalhe" onclick={onclose}>
         <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
       </button>
 
