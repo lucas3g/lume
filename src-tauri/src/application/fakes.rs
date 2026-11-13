@@ -272,6 +272,10 @@ impl VersionControl for FakeVcs {
         self.commits.lock().unwrap().push((root.to_owned(), message.to_owned()));
         Ok(())
     }
+    fn add_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("worktree {path} {branch}")));
+        Ok(())
+    }
 }
 
 /// Catálogo de plugins em memória; instalar e remover só mudam o estado e ficam no registro.

@@ -1,7 +1,7 @@
 //! Gestão de projetos e de seus arquivos de conhecimento.
 
 use super::{
-    ports::{ConversationRepository, FileLoader, IdGenerator, MemoryStore, ProjectRepository},
+    ports::{ConversationRepository, FileLoader, IdGenerator, MemoryStore, ProjectRepository, VersionControl},
     AppError, AppResult,
 };
 use crate::domain::{
@@ -18,9 +18,26 @@ pub struct ManageProjects {
     pub files: Arc<dyn FileLoader>,
     pub ids: Arc<dyn IdGenerator>,
     pub memory: Arc<dyn MemoryStore>,
+    pub vcs: Arc<dyn VersionControl>,
 }
 
 impl ManageProjects {
+    /// Sessão em uma cópia isolada do repositório (git worktree), ao lado da pasta do
+    /// projeto, em um ramo novo; a sessão continua pertencendo ao projeto.
+    pub fn start_isolated_session(&self, project_id: &str, model: &str) -> AppResult<Conversation> {
+        let project = self.projects.get(project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
+        let folder = project.folder.ok_or_else(|| AppError("Só projetos com pasta têm sessões isoladas.".into()))?;
+        let existing = self.conversations.list()?.iter().filter(|c| c.project_id.as_deref() == Some(project_id) && normalize_folder(&c.cwd) != folder).count();
+        let name = format!("{}-ramo-{}", folder_name(&folder), existing + 1);
+        let parent = normalize_folder(&folder).rsplit_once(['/', '\\']).map(|(p, _)| p.to_owned()).unwrap_or_default();
+        let path = format!("{parent}/{name}");
+        self.vcs.add_worktree(&folder, &path, &format!("lume/{name}"))?;
+        let id = self.ids.new_id();
+        self.conversations.insert(&id, &format!("Sessão isolada · {name}"), model, &path, KIND_AGENT, None)?;
+        self.conversations.set_project(&id, Some(project_id))?;
+        self.conversations.get(&id)?.ok_or_else(|| AppError("Conversa não encontrada.".into()))
+    }
+
     /// Pasta do projeto, exigida pelas operações de memória.
     fn folder_of(&self, project_id: &str) -> AppResult<String> {
         self.projects
@@ -171,7 +188,26 @@ mod tests {
             files: Arc::new(files),
             ids: Arc::new(SequentialIds::default()),
             memory: Arc::new(FakeMemory::default()),
+            vcs: Arc::new(FakeVcs::default()),
         }
+    }
+
+    #[test]
+    fn isolated_session_runs_in_a_worktree_beside_the_project_folder() {
+        let world = World::with_accounts(vec![]);
+        let vcs = Arc::new(FakeVcs::default());
+        let uc = ManageProjects { vcs: vcs.clone(), ..use_case(&world, FakeFiles(vec![])) };
+        let loose = uc.save(None, "Sem pasta", "").unwrap();
+        assert!(uc.start_isolated_session(&loose.id, "opus").is_err());
+
+        uc.start_session("/tmp/loja", "opus").unwrap();
+        let project = uc.list().unwrap().into_iter().find(|p| p.folder.is_some()).unwrap();
+        let session = uc.start_isolated_session(&project.id, "opus").unwrap();
+        assert_eq!((session.cwd.as_str(), session.kind.as_str(), session.project_id.as_deref()), ("/tmp/loja-ramo-1", "agent", Some(project.id.as_str())));
+        let second = uc.start_isolated_session(&project.id, "opus").unwrap();
+        assert_eq!(second.cwd, "/tmp/loja-ramo-2");
+        let asked = vcs.commits.lock().unwrap().clone();
+        assert_eq!(asked[0], ("/tmp/loja".to_owned(), "worktree /tmp/loja-ramo-1 lume/loja-ramo-1".to_owned()));
     }
 
     #[test]

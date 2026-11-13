@@ -95,6 +95,8 @@ pub trait VersionControl: Send + Sync {
     fn diff(&self, root: &str, path: &str) -> AppResult<String>;
     /// Registra todas as alterações em um commit.
     fn commit(&self, root: &str, message: &str) -> AppResult<()>;
+    /// Cria uma cópia de trabalho isolada do repositório em `path`, no ramo novo `branch`.
+    fn add_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()>;
 }
 
 /// Lê um arquivo escolhido pelo usuário para uso como anexo.

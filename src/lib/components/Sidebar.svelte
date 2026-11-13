@@ -2,7 +2,8 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { formatTime, nowSeconds, percent } from "../format";
   import { accounts, stateOf } from "../state/accounts.svelte";
-  import { chat, openConversation, removeConversation, startAgentSession } from "../state/chat.svelte";
+  import { errorMessage } from "../api";
+  import { chat, openConversation, removeConversation, startAgentSession, startIsolatedSession } from "../state/chat.svelte";
   import { projects } from "../state/projects.svelte";
   import type { Account, Conversation, Project, View } from "../types";
   import Logo from "./Logo.svelte";
@@ -19,6 +20,18 @@
   let choosing = $state(false);
   /** Grupos recolhidos (chave: id do projeto; "" é "Sem projeto"). */
   let collapsed = $state<Record<string, boolean>>({});
+  let error = $state<string | null>(null);
+
+  /** Sessão em uma cópia isolada do repositório do projeto. */
+  async function startIsolated(project: Project) {
+    error = null;
+    try {
+      await startIsolatedSession(project.id);
+      onnavigate("chat");
+    } catch (e) {
+      error = errorMessage(e);
+    }
+  }
 
   const NO_PROJECT = "";
   const PASTA = "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z";
@@ -132,6 +145,8 @@
     {/each}
   </div>
 
+  {#if error}<p class="error-text small" role="alert">{error}</p>{/if}
+
   <div class="projects">
     <div class="heading">
       <span class="label">Projetos</span>
@@ -158,6 +173,12 @@
             </button>
           {/if}
           <span class="count">{g.conversations.length}</span>
+          {#if g.project?.folder}
+            {@const project = g.project}
+            <button type="button" class="btn icon tiny start" aria-label={`Nova sessão isolada em ${g.name}`} title="Sessão isolada (git worktree em um ramo novo)" onclick={() => startIsolated(project)}>
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="6" cy="6" r="2.2" /><circle cx="6" cy="18" r="2.2" /><circle cx="18" cy="8" r="2.2" /><path d="M6 8.2v7.6M18 10.2c0 4-6 3-11 5" /></svg>
+            </button>
+          {/if}
           <button type="button" class="btn icon tiny start" aria-label={g.project?.folder ? `Nova sessão em ${g.name}` : `Nova conversa em ${g.name}`} title={g.project?.folder ? "Nova sessão nesta pasta" : "Nova conversa"} onclick={() => startIn(g.project)}>
             <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
           </button>

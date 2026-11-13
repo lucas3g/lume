@@ -126,6 +126,13 @@ impl VersionControl for GitCli {
         git_or_error(root, &["commit", "-m", message])?;
         Ok(())
     }
+
+    fn add_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()> {
+        if !self.status(root).is_repo {
+            return Err(AppError("A pasta do projeto não é um repositório git.".into()));
+        }
+        git_or_error(root, &["worktree", "add", "-b", branch, path]).map(|_| ())
+    }
 }
 
 #[cfg(test)]

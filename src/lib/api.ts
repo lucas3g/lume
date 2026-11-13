@@ -37,6 +37,8 @@ export const api = {
     invoke<void>("send_message", { conversationId, text, attachments, images }),
   cancelMessage: (conversationId: string) => invoke<void>("cancel_message", { conversationId }),
   startFolderSession: (folder: string, model: string) => invoke<Conversation>("start_folder_session", { folder, model }),
+  startIsolatedSession: (projectId: string, model: string) =>
+    invoke<Conversation>("start_isolated_session", { projectId, model }),
   decidePermission: (decision: {
     conversationId: string;
     requestId: string;

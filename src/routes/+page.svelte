@@ -3,6 +3,7 @@
   import "../app.css";
   import { api } from "$lib/api";
   import Sidebar from "$lib/components/Sidebar.svelte";
+  import UpdateBanner from "$lib/components/UpdateBanner.svelte";
   import { loadAccounts, loadFlags } from "$lib/state/accounts.svelte";
   import { loadAgents } from "$lib/state/agents.svelte";
   import { loadProjects } from "$lib/state/projects.svelte";
@@ -40,6 +41,7 @@
 <div class="app">
   <Sidebar {view} onnavigate={(v) => (view = v)} />
   <div class="content">
+    <UpdateBanner />
     {#if !cliFound}
       <div class="banner" role="alert">
         O Claude Code não foi encontrado neste computador. Instale-o e abra o Lume de novo para conversar.

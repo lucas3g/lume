@@ -193,6 +193,14 @@ export async function startAgentSession(folder: string, model = DEFAULT_MODEL): 
   chat.messages = [];
 }
 
+/** Sessão em uma cópia isolada (worktree) do projeto. */
+export async function startIsolatedSession(projectId: string, model = DEFAULT_MODEL): Promise<void> {
+  const created = await api.startIsolatedSession(projectId, model);
+  await loadConversations();
+  chat.activeId = created.id;
+  chat.messages = [];
+}
+
 /** Responde ao pedido de autorização da conversa aberta. */
 export async function decide(allow: boolean, always: boolean, extras: DecisionExtras = {}): Promise<void> {
   const id = chat.activeId;

@@ -20,6 +20,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .on_window_event(windows::on_window_event)
         .setup(|app| {
             let container = Arc::new(Container::build(app.handle())?);
@@ -67,6 +69,7 @@ pub fn run() {
             commands::run_task,
             commands::cancel_message,
             commands::start_folder_session,
+            commands::start_isolated_session,
             commands::decide_permission,
             commands::get_flags,
             commands::set_flag,

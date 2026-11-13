@@ -131,6 +131,7 @@ impl Container {
                 files: files.clone(),
                 ids: ids.clone(),
                 memory: Arc::new(FsMemory::new(main_config.join("projects"))),
+                vcs: Arc::new(GitCli),
             },
             connectors: connectors.clone(),
             store: BrowseStore {

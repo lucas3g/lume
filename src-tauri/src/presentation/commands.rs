@@ -183,6 +183,12 @@ pub fn start_folder_session(app: App<'_>, folder: String, model: String) -> AppR
     app.projects.start_session(&folder, &model)
 }
 
+/// Sessão em uma cópia isolada (git worktree) do projeto, em um ramo novo.
+#[tauri::command(async)]
+pub fn start_isolated_session(app: App<'_>, project_id: String, model: String) -> AppResult<Conversation> {
+    app.projects.start_isolated_session(&project_id, &model)
+}
+
 /// Resposta do usuário a um pedido de autorização; `always` libera a ferramenta na conversa.
 /// `answers` responde às perguntas do agente; `next_mode` é o modo após aprovar um plano.
 #[tauri::command]
