@@ -1,22 +1,34 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { api, errorMessage } from "../../api";
-  import { coveredProducts, matchesQuery } from "../../connectors";
-  import type { AccountConnector, ServerListing } from "../../types";
+  import type { ServerListing } from "../../types";
   import ConnectorIcon from "../ConnectorIcon.svelte";
 
   interface Props {
-    /** Conectores da conta claude.ai, mostrados antes do registro público. */
-    account: AccountConnector[];
-    /** Conector da conta com uma operação em andamento. */
-    busy: string | null;
-    onlink: (connector: AccountConnector, connect: boolean) => void;
+    /** Diálogo aberto por cima do catálogo ("Não achou?"). */
+    open: boolean;
+    /** O que o usuário já tinha digitado no catálogo. */
+    initialQuery: string;
+    onclose: () => void;
     /** Avisa quando um conector foi adicionado. */
     onchange: () => void;
   }
-  let { account, busy, onlink, onchange }: Props = $props();
+  let { open: isOpen, initialQuery, onclose, onchange }: Props = $props();
 
-  const accountMatches = $derived(account.filter((c) => c.source === "account" && matchesQuery(c, query)));
+  let dialog = $state<HTMLDialogElement>();
+
+  // Ao abrir, repete a busca com o texto do catálogo; o elemento nativo cuida do foco e do Esc.
+  $effect(() => {
+    if (isOpen && !dialog?.open) {
+      dialog?.showModal();
+      query = initialQuery;
+      void search();
+    }
+    if (!isOpen && dialog?.open) dialog.close();
+  });
+
+  function onBackdrop(event: MouseEvent) {
+    if (event.target === dialog) onclose();
+  }
 
   let servers = $state<ServerListing[]>([]);
   let query = $state("");
@@ -90,43 +102,24 @@
     return s.install.kind === "remote" ? s.install.url : "";
   }
 
-  onMount(() => void search());
 </script>
 
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+<dialog bind:this={dialog} aria-labelledby="community-title" onclose={onclose} onclick={onBackdrop}>
 <div class="directory">
+  <header class="section-head">
+    <div>
+      <h2 id="community-title">Outro serviço</h2>
+      <p class="muted small">Registro público de servidores MCP. Qualquer serviço que ofereça conexão para agentes entra pelo endereço dele.</p>
+    </div>
+    <button type="button" class="btn icon" aria-label="Fechar" onclick={onclose}>
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+    </button>
+  </header>
+
   <input class="input" type="search" aria-label="Procurar conector" placeholder="Procurar conector (ex.: GitHub, Postgres, Slack)" bind:value={query} oninput={onInput} />
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
-
-  {#if accountMatches.length}
-    <div class="section-head">
-      <h2 class="section-title">Da sua conta claude.ai</h2>
-      <span class="muted small">Vincule uma vez; valem em todas as conversas</span>
-    </div>
-    <div class="grid" role="list">
-      {#each accountMatches as c (c.name)}
-        <article class="card item" role="listitem">
-          <div class="body">
-            <ConnectorIcon endpoint={c.endpoint} name={c.display_name} size={40} />
-            <div class="text">
-              <div class="row name"><strong>{c.display_name}</strong>{#if c.status === "connected"}<span class="pill ok">Vinculado</span>{/if}</div>
-              <p class="muted small description">{coveredProducts(c).length ? `Cobre ${coveredProducts(c).join(", ")}` : "Serviço conectado à sua conta claude.ai"}</p>
-            </div>
-            {#if c.status === "connected"}
-              <button type="button" class="btn small" disabled={busy === c.name} onclick={() => onlink(c, false)}>Desvincular</button>
-            {:else}
-              <button type="button" class="btn small primary" disabled={busy === c.name} onclick={() => onlink(c, true)}>{busy === c.name ? "Aguardando…" : "Vincular"}</button>
-            {/if}
-          </div>
-        </article>
-      {/each}
-    </div>
-  {/if}
-
-  <div class="section-head">
-    <h2 class="section-title">{query.trim() ? "Outros resultados" : "Conectores da comunidade"}</h2>
-    <span class="muted small">Registro público de servidores MCP</span>
-  </div>
 
   <div class="grid" role="list">
     {#each servers as s (s.name)}
@@ -181,12 +174,16 @@
   {/if}
   <p class="muted small">Confira a procedência antes de adicionar: as ferramentas de um conector pedem sua aprovação na conversa, mas o servidor recebe o que o assistente enviar a ele.</p>
 </div>
+</dialog>
 
 <style>
-  .directory { display: flex; flex-direction: column; gap: 14px; }
+  dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6); }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+  .directory { display: flex; flex-direction: column; gap: 14px; padding: 20px; }
   .directory > .input { width: 100%; }
-  .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 12px; }
+  .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .section-head h2 { font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 12px; }
   .item { display: flex; flex-direction: column; }
   .item.wide { grid-column: 1 / -1; }
   .body { display: flex; align-items: flex-start; gap: 12px; padding: 14px; }

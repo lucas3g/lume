@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
   import ConnectorIcon from "../components/ConnectorIcon.svelte";
-  import ServerDirectory from "../components/store/ServerDirectory.svelte";
+  import ConnectorCatalog from "../components/store/ConnectorCatalog.svelte";
   import Toggle from "../components/Toggle.svelte";
   import type { AccountConnector, Connector } from "../types";
 
@@ -137,7 +137,7 @@
     {#if notice}<p class="muted small" role="status">{notice}</p>{/if}
 
     {#if tab === "discover"}
-      <ServerDirectory {account} {busy} onlink={(c, connect) => void link(c, connect)} onchange={() => void loadMine()} />
+      <ConnectorCatalog {account} loading={checking} {busy} onlink={(c, connect) => void link(c, connect)} onchange={() => void loadMine()} />
     {:else}
       <div class="toolbar">
         <input class="input grow" type="search" aria-label="Procurar conector" placeholder="Procurar" bind:value={filter} />
