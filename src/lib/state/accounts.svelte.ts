@@ -45,14 +45,18 @@ export async function setFlag(key: FlagKey, value: boolean): Promise<void> {
   await api.setFlag(key, value);
 }
 
-/** Grava uma nova ordem de prioridade; a lista já aparece na ordem nova enquanto salva. */
+/**
+ * Grava uma nova ordem de prioridade; a lista já aparece na ordem nova enquanto salva.
+ * Se a gravação falhar, recarrega para desfazer a ordem otimista. Quem chama recarrega no sucesso.
+ */
 export async function reorderAccounts(ids: string[]): Promise<void> {
   const byId = new Map(accounts.list.map((a) => [a.id, a]));
   accounts.list = ids.map((id) => byId.get(id)).filter((a): a is Account => !!a);
   try {
     await api.reorderAccounts(ids);
-  } finally {
-    await loadAccounts();
+  } catch (e) {
+    await loadAccounts().catch(() => {});
+    throw e;
   }
 }
 
@@ -63,6 +67,5 @@ export async function moveAccount(id: string, direction: -1 | 1): Promise<void> 
   const to = from + direction;
   if (from < 0 || to < 0 || to >= ids.length) return;
   [ids[from], ids[to]] = [ids[to], ids[from]];
-  await api.reorderAccounts(ids);
-  await loadAccounts();
+  await reorderAccounts(ids);
 }

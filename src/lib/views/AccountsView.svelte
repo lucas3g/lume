@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { flip } from "svelte/animate";
   import { api, errorMessage } from "../api";
   import LimitsDialog from "../components/LimitsDialog.svelte";
   import LoginCodeField from "../components/LoginCodeField.svelte";
@@ -19,50 +20,86 @@
 
   /**
    * Arrastar pela alça: a linha segue o ponteiro (só `transform`, sem mexer no DOM) e as
-   * vizinhas deslizam para abrir a vaga. A ordem só é gravada ao soltar, depois que a linha
-   * assenta na vaga.
+   * vizinhas deslizam para abrir a vaga. Durante o arraste a lista fica congelada na ordem
+   * (por id) de quando a linha foi segurada, para recargas não trocarem as linhas de lugar;
+   * a ordem só é gravada ao soltar, depois que a linha assenta na vaga.
    */
-  type Drag = { id: string; from: number; to: number; startY: number; dy: number; tops: number[]; heights: number[]; settling: boolean };
+  type Drag = {
+    id: string;
+    /** Ids na ordem de quando o arraste começou. */
+    ids: string[];
+    from: number;
+    to: number;
+    /** Distância do ponteiro ao topo da linha segurada. */
+    grab: number;
+    dy: number;
+    /** Topos relativos ao topo da lista, então rolar a página não os invalida. */
+    tops: number[];
+    heights: number[];
+    settling: boolean;
+  };
   let drag = $state<Drag | null>(null);
-  const dragging = $derived(drag?.id ?? null);
+  let listEl = $state<HTMLElement>();
   const rowEls: Record<string, HTMLElement> = {};
-  const shown = $derived(accounts.list);
+  const shown = $derived.by(() => {
+    if (!drag) return accounts.list;
+    const byId = new Map(accounts.list.map((a) => [a.id, a]));
+    return drag.ids.map((id) => byId.get(id)).filter((a): a is Account => !!a);
+  });
   let frame = 0;
-  let pendingY = 0;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  let pointerY = 0;
   const SETTLE_MS = 180;
 
+  // Uma conta que sumiu durante o arraste (removida ou recarregada) invalida as vagas medidas.
+  $effect(() => {
+    if (drag && shown.length !== drag.ids.length) stopDrag();
+  });
+
+  onDestroy(stopDrag);
+
   function startDrag(event: PointerEvent, id: string) {
-    if (busy || drag || event.button !== 0) return;
+    if (busy || drag || event.button !== 0 || !listEl) return;
+    const ids = accounts.list.map((a) => a.id);
+    const rects = ids.map((i) => rowEls[i]?.getBoundingClientRect());
+    if (rects.some((r) => !r)) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    const rects = accounts.list.map((a) => rowEls[a.id]?.getBoundingClientRect());
-    if (rects.some((r) => !r)) return;
-    const from = accounts.list.findIndex((a) => a.id === id);
+    const base = listEl.getBoundingClientRect().top;
+    const from = ids.indexOf(id);
+    pointerY = event.clientY;
     drag = {
       id,
+      ids,
       from,
       to: from,
-      startY: event.clientY,
+      grab: event.clientY - rects[from]!.top,
       dy: 0,
-      tops: rects.map((r) => r!.top),
+      tops: rects.map((r) => r!.top - base),
       heights: rects.map((r) => r!.height),
       settling: false,
     };
+    window.addEventListener("scroll", scheduleUpdate, true);
+  }
+
+  function moveDrag(event: PointerEvent) {
+    if (!drag || drag.settling) return;
+    pointerY = event.clientY;
+    scheduleUpdate();
   }
 
   /** Atualiza no máximo uma vez por quadro: a linha acompanha o ponteiro dentro da lista. */
-  function moveDrag(event: PointerEvent) {
-    if (!drag || drag.settling) return;
-    pendingY = event.clientY;
-    if (frame) return;
+  function scheduleUpdate() {
+    if (frame || !drag || drag.settling) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
       const d = drag;
-      if (!d || d.settling) return;
+      if (!d || d.settling || !listEl) return;
+      const base = listEl.getBoundingClientRect().top;
       const last = d.tops.length - 1;
       const min = d.tops[0] - d.tops[d.from];
       const max = d.tops[last] + d.heights[last] - (d.tops[d.from] + d.heights[d.from]);
-      d.dy = Math.min(max, Math.max(min, pendingY - d.startY));
+      d.dy = Math.min(max, Math.max(min, pointerY - d.grab - base - d.tops[d.from]));
       const center = d.tops[d.from] + d.heights[d.from] / 2 + d.dy;
       let to = 0;
       for (let j = 0; j < d.tops.length; j++) if (j !== d.from && d.tops[j] + d.heights[j] / 2 < center) to++;
@@ -71,9 +108,10 @@
   }
 
   /** Quanto cada linha se desloca enquanto a arrastada está na vaga `to`. */
-  function offsetOf(index: number): number {
+  function offsetOf(id: string): number {
     const d = drag;
     if (!d) return 0;
+    const index = d.ids.indexOf(id);
     const h = d.heights[d.from];
     if (index === d.from) return d.dy;
     if (d.from < d.to && index > d.from && index <= d.to) return -h;
@@ -81,20 +119,36 @@
     return 0;
   }
 
+  /** Encerra o arraste sem gravar nada e solta timers e ouvintes. */
+  function stopDrag() {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    clearTimeout(settleTimer);
+    settleTimer = undefined;
+    window.removeEventListener("scroll", scheduleUpdate, true);
+    drag = null;
+  }
+
   function endDrag() {
     const d = drag;
     if (!d || d.settling) return;
-    if (frame) cancelAnimationFrame(frame), (frame = 0);
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    window.removeEventListener("scroll", scheduleUpdate, true);
     // Assenta a linha exatamente na vaga e só então grava a nova ordem.
     d.dy = d.to >= d.from ? d.tops[d.to] + d.heights[d.to] - (d.tops[d.from] + d.heights[d.from]) : d.tops[d.to] - d.tops[d.from];
     d.settling = true;
-    setTimeout(() => {
-      const ids = accounts.list.map((a) => a.id);
-      const [moved] = ids.splice(d.from, 1);
-      ids.splice(d.to, 0, moved);
-      const changed = d.to !== d.from;
+    settleTimer = setTimeout(() => {
+      settleTimer = undefined;
+      const order = [...d.ids];
+      order.splice(d.to, 0, ...order.splice(d.from, 1));
       drag = null;
-      if (changed) void run(() => reorderAccounts(ids));
+      if (d.to === d.from) return;
+      // Contas que chegaram durante o arraste vão para o fim, sem perder a ordem escolhida.
+      const current = new Set(accounts.list.map((a) => a.id));
+      const ids = order.filter((id) => current.has(id));
+      for (const id of current) if (!ids.includes(id)) ids.push(id);
+      void run(() => reorderAccounts(ids));
     }, SETTLE_MS);
   }
 
@@ -103,6 +157,7 @@
     const direction = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
     if (!direction) return;
     event.preventDefault();
+    if (drag || busy) return;
     void run(() => moveAccount(id, direction));
   }
 
@@ -273,16 +328,17 @@
     {#if logins.account}<LoginCodeField scope="account" />{/if}
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
-    <section class="card" aria-label="Contas cadastradas">
+    <section class="card" aria-label="Contas cadastradas" bind:this={listEl}>
       {#each shown as a, i (a.id)}
         {@const state = stateOf(a)}
         <div
           class="account"
-          class:dragging={dragging === a.id}
-          class:settling={drag?.settling && dragging === a.id}
-          class:shifting={drag && dragging !== a.id}
-          style:transform={drag ? `translate3d(0, ${offsetOf(i)}px, 0)` : null}
+          class:dragging={drag?.id === a.id}
+          class:settling={drag?.settling}
+          class:shifting={drag && drag.id !== a.id}
+          style:transform={drag ? `translate3d(0, ${offsetOf(a.id)}px, 0)` : null}
           bind:this={rowEls[a.id]}
+          animate:flip={{ duration: 150 }}
         >
           <button
             type="button"
@@ -293,7 +349,8 @@
             onpointerdown={(e) => startDrag(e, a.id)}
             onpointermove={moveDrag}
             onpointerup={endDrag}
-            onpointercancel={endDrag}
+            onpointercancel={stopDrag}
+            onlostpointercapture={() => drag && !drag.settling && stopDrag()}
             onkeydown={(e) => dragKey(e, a.id)}
           >
             <svg aria-hidden="true" width="12" height="16" viewBox="0 0 12 16" fill="currentColor"><circle cx="3" cy="3" r="1.4" /><circle cx="9" cy="3" r="1.4" /><circle cx="3" cy="8" r="1.4" /><circle cx="9" cy="8" r="1.4" /><circle cx="3" cy="13" r="1.4" /><circle cx="9" cy="13" r="1.4" /></svg>
