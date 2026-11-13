@@ -237,6 +237,12 @@ export interface Skill {
   inherited: boolean;
 }
 
+/** Sugestão do modelo para um agente novo. */
+export interface AgentDraft {
+  instructions: string;
+  skills: string[];
+}
+
 export interface Agent {
   id: string;
   name: string;

@@ -47,7 +47,8 @@ jobs:
         run: cargo test
 
       - name: Compilar o instalador
-        run: pnpm tauri build --bundles nsis
+        # Sem os artefatos do updater: este build de teste não tem a chave de assinatura.
+        run: pnpm tauri build --bundles nsis --config src-tauri/tauri.ci.conf.json
 
       - uses: actions/upload-artifact@v4
         with:

@@ -8,6 +8,7 @@ pub mod windows;
 use crate::application::{
     accounts::ManageAccounts,
     conversations::ManageConversations,
+    draft_agent::DraftAgent,
     extensions::{ManageAgents, ManageConnectors, ManageSkills},
     history::ManageHistory,
     ports::{Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings, SwitchLog, VersionControl},
@@ -50,6 +51,7 @@ pub struct Container {
     pub history: ManageHistory,
     pub skills: ManageSkills,
     pub agents: ManageAgents,
+    pub draft_agent: DraftAgent,
     pub connectors: Arc<ManageConnectors>,
     pub store: BrowseStore,
     pub projects: ManageProjects,
@@ -127,6 +129,13 @@ impl Container {
             },
             skills: ManageSkills { skills: skills.clone() },
             agents: ManageAgents { agents: store.clone(), conversations: store.clone(), ids: ids.clone() },
+            draft_agent: DraftAgent {
+                engine: Arc::new(ClaudeCliEngine::new(cli.clone())),
+                accounts: store.clone(),
+                skills: skills.clone(),
+                clock: clock.clone(),
+                chat_dir: chat_dir.to_string_lossy().into_owned(),
+            },
             projects: ManageProjects {
                 projects: store.clone(),
                 conversations: store.clone(),

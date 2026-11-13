@@ -15,6 +15,37 @@ pub struct Skill {
     pub origin: String,
 }
 
+/// Sugestão de instruções e skills para um agente, gerada pelo modelo a partir do nome.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AgentDraft {
+    pub instructions: String,
+    /// Nomes de skills do catálogo que combinam com o agente.
+    pub skills: Vec<String>,
+}
+
+/// Lê a resposta do modelo (JSON com `instructions` e `skills`, possivelmente cercado
+/// de texto) e fica só com skills que existem no catálogo.
+pub fn parse_agent_draft(text: &str, catalog: &[Skill]) -> Option<AgentDraft> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    let v: serde_json::Value = serde_json::from_str(&text[start..=end]).ok()?;
+    let instructions = v["instructions"].as_str()?.trim().to_owned();
+    if instructions.is_empty() {
+        return None;
+    }
+    let skills = v["skills"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|name| catalog.iter().any(|s| s.name == *name))
+                .map(Into::into)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(AgentDraft { instructions, skills })
+}
+
 /// Agente: instruções próprias e um conjunto de skills além das gerais.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Agent {
@@ -282,5 +313,15 @@ mod tests {
         assert!(validate_connector_config(r#"{"url":"https://exemplo.com/mcp"}"#).is_ok());
         assert!(validate_connector_config(r#"{"args":[]}"#).is_err());
         assert!(validate_connector_config("não é json").is_err());
+    }
+
+    #[test]
+    fn agent_draft_keeps_only_known_skills() {
+        let catalog = [Skill { name: "pdf".into(), description: None, origin: "personal".into() }];
+        let text = "Aqui está:\n{\"instructions\": \" Revise com rigor. \", \"skills\": [\"pdf\", \"inventada\"]}\nfim";
+        let draft = parse_agent_draft(text, &catalog).unwrap();
+        assert_eq!((draft.instructions.as_str(), draft.skills), ("Revise com rigor.", vec!["pdf".to_owned()]));
+        assert!(parse_agent_draft("sem json", &catalog).is_none());
+        assert!(parse_agent_draft("{\"instructions\": \"\"}", &catalog).is_none());
     }
 }

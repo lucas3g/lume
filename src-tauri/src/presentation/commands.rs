@@ -5,7 +5,7 @@ use crate::application::{extensions::SkillView, flags, store::ServerPage, tasks:
 use crate::domain::{
     account::Account,
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
-    extension::{AccountConnector, Agent, Connector},
+    extension::{AccountConnector, Agent, AgentDraft, Connector},
     history::{HistSession, HistoryStatus},
     project::{MemoryFile, Project, ProjectFile},
     schedule::{Repeat, Task},
@@ -292,6 +292,12 @@ pub fn save_agent(
     model: Option<String>,
 ) -> AppResult<Agent> {
     app.agents.save(id, &name, &instructions, model)
+}
+
+/// Instruções e skills sugeridas pelo modelo para um agente, a partir do nome.
+#[tauri::command]
+pub async fn draft_agent(app: App<'_>, name: String) -> AppResult<AgentDraft> {
+    app.draft_agent.draft(&name).await
 }
 
 #[tauri::command]

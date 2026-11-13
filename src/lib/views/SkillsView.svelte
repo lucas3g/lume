@@ -34,8 +34,29 @@
     await api.setSkill(scope, skill.name, enabled);
   }
 
+  /** Skills recomendadas pela IA; são ligadas ao agente quando ele é salvo. */
+  let suggested = $state<string[]>([]);
+  let drafting = $state(false);
+
   function edit(agent: Agent | null) {
     form = { id: agent?.id ?? null, name: agent?.name ?? "", instructions: agent?.instructions ?? "", model: agent?.model ?? "" };
+    suggested = [];
+  }
+
+  /** Pede ao modelo instruções e skills a partir do nome digitado. */
+  async function generate() {
+    if (!form || !form.name.trim()) return;
+    error = null;
+    drafting = true;
+    try {
+      const draft = await api.draftAgent(form.name);
+      form.instructions = draft.instructions;
+      suggested = draft.skills;
+    } catch (e) {
+      error = errorMessage(e);
+    } finally {
+      drafting = false;
+    }
   }
 
   async function save(event: SubmitEvent) {
@@ -44,6 +65,8 @@
     error = null;
     try {
       const saved = await api.saveAgent({ ...form, model: form.model || null });
+      for (const skill of suggested) await api.setSkill(saved.id, skill, true);
+      suggested = [];
       await loadAgents();
       await select(saved.id);
     } catch (e) {
@@ -103,10 +126,26 @@
         {#if form}
           <form class="card agent-form" onsubmit={save}>
             <h2 class="section-title">{form.id ? "Editar agente" : "Novo agente"}</h2>
-            <label>Nome<input class="input" bind:value={form.name} placeholder="Ex.: Revisor de código" /></label>
-            <label>Instruções
-              <textarea class="input" rows="4" bind:value={form.instructions} placeholder="Como este agente deve trabalhar e responder"></textarea>
+            <label>Nome
+              <span class="row name-row">
+                <input class="input" bind:value={form.name} placeholder="Ex.: Revisor de código" />
+                <button type="button" class="btn" disabled={drafting || !form.name.trim()} onclick={generate} title="Gera as instruções e recomenda skills a partir do nome">
+                  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 17l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z" /></svg>
+                  {drafting ? "Gerando…" : "Gerar com IA"}
+                </button>
+              </span>
             </label>
+            <label>Instruções
+              <textarea class="input" rows="6" bind:value={form.instructions} placeholder="Como este agente deve trabalhar e responder"></textarea>
+            </label>
+            {#if suggested.length}
+              <div class="suggested">
+                <span class="muted small">Skills recomendadas (ligadas ao salvar):</span>
+                {#each suggested as s (s)}
+                  <span class="chip">{s}<button type="button" aria-label={`Não usar ${s}`} onclick={() => (suggested = suggested.filter((x) => x !== s))}>×</button></span>
+                {/each}
+              </div>
+            {/if}
             <label>Modelo
               <select class="input" bind:value={form.model}>
                 <option value="">O da conversa</option>
@@ -178,6 +217,12 @@
   .agent-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
   .agent-form .input { font-weight: 400; }
   .agent-form textarea { padding: 8px 12px; resize: vertical; }
+  .name-row { gap: 8px; }
+  .name-row .input { flex: 1; }
+  .name-row .btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .suggested { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-2); font-size: 12px; }
+  .chip button { border: 0; padding: 0 4px; background: transparent; color: var(--muted); font-size: 13px; line-height: 1; }
   .scope-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--bg-side); border-radius: 10px 10px 0 0; }
   .scope-head > div { flex: 1; }
   .search { padding: 12px 16px; border-bottom: 1px solid var(--hairline); }

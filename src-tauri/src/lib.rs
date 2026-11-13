@@ -83,6 +83,7 @@ pub fn run() {
             commands::list_agents,
             commands::save_agent,
             commands::delete_agent,
+            commands::draft_agent,
             commands::set_conversation_agent,
             commands::list_projects,
             commands::save_project,

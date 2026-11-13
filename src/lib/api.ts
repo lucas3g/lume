@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  Account, AccountConnector, Agent, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
+  Account, AccountConnector, Agent, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
   MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, WorkspaceStatus,
 } from "./types";
 
@@ -72,6 +72,7 @@ export const api = {
   saveAgent: (agent: { id: string | null; name: string; instructions: string; model: string | null }) =>
     invoke<Agent>("save_agent", agent),
   deleteAgent: (id: string) => invoke<void>("delete_agent", { id }),
+  draftAgent: (name: string) => invoke<AgentDraft>("draft_agent", { name }),
   setConversationAgent: (id: string, agentId: string | null) =>
     invoke<void>("set_conversation_agent", { id, agentId }),
 
