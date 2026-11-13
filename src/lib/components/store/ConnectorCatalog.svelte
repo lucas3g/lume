@@ -14,10 +14,12 @@
     /** Conector da conta com uma operação em andamento. */
     busy: string | null;
     onlink: (connector: AccountConnector, connect: boolean) => void;
+    /** Para de esperar o vínculo em andamento; ausente quando não há espera. */
+    oncancel?: () => void;
     /** Avisa quando um servidor da comunidade foi adicionado. */
     onchange: () => void;
   }
-  let { account, loading, busy, onlink, onchange }: Props = $props();
+  let { account, loading, busy, onlink, oncancel, onchange }: Props = $props();
 
   type Filter = "all" | "connected" | Category;
 
@@ -155,7 +157,7 @@
   </div>
 </div>
 
-<ServiceDialog connector={current?.connector ?? null} entry={current?.entry} busy={busy !== null} onclose={() => (selected = null)} {onlink} />
+<ServiceDialog connector={current?.connector ?? null} entry={current?.entry} busy={busy !== null} onclose={() => (selected = null)} {onlink} {oncancel} />
 
 <ServerDirectory open={community} initialQuery={needle} onclose={() => (community = false)} {onchange} />
 

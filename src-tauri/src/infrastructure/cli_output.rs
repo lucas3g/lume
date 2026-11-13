@@ -35,8 +35,16 @@ pub(crate) fn login_url(line: &str) -> Option<String> {
         let url = clean[start..].split_whitespace().next()?;
         let url = url.trim_end_matches(['.', ',', ';', ')', ']', '>', '"', '\'']);
         // Todo pedido de autorização OAuth leva `client_id`; um endereço cortado antes dele não serve.
-        url.contains("client_id=").then(|| url.to_owned())
+        // Conectores da conta claude.ai começam o login numa página do próprio claude.ai, sem ele.
+        (url.contains("client_id=") || is_claude_ai_connector_auth(url)).then(|| url.to_owned())
     })
+}
+
+/// Página do claude.ai que começa o login de um conector da conta. Só vale no próprio
+/// claude.ai: o mesmo caminho em outro endereço (o de um servidor MCP) não é login.
+fn is_claude_ai_connector_auth(url: &str) -> bool {
+    url.strip_prefix("https://claude.ai/")
+        .is_some_and(|path| path.split(['?', '#']).next().unwrap_or("").contains("/mcp/start-auth/"))
 }
 
 /// Abre no navegador padrão, uma única vez, a página de login que o CLI imprimir.
@@ -383,6 +391,15 @@ mod tests {
             login_url("navigate to this URL: https://auth.openai.com/oauth/authorize?client_id=a&state=b.").as_deref(),
             Some("https://auth.openai.com/oauth/authorize?client_id=a&state=b")
         );
+    }
+
+    #[test]
+    fn finds_login_page_of_claude_ai_connectors() {
+        let url = "https://claude.ai/api/organizations/74197a08/mcp/start-auth/mcpsrv_012L?product_surface=sdk-cli";
+        assert_eq!(login_url(&format!("  {url}")).as_deref(), Some(url));
+        // O mesmo caminho fora do claude.ai não é a página de login.
+        assert_eq!(login_url("https://mcp.exemplo.com/mcp/start-auth/x"), None);
+        assert_eq!(login_url("https://claude.ai.exemplo.com/mcp/start-auth/x"), None);
     }
 
     #[test]

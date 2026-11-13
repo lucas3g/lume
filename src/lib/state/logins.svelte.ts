@@ -23,12 +23,14 @@ class LoginsState {
     }
   }
 
-  /** Executa o login de um conector, marcando-o como em andamento. */
-  async connectorLogin(name: string, action: () => Promise<void>): Promise<void> {
-    if (this.connector) return;
+  /** Executa o login de um conector, marcando-o como em andamento. Devolve `false` sem
+   * começar quando outro login de conector ainda espera (o código colado iria para ele). */
+  async connectorLogin(name: string, action: () => Promise<void>): Promise<boolean> {
+    if (this.connector) return false;
     this.connector = name;
     try {
       await action();
+      return true;
     } finally {
       this.connector = null;
     }

@@ -25,6 +25,13 @@
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
 
+  /** Espera pelo vínculo de um conector da conta; cancelada pelo usuário ou ao sair da tela. */
+  let linkWait = $state<AbortController | null>(null);
+  /** Intervalo entre verificações: começa curto e cresce até o máximo (cada uma testa todos os servidores). */
+  const LINK_POLL_FIRST_MS = 4000;
+  const LINK_POLL_MAX_MS = 15_000;
+  const LINK_TIMEOUT_MS = 5 * 60_000;
+
   const SOURCE_TAG = { account: "Conta", user: "Claude Code", plugin: "Plugin" } as const;
   const STATUS_LABEL: Record<string, string> = { connected: "conectado", failed: "falha ao iniciar", pending: "iniciando", "needs-auth": "precisa de login" };
 
@@ -84,14 +91,80 @@
     error = notice = null;
     if (connect) notice = `Conclua o login de ${c.display_name} no navegador.`;
     try {
-      // O vínculo fica marcado fora da tela: o campo do código volta se o usuário sair e retornar.
-      await (connect ? logins.connectorLogin(c.name, () => api.linkConnector(c.name)) : api.unlinkConnector(c.name));
+      if (connect) {
+        // O vínculo fica marcado fora da tela: o campo do código volta se o usuário sair e retornar.
+        const started = await logins.connectorLogin(c.name, () => api.linkConnector(c.name));
+        if (!started) {
+          notice = null;
+          error = "Outro conector ainda espera o login. Conclua-o antes de vincular este.";
+          return;
+        }
+        // O login de um conector da conta só abre a página e termina na hora: o vínculo é feito
+        // no claude.ai, depois. Verifica de novo até ele aparecer conectado.
+        if (c.source === "account") {
+          const wait = new AbortController();
+          linkWait = wait;
+          try {
+            if (!(await waitLinked(c.name, wait.signal))) {
+              notice = null;
+              return;
+            }
+          } finally {
+            if (linkWait === wait) linkWait = null;
+          }
+        }
+      } else {
+        await api.unlinkConnector(c.name);
+      }
       notice = null;
       await loadAccount();
     } catch (e) {
+      notice = null;
       error = errorMessage(e);
     } finally {
       busy = null;
+    }
+  }
+
+  /** Para de esperar o vínculo (o usuário desistiu do login no navegador). */
+  function cancelLinkWait() {
+    linkWait?.abort();
+    notice = null;
+  }
+
+  /** Pausa até o intervalo passar, a janela do app voltar ao foco (o usuário voltou do
+   * navegador) ou a espera ser cancelada. */
+  function pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        window.removeEventListener("focus", done);
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      window.addEventListener("focus", done);
+      signal.addEventListener("abort", done);
+    });
+  }
+
+  /** Espera o conector da conta aparecer vinculado, verificando a lista de tempos em tempos.
+   * Devolve `false` se a espera foi cancelada ou a conta ativa mudou. */
+  async function waitLinked(name: string, signal: AbortSignal): Promise<boolean> {
+    const accountId = activeAccount()?.id ?? null;
+    const deadline = Date.now() + LINK_TIMEOUT_MS;
+    let delay = LINK_POLL_FIRST_MS;
+    for (;;) {
+      await pause(delay, signal);
+      if (signal.aborted || (activeAccount()?.id ?? null) !== accountId) return false;
+      await connectors.ensure(accountId);
+      if (signal.aborted) return false;
+      // Só conta como vinculado quando o conector aparece na lista e não pede mais login;
+      // uma verificação que falhou ou veio sem ele não decide nada.
+      const status = connectors.error ? undefined : connectors.account.find((a) => a.name === name)?.status;
+      if (status !== undefined && status !== "needs_auth") return true;
+      if (Date.now() > deadline) throw new Error("O login não foi concluído em 5 minutos.");
+      delay = Math.min(delay * 1.5, LINK_POLL_MAX_MS);
     }
   }
 
@@ -119,6 +192,7 @@
   onMount(() => {
     void loadMine();
     void loadAccount();
+    return () => linkWait?.abort();
   });
 </script>
 
@@ -136,11 +210,16 @@
     </header>
 
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
-    {#if notice}<p class="muted small" role="status">{notice}</p>{/if}
+    {#if notice}
+      <p class="muted small notice" role="status">
+        {notice}
+        {#if linkWait}<button type="button" class="btn small" title="Parar de esperar o login no navegador" onclick={cancelLinkWait}>Cancelar</button>{/if}
+      </p>
+    {/if}
     {#if logins.connector}<LoginCodeField scope="connector" />{/if}
 
     {#if tab === "discover"}
-      <ConnectorCatalog {account} loading={checking} {busy} onlink={(c, connect) => void link(c, connect)} onchange={() => void loadMine()} />
+      <ConnectorCatalog {account} loading={checking} {busy} onlink={(c, connect) => void link(c, connect)} oncancel={linkWait ? cancelLinkWait : undefined} onchange={() => void loadMine()} />
     {:else}
       <div class="toolbar">
         <input class="input grow" type="search" aria-label="Procurar conector" placeholder="Procurar" bind:value={filter} />
@@ -249,6 +328,7 @@
 </div>
 
 <style>
+  .notice { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .tabs { display: flex; padding: 3px; border-radius: 9px; background: var(--bg-side); border: 1px solid var(--border); }
   .tabs button { min-height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: transparent; font-size: 13px; color: var(--text-2); }
   .tabs button.on { background: var(--hover); color: #fff; font-weight: 500; }
