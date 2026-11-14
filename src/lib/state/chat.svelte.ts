@@ -287,9 +287,23 @@ export async function decide(allow: boolean, always: boolean, extras: DecisionEx
   const request = id ? chat.permissions[id] : undefined;
   if (!id || !request) return;
   delete chat.permissions[id];
+  const turn = chat.turns[id];
+  const status = turn?.status ?? null;
+  if (turn) turn.status = null;
   const conversation = activeConversation();
+  const mode = conversation?.permission_mode;
   if (allow && extras.nextMode && conversation) conversation.permission_mode = extras.nextMode;
-  await api.decidePermission({ conversationId: id, requestId: request.requestId, tool: request.tool, allow, always, ...extras });
+  try {
+    await api.decidePermission({ conversationId: id, requestId: request.requestId, tool: request.tool, allow, always, ...extras });
+  } catch (e) {
+    // A resposta não chegou: o agente continua esperando, então o pedido volta para a tela.
+    if (chat.turns[id] && !chat.permissions[id]) {
+      chat.permissions[id] = request;
+      chat.turns[id].status = status;
+      if (conversation && mode !== undefined) conversation.permission_mode = mode;
+    }
+    throw e;
+  }
 }
 
 export function cancel(): void {

@@ -102,15 +102,31 @@
   /** Conversas agrupadas por projeto, na ordem escolhida; "Sem projeto" vem por último. */
   const groups = $derived.by(() => {
     const known = new Set(projects.list.map((p) => p.id));
-    const of = (id: string) =>
-      matches.filter((c) => (c.project_id && known.has(c.project_id) ? c.project_id : NO_PROJECT) === id);
-    const named = projects.list.map((p) => ({ id: p.id, name: p.name, icon: PASTA, project: p as Project | null, conversations: of(p.id) }));
+    const groupOf = (c: Conversation) => (c.project_id && known.has(c.project_id) ? c.project_id : NO_PROJECT);
+    const of = (id: string) => matches.filter((c) => groupOf(c) === id);
+    // Conta todas as conversas do grupo, não só as que a busca mostra: o aviso não some ao buscar.
+    const waitingIn = new Set(chat.conversations.filter((c) => chat.permissions[c.id]).map(groupOf));
+    const named = projects.list.map((p) => ({
+      id: p.id,
+      name: p.name,
+      icon: PASTA,
+      project: p as Project | null,
+      conversations: of(p.id),
+      waiting: waitingIn.has(p.id),
+    }));
     const latest = (g: { conversations: Conversation[] }) => Math.max(0, ...g.conversations.map((c) => c.updated_at));
     if (order === "recent") named.sort((a, b) => latest(b) - latest(a));
     if (order === "name") named.sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" }));
-    const loose = { id: NO_PROJECT, name: "Sem projeto", icon: BALAO, project: null as Project | null, conversations: of(NO_PROJECT) };
+    const loose = {
+      id: NO_PROJECT,
+      name: "Sem projeto",
+      icon: BALAO,
+      project: null as Project | null,
+      conversations: of(NO_PROJECT),
+      waiting: waitingIn.has(NO_PROJECT),
+    };
     const all = [...named, loose];
-    return search.trim() ? all.filter((g) => g.conversations.length) : all;
+    return search.trim() ? all.filter((g) => g.conversations.length || g.waiting) : all;
   });
 
   function when(c: Conversation): string {
@@ -241,6 +257,9 @@
               <span class="ellipsis">{g.name}</span>
             </button>
           {/if}
+          {#if g.waiting}
+            <span class="dot warn pulse" role="img" aria-label={`Conversa em ${g.name} aguardando você`} title="Uma conversa aqui aguarda sua resposta ou aprovação"></span>
+          {/if}
           <span class="count">{g.conversations.length}</span>
           {#if g.project?.folder}
             {@const project = g.project}
@@ -257,7 +276,9 @@
           {#each g.conversations as c (c.id)}
             <div class="conversation" class:active={view === "chat" && chat.activeId === c.id}>
               <button type="button" class="title" onclick={() => open(c.id)}>
-                {#if chat.turns[c.id]}<span class="busy" role="img" aria-label="Respondendo"></span>{/if}
+                {#if chat.permissions[c.id]}
+                  <span class="dot warn pulse" role="img" aria-label="Aguardando você" title="Aguardando sua resposta ou aprovação"></span>
+                {:else if chat.turns[c.id]}<span class="busy" role="img" aria-label="Respondendo"></span>{/if}
                 {#if c.kind === "agent"}
                   <svg role="img" aria-label="Sessão de agente" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l4 4-4 4M12 17h7" /></svg>
                 {/if}
@@ -343,6 +364,7 @@
   .conversation.active .title { font-weight: 500; }
   .title svg { flex-shrink: 0; color: var(--muted); }
   .busy { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--accent-text); }
+
   .when { flex-shrink: 0; font-size: 11px; color: var(--muted); }
   .remove { display: none; }
   .conversation:hover .remove, .conversation:focus-within .remove { display: grid; }
@@ -359,6 +381,10 @@
   .dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--faint); }
   .dot.ok { background: var(--ok); }
   .dot.warn { background: var(--warn); }
+  /* Turno parado esperando o usuário (autorização, pergunta ou plano): se destaca do "respondendo". */
+  .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 3px var(--warn-bg); } }
+  @media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
   .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .who.current { font-weight: 600; }
   .meter { display: block; width: 100%; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
