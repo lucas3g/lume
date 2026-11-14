@@ -36,6 +36,7 @@ use crate::infrastructure::{
     git_cli::GitCli,
     history_index::SqliteHistoryIndex,
     icons::FaviconFetcher,
+    knowledge_fs::FsKnowledge,
     mcp_registry::McpRegistry,
     memory_fs::FsMemory,
     pty::PtyTerminals,
@@ -82,6 +83,7 @@ impl Container {
             .app_data_dir()
             .map_err(|e| AppError(format!("Pasta de dados indisponível: {e}")))?;
         let chat_dir = data_dir.join("chat");
+        let knowledge = Arc::new(FsKnowledge::new(data_dir.join("knowledge")));
         let profiles_dir = data_dir.join("profiles");
         std::fs::create_dir_all(&chat_dir).map_err(io)?;
         std::fs::create_dir_all(&profiles_dir).map_err(io)?;
@@ -165,6 +167,7 @@ impl Container {
                 ids: ids.clone(),
                 memory: Arc::new(FsMemory::new(main_config.join("projects"))),
                 vcs: vcs.clone(),
+                knowledge: knowledge.clone(),
             },
             connectors: connectors.clone(),
             store: BrowseStore {
@@ -204,6 +207,7 @@ impl Container {
                     projects: store.clone(),
                     connectors: store.clone(),
                     conversations: store.clone(),
+                    knowledge,
                 },
                 skills,
                 connectors: store.clone(),

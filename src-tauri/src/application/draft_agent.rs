@@ -67,6 +67,7 @@ impl DraftAgent {
             denied_tools: vec![],
             mcp_config: None,
             allowed_tools: vec![],
+            read_dirs: vec![],
         };
         let (mut control, _handle) = TurnControl::new();
         match self.engine.run_turn(&request, &mut control, &mut |_| {}).await {

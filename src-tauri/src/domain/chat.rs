@@ -183,6 +183,8 @@ pub struct TurnRequest {
     pub mcp_config: Option<String>,
     /// Regras que liberam as ferramentas dos conectores.
     pub allowed_tools: Vec<String>,
+    /// Pastas que o assistente pode ler além da de trabalho (ex.: o conhecimento do projeto).
+    pub read_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

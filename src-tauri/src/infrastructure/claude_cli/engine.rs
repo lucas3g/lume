@@ -75,6 +75,9 @@ impl ClaudeCliEngine {
         if let Some(system) = &request.extra_system {
             cmd.args(["--append-system-prompt", system]);
         }
+        for dir in &request.read_dirs {
+            cmd.args(["--add-dir", dir]);
+        }
         cmd.current_dir(&request.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -284,6 +287,7 @@ mod tests {
             denied_tools: vec![],
             mcp_config: None,
             allowed_tools: vec![],
+            read_dirs: vec![],
         }
     }
 

@@ -23,6 +23,7 @@ pub struct World {
     pub skills: Arc<SqliteSkills>,
     pub history: Arc<FakeHistory>,
     pub events: Arc<RecordingEvents>,
+    pub knowledge: Arc<FakeKnowledge>,
 }
 
 impl World {
@@ -38,7 +39,7 @@ impl World {
         }
         ConversationRepository::insert(&*store, "c1", "Nova conversa", "opus", "/tmp", KIND_CHAT, None).unwrap();
         let skills = Arc::new(SqliteSkills::new(store.clone(), "/pasta/inexistente".into(), "/pasta/inexistente".into()));
-        World { store, skills, history: Arc::default(), events: Arc::default() }
+        World { store, skills, history: Arc::default(), events: Arc::default(), knowledge: Arc::default() }
     }
 }
 
@@ -250,6 +251,30 @@ impl MemoryStore for FakeMemory {
     }
     fn remove(&self, folder: &str, name: &str) -> AppResult<()> {
         self.0.lock().unwrap().retain(|(f, n, _)| !(f == folder && n == name));
+        Ok(())
+    }
+}
+
+/// Pasta de conhecimento em memória: projeto → arquivos gravados por último.
+/// Com o segundo campo ligado, gravar falha (disco cheio, sem permissão).
+#[derive(Default)]
+pub struct FakeKnowledge(pub Mutex<Vec<SyncedProject>>, pub Mutex<bool>);
+
+/// Projeto e os arquivos (nome, conteúdo) gravados por último.
+pub type SyncedProject = (String, Vec<(String, String)>);
+
+impl KnowledgeFolder for FakeKnowledge {
+    fn sync(&self, project_id: &str, files: &[(String, String)]) -> AppResult<String> {
+        if *self.1.lock().unwrap() {
+            return Err(AppError("disco cheio".into()));
+        }
+        let mut all = self.0.lock().unwrap();
+        all.retain(|(p, _)| p != project_id);
+        all.push((project_id.into(), files.to_vec()));
+        Ok(format!("/dados/knowledge/{project_id}"))
+    }
+    fn remove(&self, project_id: &str) -> AppResult<()> {
+        self.0.lock().unwrap().retain(|(p, _)| p != project_id);
         Ok(())
     }
 }

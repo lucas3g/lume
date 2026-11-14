@@ -102,6 +102,27 @@ pub(crate) fn cli_command(cli: &Path) -> Command {
     cmd
 }
 
+/// Para um CLI que não lê fora da pasta de trabalho: o conteúdo das pastas extras
+/// (o conhecimento do projeto) vai junto das instruções, como texto.
+pub(crate) fn inline_read_dirs(request: &TurnRequest) -> TurnRequest {
+    let mut request = request.clone();
+    let mut files: Vec<(String, String)> = std::mem::take(&mut request.read_dirs)
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter(|e| e.path().is_file() && !e.file_name().to_string_lossy().starts_with('.'))
+        .filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read_to_string(e.path()).ok()?)))
+        .collect();
+    if files.is_empty() {
+        return request;
+    }
+    files.sort();
+    let contents: String = files.iter().map(|(name, text)| format!("Conteúdo de {name}:\n{text}\n")).collect();
+    let system = request.extra_system.take().unwrap_or_default();
+    request.extra_system = Some(format!("{system}\n\nOs arquivos de conhecimento já seguem aqui, não é preciso abri-los:\n{contents}"));
+    request
+}
+
 /// O texto que um CLI sem canal próprio de instruções e anexos recebe como mensagem:
 /// as instruções do aplicativo (só ao abrir a sessão), os anexos e a mensagem do usuário.
 /// Imagens e PDFs viram arquivos temporários, apagados quando este valor sai de cena.
@@ -229,6 +250,7 @@ pub(crate) fn sample_request(provider: Provider) -> TurnRequest {
         denied_tools: vec![],
         mcp_config: None,
         allowed_tools: vec![],
+        read_dirs: vec![],
     }
 }
 
@@ -253,6 +275,17 @@ mod tests {
         request.extra_system = Some("Seja breve.".into());
         request.attachments = vec![Attachment::text("nota.md", "conteúdo")];
         let opened = Prompt::compose(&request);
+        let dir = std::env::temp_dir().join(format!("lume-inline-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("regras.md"), "Use REST.").unwrap();
+        std::fs::write(dir.join(".tmp"), "meio gravado").unwrap();
+        let mut with_dir = request.clone();
+        with_dir.read_dirs = vec![dir.to_string_lossy().into_owned()];
+        let inlined = inline_read_dirs(&with_dir);
+        let system = inlined.extra_system.unwrap();
+        assert!(system.starts_with("Seja breve.") && system.contains("Conteúdo de regras.md:\nUse REST."));
+        assert!(!system.contains("meio gravado") && inlined.read_dirs.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
         assert!(opened.text.starts_with("Instruções e contexto do aplicativo"));
         assert!(opened.text.contains("Seja breve.") && opened.text.contains("Arquivo anexado — nota.md:\nconteúdo"));
         assert!(opened.text.ends_with("olá"));

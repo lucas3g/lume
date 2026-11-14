@@ -3,20 +3,28 @@
 
 use super::{
     flags,
-    ports::{AgentRepository, ConnectorRepository, ConversationRepository, HistoryIndex, ProjectRepository, Settings, SkillRepository},
+    projects::{sync_knowledge, ProjectKnowledge},
+    ports::{
+        AgentRepository, ConnectorRepository, ConversationRepository, HistoryIndex, KnowledgeFolder, ProjectRepository, Settings,
+        SkillRepository,
+    },
     AppResult,
 };
 use crate::domain::{
     chat::{transcript_prompt, Conversation},
     extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
     history::context_prompt,
-    project::{project_knowledge, project_rules},
+    project::project_rules,
 };
 use std::sync::Arc;
 
 const CONTEXT_SNIPPETS: usize = 3;
 /// Conversa comum: consulta à web e skills, tudo liberado, sem acesso a arquivos.
 const CHAT_TOOLS: [&str; 3] = ["WebSearch", "WebFetch", "Skill"];
+/// Leitura que a conversa comum ganha quando o projeto tem arquivos de conhecimento em disco.
+/// Sem pedir autorização, ela alcança só a pasta deles e a pasta de trabalho das conversas
+/// comuns (que fica vazia); fora disso a leitura pede autorização ao usuário.
+const KNOWLEDGE_TOOLS: [&str; 2] = ["Read", "Grep"];
 /// Sessão de agente: o conjunto padrão de ferramentas do provedor.
 const AGENT_TOOLS: &str = "default";
 
@@ -34,8 +42,13 @@ pub struct TurnSetup {
     /// da conversa. O CLI fixa o prompt de sistema quando a sessão abre e ignora o novo
     /// ao retomá-la; quando ela muda, segue junto da mensagem.
     pub rules: Option<String>,
-    /// Arquivos de conhecimento do projeto; como `rules`, mas reenviados à parte por serem grandes.
+    /// Lista dos arquivos de conhecimento do projeto (o conteúdo fica em disco); como
+    /// `rules`, reenviada quando muda.
     pub knowledge: Option<String>,
+    /// Muda quando muda a lista ou o conteúdo de algum arquivo de conhecimento.
+    pub knowledge_key: Option<String>,
+    /// Pastas que o assistente pode ler além da de trabalho (a do conhecimento do projeto).
+    pub read_dirs: Vec<String>,
     pub tools: String,
     pub effort: String,
     pub permission_mode: String,
@@ -56,9 +69,11 @@ pub struct PrepareTurn {
     pub projects: Arc<dyn ProjectRepository>,
     pub connectors: Arc<dyn ConnectorRepository>,
     pub conversations: Arc<dyn ConversationRepository>,
+    pub knowledge: Arc<dyn KnowledgeFolder>,
 }
 
 impl PrepareTurn {
+
     /// Sem sessão no provedor, o diálogo já gravado (menos a mensagem que está sendo enviada) vira contexto.
     fn earlier_dialogue(&self, conversation: &Conversation) -> AppResult<Option<String>> {
         if conversation.cli_session_id.is_some() {
@@ -87,10 +102,27 @@ impl PrepareTurn {
         let denied = denied_skills(&self.skills.catalog()?, &self.skills.rules(SCOPE_ALL)?, agent_rules.as_ref());
         let (mcp_config, connector_tools) = mcp_setup(&self.connectors.list()?);
         let denied_tools = denied_server_rules(&self.settings.flags_with_prefix(SERVER_OFF_PREFIX)?);
+        let project = match &conversation.project_id {
+            Some(id) => self.projects.get(id)?,
+            None => None,
+        };
+        let synced = match &project {
+            Some(p) => sync_knowledge(&*self.projects, &*self.knowledge, &p.id)?,
+            None => ProjectKnowledge::None,
+        };
+        let (read_dirs, knowledge, knowledge_key) = match synced {
+            ProjectKnowledge::OnDisk { dir, listing, key } => (vec![dir], Some(listing), Some(key)),
+            ProjectKnowledge::Inline(text) => (vec![], Some(text.clone()), Some(text)),
+            ProjectKnowledge::None => (vec![], None, None),
+        };
         let (tools, own_tools): (String, Vec<String>) = if conversation.is_agent() {
             (AGENT_TOOLS.into(), conversation.allowed_tools.clone())
         } else {
-            (CHAT_TOOLS.join(","), CHAT_TOOLS.iter().map(|t| (*t).to_owned()).collect())
+            let mut tools: Vec<&str> = CHAT_TOOLS.to_vec();
+            if !read_dirs.is_empty() {
+                tools.extend(KNOWLEDGE_TOOLS);
+            }
+            (tools.join(","), CHAT_TOOLS.iter().map(|t| (*t).to_owned()).collect())
         };
         let allowed_tools = own_tools.into_iter().chain(connector_tools).collect();
 
@@ -105,14 +137,6 @@ impl PrepareTurn {
             .as_ref()
             .filter(|a| !a.instructions.trim().is_empty())
             .map(|a| format!("Você está atuando como o agente \"{}\".\n{}", a.name, a.instructions.trim()));
-        let project = match &conversation.project_id {
-            Some(id) => self.projects.get(id)?,
-            None => None,
-        };
-        let knowledge = match &project {
-            Some(p) => project_knowledge(&self.projects.knowledge(&p.id)?),
-            None => None,
-        };
         let earlier = self.earlier_dialogue(conversation)?;
         let rules = [project.as_ref().and_then(project_rules), instructions].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
         let rules = (!rules.is_empty()).then_some(rules);
@@ -126,6 +150,8 @@ impl PrepareTurn {
             extra_system: Some(sections.join("\n\n")),
             rules,
             knowledge,
+            knowledge_key,
+            read_dirs,
             tools,
             effort: conversation.effort.clone(),
             permission_mode: conversation.permission_mode.clone(),
@@ -156,6 +182,7 @@ mod tests {
             projects: world.store.clone(),
             connectors: world.store.clone(),
             conversations: world.store.clone(),
+            knowledge: world.knowledge.clone(),
         }
     }
 
@@ -227,14 +254,39 @@ mod tests {
     }
 
     #[test]
-    fn project_adds_instructions_and_knowledge() {
+    fn project_adds_instructions_and_lists_knowledge_to_read_on_demand() {
         let world = World::with_accounts(vec![]);
         let project = crate::domain::project::Project { id: "p1".into(), name: "Portal".into(), instructions: "Use REST.".into(), folder: None };
         ProjectRepository::save(&*world.store, &project).unwrap();
-        world.store.add_file("f1", "p1", "glossario.md", "SKU é o código do produto.").unwrap();
         world.store.set_project("c1", Some("p1")).unwrap();
-        let system = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap().extra_system.unwrap();
+        let setup = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap();
+        assert!(setup.read_dirs.is_empty() && setup.knowledge.is_none());
+        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill", "sem conhecimento, a conversa segue sem ler arquivos");
+
+        world.store.add_file("f1", "p1", "glossario.md", "SKU é o código do produto.").unwrap();
+        let setup = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap();
+        let system = setup.extra_system.unwrap();
         assert!(system.contains("Instruções do projeto \"Portal\":\nUse REST."));
-        assert!(system.contains("glossario.md:\nSKU é o código do produto."));
+        assert!(system.contains("na pasta /dados/knowledge/p1:\n- glossario.md (26 caracteres)"));
+        assert!(!system.contains("SKU"), "o conteúdo fica em disco, fora do prompt");
+        assert_eq!(setup.read_dirs, ["/dados/knowledge/p1"]);
+        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill,Read,Grep");
+        assert_eq!(setup.allowed_tools, ["WebSearch", "WebFetch", "Skill"], "a leitura não é liberada fora da pasta");
+        let synced = world.knowledge.0.lock().unwrap().clone();
+        assert_eq!(synced, [("p1".to_owned(), vec![("glossario.md".to_owned(), "SKU é o código do produto.".to_owned())])]);
+    }
+
+    #[test]
+    fn knowledge_goes_in_the_prompt_when_it_cannot_be_written_to_disk() {
+        let world = World::with_accounts(vec![]);
+        let project = crate::domain::project::Project { id: "p1".into(), name: "Portal".into(), instructions: String::new(), folder: None };
+        ProjectRepository::save(&*world.store, &project).unwrap();
+        world.store.set_project("c1", Some("p1")).unwrap();
+        world.store.add_file("f1", "p1", "glossario.md", "SKU é o código do produto.").unwrap();
+        *world.knowledge.1.lock().unwrap() = true;
+        let setup = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap();
+        assert!(setup.extra_system.unwrap().contains("glossario.md:\nSKU é o código do produto."), "o turno segue, com o conteúdo no prompt");
+        assert!(setup.read_dirs.is_empty());
+        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill");
     }
 }

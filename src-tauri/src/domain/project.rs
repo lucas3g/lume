@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-/// Limite do conhecimento do projeto enviado em cada turno, em caracteres.
+/// Limite do conhecimento guardado por projeto, em caracteres.
 pub const MAX_KNOWLEDGE_CHARS: usize = 150_000;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -63,8 +63,39 @@ pub fn project_rules(project: &Project) -> Option<String> {
     (!rules.is_empty()).then(|| format!("Instruções do projeto \"{}\":\n{rules}\n", project.name))
 }
 
-/// Arquivos de conhecimento do projeto até o limite; os que não cabem ficam de fora, inteiros.
-pub fn project_knowledge(files: &[(String, String)]) -> Option<String> {
+/// Nome de arquivo seguro para gravar o conhecimento em disco: sem pastas nem caracteres
+/// que o sistema recusa; nomes repetidos ganham um número.
+pub fn knowledge_file_names(names: &[String]) -> Vec<String> {
+    let mut used: Vec<String> = vec![];
+    for name in names {
+        let base: String = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .map(|c| if c.is_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+            .collect();
+        let base = base.trim().trim_start_matches('.').to_owned();
+        let base = if base.is_empty() { "arquivo.txt".to_owned() } else { base };
+        let (stem, ext) = match base.rsplit_once('.') {
+            Some((stem, ext)) if !stem.is_empty() => (stem.to_owned(), format!(".{ext}")),
+            _ => (base.clone(), String::new()),
+        };
+        let mut candidate = base.clone();
+        let mut n = 2;
+        // O disco do macOS e do Windows não distingue maiúsculas (inclusive acentuadas).
+        while used.iter().any(|u| u.to_lowercase() == candidate.to_lowercase()) {
+            candidate = format!("{stem} ({n}){ext}");
+            n += 1;
+        }
+        used.push(candidate);
+    }
+    used
+}
+
+/// Conteúdo dos arquivos de conhecimento no próprio prompt, até o limite; os que não cabem
+/// ficam de fora, inteiros. Usado quando os arquivos não puderam ser gravados em disco.
+pub fn project_knowledge_inline(files: &[(String, String)]) -> Option<String> {
     let mut out = String::new();
     let mut used = 0;
     for (name, content) in files {
@@ -76,6 +107,20 @@ pub fn project_knowledge(files: &[(String, String)]) -> Option<String> {
         out.push_str(&format!("Arquivo de conhecimento do projeto — {name}:\n{content}\n"));
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// Aviso com a pasta e a lista dos arquivos de conhecimento: o conteúdo não vai no
+/// prompt, o assistente lê só o que precisar. `files` é (nome em disco, caracteres).
+pub fn project_knowledge(dir: &str, files: &[(String, usize)]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let list: String = files.iter().map(|(name, size)| format!("- {name} ({size} caracteres)\n")).collect();
+    Some(format!(
+        "Arquivos de conhecimento do projeto, na pasta {dir}:\n{list}\
+         Eles não estão neste prompt: quando a pergunta depender deles, leia só os relevantes \
+         (ou procure neles por um trecho) antes de responder.\n"
+    ))
 }
 
 #[cfg(test)]
@@ -90,8 +135,9 @@ mod tests {
     fn joins_instructions_and_files() {
         let rules = project_rules(&project("Responda em português.")).unwrap();
         assert!(rules.contains("Instruções do projeto \"Portal\":\nResponda em português."));
-        assert!(project_knowledge(&[("regras.md".into(), "Use REST.".into())]).unwrap().contains("regras.md:\nUse REST."));
-        assert_eq!((project_rules(&project("  ")), project_knowledge(&[])), (None, None));
+        let knowledge = project_knowledge("/dados/knowledge/p", &[("regras.md".into(), 9)]).unwrap();
+        assert!(knowledge.contains("na pasta /dados/knowledge/p:\n- regras.md (9 caracteres)"));
+        assert_eq!((project_rules(&project("  ")), project_knowledge("/x", &[])), (None, None));
     }
 
     #[test]
@@ -111,10 +157,19 @@ mod tests {
     }
 
     #[test]
-    fn skips_files_beyond_the_limit() {
-        let big = "x".repeat(MAX_KNOWLEDGE_CHARS);
-        let files = [("grande.txt".into(), big), ("extra.txt".into(), "y".into())];
-        let prompt = project_knowledge(&files).unwrap();
+    fn knowledge_names_are_plain_and_unique() {
+        let names = ["regras.md", "../segredo.md", "regras.md", "REGRAS.md", "a:b?.txt", ".env", "", "ação.md", "AÇÃO.md"].map(String::from);
+        assert_eq!(
+            knowledge_file_names(&names),
+            ["regras.md", "segredo.md", "regras (2).md", "REGRAS (3).md", "a_b_.txt", "env", "arquivo.txt", "ação.md", "AÇÃO (2).md"]
+        );
+    }
+
+    #[test]
+    fn inline_knowledge_skips_files_beyond_the_limit() {
+        let files = [("grande.txt".into(), "x".repeat(MAX_KNOWLEDGE_CHARS)), ("extra.txt".into(), "y".into())];
+        let prompt = project_knowledge_inline(&files).unwrap();
         assert!(prompt.contains("grande.txt") && !prompt.contains("extra.txt"));
+        assert_eq!(project_knowledge_inline(&[]), None);
     }
 }

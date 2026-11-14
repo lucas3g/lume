@@ -4,7 +4,7 @@
 //! O Antigravity guarda um único login por computador e só o faz pela própria tela:
 //! não há perfil isolado, comando de login nem consulta de conta ou de uso.
 
-use super::providers::{cli_command, failure, find_executable, now_seconds, Prompt};
+use super::providers::{cli_command, failure, find_executable, inline_read_dirs, now_seconds, Prompt};
 use crate::application::{
     ports::{AccountGateway, ChatEngine, TurnListener, UsageProbe},
     AppError, AppResult, TurnControl,
@@ -160,6 +160,8 @@ pub struct AntigravityEngine;
 impl ChatEngine for AntigravityEngine {
     async fn run_turn(&self, request: &TurnRequest, control: &mut TurnControl, on_event: TurnListener<'_>) -> TurnEnd {
         let Some(cli) = find_cli() else { return TurnEnd::Failed(missing_cli().0) };
+        // O Antigravity recusa o que pediria autorização, como ler fora da pasta de trabalho.
+        let request = &inline_read_dirs(request);
         let prompt = Prompt::compose(request);
         let mut child = match cli_command(&cli)
             .args(print_args(request, &prompt.text))

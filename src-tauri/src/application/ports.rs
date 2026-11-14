@@ -86,6 +86,15 @@ pub trait TaskRepository: Send + Sync {
     fn delete(&self, id: &str) -> AppResult<()>;
 }
 
+/// Cópia em disco dos arquivos de conhecimento de cada projeto, para o assistente ler
+/// sob demanda em vez de receber o conteúdo no prompt.
+pub trait KnowledgeFolder: Send + Sync {
+    /// Deixa a pasta do projeto com exatamente estes arquivos (nome, conteúdo) e devolve o caminho dela.
+    fn sync(&self, project_id: &str, files: &[(String, String)]) -> AppResult<String>;
+    /// Apaga a pasta do projeto.
+    fn remove(&self, project_id: &str) -> AppResult<()>;
+}
+
 /// Memória que o Claude Code mantém por pasta de projeto (arquivos Markdown).
 pub trait MemoryStore: Send + Sync {
     fn list(&self, folder: &str) -> AppResult<Vec<MemoryFile>>;

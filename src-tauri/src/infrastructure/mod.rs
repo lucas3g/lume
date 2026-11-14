@@ -10,6 +10,7 @@ pub mod files;
 pub mod git_cli;
 pub mod history_index;
 pub mod icons;
+pub mod knowledge_fs;
 pub mod mcp_registry;
 pub mod memory_fs;
 pub mod pty;

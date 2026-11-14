@@ -115,7 +115,7 @@ impl SendMessage {
         let mut tried: Vec<String> = vec![];
         let mut previous: Option<(Account, Handoff)> = None;
         // Instruções e conhecimento que a sessão já recebeu: cada parte só é reenviada quando muda.
-        let standing = [(RULES_PREFIX, setup.rules.as_deref()), (KNOWLEDGE_PREFIX, setup.knowledge.as_deref())]
+        let standing = [(RULES_PREFIX, setup.rules.as_deref()), (KNOWLEDGE_PREFIX, setup.knowledge_key.as_deref())]
             .map(|(prefix, text)| {
                 let key = format!("{prefix}{conversation_id}");
                 let print = fingerprint(text);
@@ -185,6 +185,7 @@ impl SendMessage {
                 denied_tools: setup.denied_tools.clone(),
                 mcp_config: setup.mcp_config.clone(),
                 allowed_tools: setup.allowed_tools.clone(),
+                read_dirs: setup.read_dirs.clone(),
             };
             let mut journal = Journal::default();
             let answer = control.answer.clone();
@@ -502,7 +503,10 @@ fn updated_instructions(rules: Option<&str>, knowledge: Option<&str>, text: &str
     }
     if let Some(knowledge) = knowledge {
         let knowledge = if knowledge.is_empty() { "O projeto não tem mais arquivos de conhecimento." } else { knowledge };
-        note.push_str(&format!("Os arquivos de conhecimento do projeto foram atualizados e substituem os anteriores:\n{knowledge}\n"));
+        note.push_str(&format!(
+            "Os arquivos de conhecimento do projeto mudaram; esta lista substitui a anterior e o que já foi lido deles \
+             pode estar desatualizado:\n{knowledge}\n"
+        ));
     }
     format!("{APP_NOTE_OPEN}\n{note}{APP_NOTE_CLOSE}\n\n{text}")
 }
@@ -537,6 +541,7 @@ mod tests {
                 projects: world.store.clone(),
                 connectors: world.store.clone(),
                 conversations: world.store.clone(),
+                knowledge: world.knowledge.clone(),
             },
             skills: world.skills.clone(),
             connectors: world.store.clone(),
@@ -734,6 +739,29 @@ mod tests {
         uc.execute("c1", "e agora?", &[], vec![], TurnControl::new().0).await.unwrap();
         uc.execute("c1", "de novo", &[], vec![], TurnControl::new().0).await.unwrap();
         assert_eq!(world.store.messages("c1").unwrap()[4].content, "e agora?", "a conversa mostra só o que o usuário escreveu");
+    }
+
+    #[tokio::test]
+    async fn resumed_session_is_told_when_knowledge_content_changes_with_same_name_and_size() {
+        use crate::application::ports::ProjectRepository;
+        use crate::domain::project::Project;
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: None };
+        ProjectRepository::save(&*world.store, &project).unwrap();
+        world.store.set_project("c1", Some("p1")).unwrap();
+        world.store.add_file("f1", "p1", "precos.csv", "a;1").unwrap();
+        let engine = ScriptedEngine::new(|req, call| {
+            match call {
+                1 => assert_eq!(req.read_dirs, ["/dados/knowledge/p1"]),
+                _ => assert!(req.prompt.contains("mudaram") && req.prompt.contains("- precos.csv (3 caracteres)")),
+            }
+            (vec![], TurnEnd::Done { session_id: Some("s1".into()), text: "ok".into() })
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "preço?", &[], vec![], TurnControl::new().0).await.unwrap();
+        ProjectRepository::remove_file(&*world.store, "f1").unwrap();
+        world.store.add_file("f2", "p1", "precos.csv", "a;2").unwrap();
+        uc.execute("c1", "e agora?", &[], vec![], TurnControl::new().0).await.unwrap();
     }
 
     #[test]

@@ -430,8 +430,8 @@ pub fn add_project_files(app: App<'_>, project_id: String, paths: Vec<String>) -
 }
 
 #[tauri::command]
-pub fn remove_project_file(app: App<'_>, file_id: String) -> AppResult<()> {
-    app.projects.remove_file(&file_id)
+pub fn remove_project_file(app: App<'_>, project_id: String, file_id: String) -> AppResult<()> {
+    app.projects.remove_file(&project_id, &file_id)
 }
 
 // ---- memória do projeto (lê e grava em disco)

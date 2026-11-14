@@ -1,16 +1,56 @@
 //! Gestão de projetos e de seus arquivos de conhecimento.
 
 use super::{
-    ports::{ConversationRepository, FileLoader, IdGenerator, MemoryStore, ProjectRepository, VersionControl},
+    ports::{ConversationRepository, FileLoader, IdGenerator, KnowledgeFolder, MemoryStore, ProjectRepository, VersionControl},
     AppError, AppResult,
 };
 use crate::domain::{
     chat::{AttachmentKind, Conversation, KIND_AGENT},
-    project::{folder_name, normalize_folder, MemoryFile, Project, ProjectFile, MAX_KNOWLEDGE_CHARS},
+    project::{
+        folder_name, knowledge_file_names, normalize_folder, project_knowledge, project_knowledge_inline, MemoryFile, Project,
+        ProjectFile, MAX_KNOWLEDGE_CHARS,
+    },
 };
 use std::sync::Arc;
 
 pub const NEW_SESSION_TITLE: &str = "Nova sessão";
+
+/// Como o conhecimento do projeto chega ao assistente.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProjectKnowledge {
+    None,
+    /// Arquivos copiados para `dir`; o prompt leva só `listing`. `key` também muda
+    /// quando muda o conteúdo, para a sessão retomada saber que precisa reler.
+    OnDisk { dir: String, listing: String, key: String },
+    /// A cópia em disco falhou: o conteúdo vai no prompt, como antes.
+    Inline(String),
+}
+
+/// Deixa a pasta de conhecimento do projeto igual ao que está guardado e diz como entregá-lo.
+pub fn sync_knowledge(projects: &dyn ProjectRepository, knowledge: &dyn KnowledgeFolder, project_id: &str) -> AppResult<ProjectKnowledge> {
+    use sha2::{Digest, Sha256};
+    let stored = projects.knowledge(project_id)?;
+    if stored.is_empty() {
+        let _ = knowledge.remove(project_id);
+        return Ok(ProjectKnowledge::None);
+    }
+    let names = knowledge_file_names(&stored.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
+    let files: Vec<(String, String)> = names.into_iter().zip(stored.iter().map(|(_, c)| c.clone())).collect();
+    let Ok(dir) = knowledge.sync(project_id, &files) else {
+        return Ok(project_knowledge_inline(&stored).map_or(ProjectKnowledge::None, ProjectKnowledge::Inline));
+    };
+    let listed: Vec<(String, usize)> = files.iter().map(|(n, c)| (n.clone(), c.chars().count())).collect();
+    let listing = project_knowledge(&dir, &listed).unwrap_or_default();
+    let mut digest = Sha256::new();
+    for (name, content) in &files {
+        digest.update(name.as_bytes());
+        digest.update([0]);
+        digest.update(content.as_bytes());
+        digest.update([0]);
+    }
+    let key = format!("{listing}{:x}", digest.finalize());
+    Ok(ProjectKnowledge::OnDisk { dir, listing, key })
+}
 
 pub struct ManageProjects {
     pub projects: Arc<dyn ProjectRepository>,
@@ -19,6 +59,7 @@ pub struct ManageProjects {
     pub ids: Arc<dyn IdGenerator>,
     pub memory: Arc<dyn MemoryStore>,
     pub vcs: Arc<dyn VersionControl>,
+    pub knowledge: Arc<dyn KnowledgeFolder>,
 }
 
 impl ManageProjects {
@@ -152,7 +193,10 @@ impl ManageProjects {
     }
 
     pub fn delete(&self, id: &str) -> AppResult<()> {
-        self.projects.delete(id)
+        self.projects.delete(id)?;
+        // A cópia em disco é refeita a cada turno; sobrar não quebra nada, então a falha não impede a exclusão.
+        let _ = self.knowledge.remove(id);
+        Ok(())
     }
 
     pub fn files(&self, project_id: &str) -> AppResult<Vec<ProjectFile>> {
@@ -173,11 +217,20 @@ impl ManageProjects {
             }
             self.projects.add_file(&self.ids.new_id(), project_id, &file.name, &file.data)?;
         }
+        self.refresh_knowledge(project_id);
         Ok(())
     }
 
-    pub fn remove_file(&self, file_id: &str) -> AppResult<()> {
-        self.projects.remove_file(file_id)
+    pub fn remove_file(&self, project_id: &str, file_id: &str) -> AppResult<()> {
+        self.projects.remove_file(file_id)?;
+        // O arquivo removido sai do disco já, sem esperar a próxima mensagem do projeto.
+        self.refresh_knowledge(project_id);
+        Ok(())
+    }
+
+    /// A cópia em disco também é refeita a cada turno: falhar aqui não impede a edição.
+    fn refresh_knowledge(&self, project_id: &str) {
+        let _ = sync_knowledge(&*self.projects, &*self.knowledge, project_id);
     }
 
     pub fn assign(&self, conversation_id: &str, project_id: Option<&str>) -> AppResult<()> {
@@ -200,6 +253,7 @@ mod tests {
             ids: Arc::new(SequentialIds::default()),
             memory: Arc::new(FakeMemory::default()),
             vcs: Arc::new(FakeVcs::default()),
+            knowledge: world.knowledge.clone(),
         }
     }
 
@@ -259,12 +313,17 @@ mod tests {
         assert!(uc.add_files(&project.id, &["enorme.txt".into()]).unwrap_err().0.contains("limite"));
         let stored = uc.files(&project.id).unwrap();
         assert_eq!((stored.len(), stored[0].name.as_str(), stored[0].size), (1, "regras.md", 9));
+        assert_eq!(world.knowledge.0.lock().unwrap().len(), 1, "o arquivo já vai para o disco ao ser adicionado");
+        uc.remove_file(&project.id, &stored[0].id).unwrap();
+        assert!(world.knowledge.0.lock().unwrap().is_empty(), "e sai do disco ao ser removido");
+        uc.add_files(&project.id, &["regras.md".into()]).unwrap();
 
         uc.assign("c1", Some(&project.id)).unwrap();
         assert_eq!(world.conversation("c1").project_id, Some(project.id.clone()));
         uc.delete(&project.id).unwrap();
         assert_eq!(world.conversation("c1").project_id, None, "a conversa sai do projeto excluído");
         assert!(uc.files(&project.id).unwrap().is_empty());
+        assert!(world.knowledge.0.lock().unwrap().is_empty(), "a pasta do projeto excluído é apagada");
     }
 
     #[test]

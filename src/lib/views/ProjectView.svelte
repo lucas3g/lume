@@ -123,7 +123,8 @@
 
   const removeFile = (file: ProjectFile) =>
     run(async () => {
-      await api.removeProjectFile(file.id);
+      if (!project) return;
+      await api.removeProjectFile(project.id, file.id);
       files = files.filter((f) => f.id !== file.id);
     });
 
@@ -178,7 +179,7 @@
         <div class="head">
           <div>
             <h2 class="section-title">Conhecimento</h2>
-            <div class="muted small">Arquivos de texto enviados em cada conversa do projeto · {totalSize.toLocaleString("pt-BR")} de 150.000 caracteres</div>
+            <div class="muted small">Arquivos de texto que o assistente lê quando a pergunta precisa deles · {totalSize.toLocaleString("pt-BR")} de 150.000 caracteres</div>
           </div>
           <button type="button" class="btn small" onclick={addFiles}>Adicionar arquivos</button>
         </div>
