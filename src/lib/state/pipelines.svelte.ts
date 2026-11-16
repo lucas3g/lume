@@ -14,7 +14,7 @@ export const pipelines = $state({
   /** Mensagens das conversas das etapas, por conversa. */
   messages: {} as Record<string, Message[]>,
   /** Pedido para preencher o formulário de uma execução nova (ex.: completar uma task vaga). */
-  draft: null as { projectId: string; jiraKey: string; title: string; request: string } | null,
+  draft: null as { projectId: string; title: string; request: string } | null,
 });
 
 export async function loadPipelines(): Promise<void> {

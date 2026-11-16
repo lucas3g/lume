@@ -194,6 +194,7 @@ impl Container {
                 pipelines: store.clone(),
                 agents: store.clone(),
                 settings: store.clone(),
+                catalog: Arc::new(crate::infrastructure::model_catalog::CliModels),
                 projects: store.clone(),
                 conversations: store.clone(),
                 vcs: vcs.clone(),

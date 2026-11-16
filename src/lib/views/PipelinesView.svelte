@@ -18,7 +18,6 @@
   let { onnavigate }: Props = $props();
 
   let projectId = $state("");
-  let jiraKey = $state("");
   let title = $state("");
   let request = $state("");
   let budget = $state(90);
@@ -54,7 +53,6 @@
     const draft = pipelines.draft;
     if (!draft) return;
     projectId = draft.projectId;
-    jiraKey = draft.jiraKey;
     title = draft.title;
     request = draft.request;
     pipelines.draft = null;
@@ -67,12 +65,13 @@
     try {
       const run = await api.startPipeline({
         projectId,
-        jiraKey: jiraKey.trim() || null,
+        // A Triagem procura a task no Jira a partir da descrição.
+        jiraKey: null,
         title: title.trim(),
         request: request.trim(),
         budgetMinutes: Number(budget) || null,
       });
-      jiraKey = title = request = "";
+      title = request = "";
       await loadPipelines();
       await openPipeline(run.id);
     } catch (e) {
@@ -111,19 +110,21 @@
                 {#each withFolder as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
               </select>
             </label>
-            <label><span>Task do Jira <span class="opt">(opcional)</span></span>
-              <input class="input mono-in" bind:value={jiraKey} placeholder="Ex.: LUME-142" autocapitalize="characters" />
-            </label>
             <label><span>Orçamento (minutos)</span>
               <input class="input" type="number" min="10" step="10" bind:value={budget} />
             </label>
           </div>
-          <label><span>Título {#if jiraKey.trim()}<span class="opt">(opcional: sem ele, vale o da task)</span>{/if}</span>
+          <label><span>Título <span class="opt">(opcional: sem ele, vale a primeira linha da descrição)</span></span>
             <input class="input" bind:value={title} placeholder="Ex.: Exportar conversa em Markdown" />
           </label>
-          <label><span>O que fazer {#if jiraKey.trim()}<span class="opt">(opcional: observações sobre a task)</span>{/if}</span>
+          <label><span>O que fazer</span>
             <textarea class="input" rows="4" bind:value={request} placeholder="Descreva o problema ou a funcionalidade, com o que conta como pronto."></textarea>
           </label>
+          <p class="muted small">
+            {config?.skipped.includes("triage")
+              ? "A Triagem está desligada neste projeto: a esteira segue só com a descrição, sem procurar a task no Jira."
+              : "A Triagem procura no Jira a task que corresponde à descrição e a assume; o Relator comenta nela no fim. Sem task correspondente, segue só com a descrição."}
+          </p>
           {#if project}
             <p class="mode" class:warn={!project.versioned}>
               {#if project.versioned}
@@ -142,7 +143,7 @@
           {/if}
           <p class="muted small">O texto da task é tratado como dado, não como instrução. Nenhum bot faz commit nem push: o commit fica com você no fim.</p>
           <div class="row">
-            <button type="submit" class="btn primary" disabled={busy || !projectId || (!jiraKey.trim() && !title.trim() && !request.trim())}>Iniciar a esteira</button>
+            <button type="submit" class="btn primary" disabled={busy || !projectId || !request.trim()}>Iniciar a esteira</button>
           </div>
         {/if}
       </form>

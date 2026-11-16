@@ -4,7 +4,7 @@
 use super::{
     projects::add_free_worktree,
     ports::{
-        AgentRepository, Clock, ConversationRepository, EventSink, IdGenerator, PipelineRepository, ProjectRepository, Settings,
+        AgentRepository, Clock, ConversationRepository, EventSink, IdGenerator, ModelCatalog, PipelineRepository, ProjectRepository, Settings,
         StageRunner, VersionControl,
     },
     send_message::make_title,
@@ -14,7 +14,7 @@ use crate::domain::{
     account::Provider,
     chat::{Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, found_task, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
         suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -35,6 +35,7 @@ pub struct ManagePipelines {
     pub pipelines: Arc<dyn PipelineRepository>,
     pub agents: Arc<dyn AgentRepository>,
     pub settings: Arc<dyn Settings>,
+    pub catalog: Arc<dyn ModelCatalog>,
     pub projects: Arc<dyn ProjectRepository>,
     pub conversations: Arc<dyn ConversationRepository>,
     pub vcs: Arc<dyn VersionControl>,
@@ -144,6 +145,11 @@ impl ManagePipelines {
     /// Modelo de cada nível em cada serviço (vale para todos os projetos).
     pub fn models(&self) -> TierModels {
         self.settings.text(super::prefs::PIPELINE_MODELS).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    /// Modelos que o CLI do serviço aceita, para escolher em uma lista.
+    pub async fn cli_models(&self, provider: Provider) -> AppResult<Vec<String>> {
+        self.catalog.models(provider).await
     }
 
     pub fn save_models(&self, models: TierModels) -> AppResult<TierModels> {
@@ -339,6 +345,11 @@ impl ManagePipelines {
         };
         stage.finished_at = Some(self.clock.now());
         self.pipelines.save_stage(&stage)?;
+        // O pedido veio sem task: a que a Triagem achou no Jira passa a ser a da execução,
+        // e o Relator comenta nela no fim.
+        if role == Role::Triage && run.jira_key.is_none() {
+            run.jira_key = stage.output.as_deref().and_then(found_task);
+        }
         if stage.status == StageStatus::Failed {
             let note = format!("{} não terminou: {}", role.label(), stage.output.clone().unwrap_or_default());
             return self.finish(run, RunStatus::Failed, Some(note));
@@ -568,6 +579,7 @@ mod tests {
             pipelines: world.store.clone(),
             agents: world.store.clone(),
             settings: world.store.clone(),
+            catalog: Arc::new(FakeCatalog),
             projects: world.store.clone(),
             conversations: world.store.clone(),
             vcs: vcs.clone(),
@@ -706,6 +718,7 @@ mod tests {
     async fn failed_stage_is_retried_and_crash_is_recovered() {
         let (_world, uc, _vcs) = setup(false);
         let run = uc.start(StartInput { request: "Trocar a cor do botão".into(), title: "Cor".into(), ..input(None) }).unwrap();
+        assert_eq!(run.jira_key, None);
         let bots = Bots::new(vec![Err(AppError("todas as contas no limite".into()))]);
         uc.advance(&run.id, &bots).await.unwrap();
         let detail = uc.detail(&run.id).unwrap();
@@ -713,8 +726,10 @@ mod tests {
         assert!(detail.run.note.unwrap().contains("todas as contas no limite"));
 
         uc.retry(&run.id).unwrap();
-        let bots = Bots::new(vec![Ok("VEREDITO: CLARO"), Ok("plano")]);
+        let bots = Bots::new(vec![Ok("achei\nTASK: LOJA-12\nVEREDITO: CLARO"), Ok("plano")]);
         uc.advance(&run.id, &bots).await.unwrap();
+        assert_eq!(uc.detail(&run.id).unwrap().run.jira_key.as_deref(), Some("LOJA-12"), "a Triagem achou a task no Jira");
+        assert!(bots.prompts.lock().unwrap()[1].contains("Task do Jira: LOJA-12"));
         assert_eq!(roles(&uc, &run.id), [("triage", "failed"), ("triage", "done"), ("planner", "done"), ("approval", "running")]);
 
         // Cancelar na parada de aprovação encerra na hora.

@@ -434,3 +434,16 @@ impl IconSource for FakeIcons {
         Ok(Some(b"\x89PNG\r\n\x1a\n".to_vec()))
     }
 }
+
+/// Catálogo de modelos fixo: um modelo por serviço que lista.
+pub struct FakeCatalog;
+
+#[async_trait]
+impl ModelCatalog for FakeCatalog {
+    async fn models(&self, provider: Provider) -> AppResult<Vec<String>> {
+        Ok(match provider {
+            Provider::Claude => vec![],
+            other => vec![format!("{}-modelo", other.as_str())],
+        })
+    }
+}

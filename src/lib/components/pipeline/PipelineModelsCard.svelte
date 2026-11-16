@@ -3,50 +3,78 @@
   import { api, errorMessage } from "../../api";
   import { TIERS } from "../../pipeline";
   import { accounts } from "../../state/accounts.svelte";
-  import type { Provider, TierModels } from "../../types";
+  import { MODELS, MORE_MODELS, type Provider, type Tier, type TierModels } from "../../types";
 
   let models = $state<TierModels>({ claude: {}, chatgpt: {}, gemini: {} });
   let error = $state<string | null>(null);
-  let saved = $state(false);
-  let busy = $state(false);
+  /** Modelos que o CLI de cada serviço listou; `null` enquanto carrega. */
+  let listed = $state<Record<Provider, { id: string; label: string }[] | null>>({ claude: [], chatgpt: null, gemini: null });
+  let listError = $state<Partial<Record<Provider, string>>>({});
 
-  const SERVICES: { provider: Provider; label: string; placeholder: Record<string, string>; hint: string }[] = [
-    { provider: "claude", label: "Claude", placeholder: { fast: "haiku", balanced: "sonnet", strong: "opus" },
-      hint: "Vazio usa os apelidos haiku, sonnet e opus, sempre na versão mais recente." },
-    { provider: "chatgpt", label: "ChatGPT", placeholder: { fast: "padrão do Codex", balanced: "padrão do Codex", strong: "padrão do Codex" },
-      hint: "Use os nomes que o Codex aceita em --model. Vazio usa o modelo configurado no Codex." },
-    { provider: "gemini", label: "Gemini", placeholder: { fast: "padrão do Antigravity", balanced: "padrão do Antigravity", strong: "padrão do Antigravity" },
-      hint: "Rode `agy models` no terminal para ver os nomes. Vazio usa o modelo configurado no Antigravity." },
+  const CLAUDE = [...MODELS, ...MORE_MODELS].map((m) => ({ id: m.id as string, label: m.label as string }));
+  const SERVICES: { provider: Provider; label: string; cli: string }[] = [
+    { provider: "claude", label: "Claude", cli: "Claude Code" },
+    { provider: "chatgpt", label: "ChatGPT", cli: "Codex" },
+    { provider: "gemini", label: "Gemini", cli: "Antigravity" },
   ];
+  const CLAUDE_DEFAULT: Record<Tier, string> = { fast: "Haiku", balanced: "Sonnet", strong: "Opus" };
 
-  /** Serviços com conta cadastrada; o Claude aparece sempre. */
+  /** Serviços com conta conectada; o Claude aparece sempre. */
   const visible = $derived(SERVICES.filter((s) => s.provider === "claude" || accounts.list.some((a) => a.provider === s.provider)));
 
   onMount(() => {
+    listed.claude = CLAUDE;
     void api.pipelineModels().then((m) => (models = m), (e) => (error = errorMessage(e)));
   });
 
-  async function save(event: SubmitEvent) {
-    event.preventDefault();
+  // Pede a lista ao CLI de cada serviço conectado, uma vez.
+  $effect(() => {
+    for (const s of visible) {
+      if (s.provider === "claude" || listed[s.provider] !== null || listError[s.provider]) continue;
+      const provider = s.provider;
+      api.cliModels(provider).then(
+        (ids) => (listed[provider] = ids.map((id) => ({ id, label: id }))),
+        (e) => {
+          listError[provider] = errorMessage(e);
+          listed[provider] = [];
+        },
+      );
+    }
+  });
+
+  /** Opções do nível: as listadas e, se o salvo não estiver entre elas, o salvo. */
+  function options(provider: Provider, tier: Tier) {
+    const list = listed[provider] ?? [];
+    const current = models[provider][tier];
+    return current && !list.some((m) => m.id === current) ? [...list, { id: current, label: `${current} (salvo)` }] : list;
+  }
+
+  const defaultLabel = (s: (typeof SERVICES)[number], tier: Tier) =>
+    s.provider === "claude" ? `Padrão (${CLAUDE_DEFAULT[tier]} mais recente)` : `Padrão do ${s.cli}`;
+
+  async function choose(provider: Provider, tier: Tier, value: string) {
     error = null;
-    busy = true;
+    const previous = $state.snapshot(models);
+    const next: TierModels = $state.snapshot(models);
+    if (value) next[provider][tier] = value;
+    else delete next[provider][tier];
+    models = next;
     try {
-      models = await api.savePipelineModels(models);
-      saved = true;
+      models = await api.savePipelineModels(next);
     } catch (e) {
+      models = previous;
       error = errorMessage(e);
-    } finally {
-      busy = false;
     }
   }
 </script>
 
-<form class="card" aria-label="Modelos por serviço" onsubmit={save}>
+<section class="card" aria-label="Modelos por serviço">
   <div class="head">
     <h2 class="section-title">Modelos por serviço</h2>
     <p class="muted small">
       Cada papel usa um nível de modelo: rápido (Triagem e Relator), equilibrado (Testador) ou forte (Planejador,
-      Implementador e Revisor). Se a conta trocar para outro serviço no meio de uma etapa, ela segue com o modelo desse serviço.
+      Implementador e Revisor). Se a conta trocar para outro serviço no meio de uma etapa, ela segue com o modelo desse
+      serviço. A escolha é salva na hora e vale para as próximas etapas.
     </p>
   </div>
   {#if error}<p class="error-text pad" role="alert">{error}</p>{/if}
@@ -56,26 +84,29 @@
     {#each visible as s (s.provider)}
       <span class="service">{s.label}</span>
       {#each TIERS as t (t.tier)}
-        <input class="input mono-in" aria-label={`${s.label}, modelo ${t.label.toLowerCase()}`} placeholder={s.placeholder[t.tier]}
-          value={models[s.provider][t.tier] ?? ""} oninput={(e) => { models[s.provider][t.tier] = e.currentTarget.value; saved = false; }} />
+        <select class="input" aria-label={`${s.label}, modelo ${t.label.toLowerCase()}`} value={models[s.provider][t.tier] ?? ""}
+          disabled={listed[s.provider] === null} onchange={(e) => choose(s.provider, t.tier, e.currentTarget.value)}>
+          <option value="">{listed[s.provider] === null ? "Carregando modelos…" : defaultLabel(s, t.tier)}</option>
+          {#each options(s.provider, t.tier) as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
+        </select>
       {/each}
-      <span></span><span class="muted small hint">{s.hint}</span>
+      {#if listError[s.provider]}
+        <span></span><span class="small hint warn">Não foi possível listar os modelos do {s.cli}: {listError[s.provider]} Fica o padrão do CLI.</span>
+      {:else if s.provider !== "claude" && listed[s.provider]?.length === 0}
+        <span></span><span class="muted small hint">O {s.cli} não informou modelos; fica o padrão do CLI.</span>
+      {/if}
     {/each}
   </div>
-  <div class="row foot">
-    <button type="submit" class="btn primary small" disabled={busy}>Salvar modelos</button>
-    {#if saved}<span class="muted small" role="status">Salvo. Vale para as próximas etapas.</span>{/if}
-  </div>
-</form>
+</section>
 
 <style>
   .head { padding: 16px 20px 4px; display: flex; flex-direction: column; gap: 4px; }
   .pad { padding: 4px 20px 0; }
-  .table { display: grid; grid-template-columns: 90px repeat(3, minmax(0, 1fr)); gap: 8px 10px; align-items: center; padding: 12px 20px; }
+  .table { display: grid; grid-template-columns: 90px repeat(3, minmax(0, 1fr)); gap: 8px 10px; align-items: center; padding: 12px 20px 18px; }
+  .table select { width: 100%; min-width: 0; }
   .service { font-weight: 500; }
-  .mono-in { width: 100%; min-width: 0; font-family: var(--mono); font-size: 12.5px; }
   .hint { grid-column: 2 / -1; margin: -4px 0 6px; }
-  .foot { padding: 0 20px 16px; }
+  .warn { color: var(--warn-text); }
   @media (max-width: 640px) {
     .table { grid-template-columns: 1fr; }
     .table > span:empty, .table > .label { display: none; }

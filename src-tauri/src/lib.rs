@@ -101,6 +101,7 @@ pub fn run() {
             commands::save_pipeline_config,
             commands::pipeline_models,
             commands::save_pipeline_models,
+            commands::cli_models,
             commands::list_pipelines,
             commands::pipeline_detail,
             commands::start_pipeline,

@@ -674,6 +674,12 @@ pub fn pipeline_models(app: App<'_>) -> TierModels {
     app.pipelines.models()
 }
 
+/// Modelos que o CLI do serviço aceita (Codex e Antigravity); vazio para o Claude.
+#[tauri::command]
+pub async fn cli_models(app: App<'_>, provider: Provider) -> AppResult<Vec<String>> {
+    app.pipelines.cli_models(provider).await
+}
+
 #[tauri::command]
 pub fn save_pipeline_models(app: App<'_>, models: TierModels) -> AppResult<TierModels> {
     app.pipelines.save_models(models)

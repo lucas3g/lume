@@ -98,6 +98,7 @@ export const api = {
   pipelineConfig: (projectId: string) => invoke<PipelineConfig>("pipeline_config", { projectId }),
   savePipelineConfig: (projectId: string, config: PipelineConfig) =>
     invoke<PipelineConfig>("save_pipeline_config", { projectId, config }),
+  cliModels: (provider: Provider) => invoke<string[]>("cli_models", { provider }),
   pipelineModels: () => invoke<TierModels>("pipeline_models"),
   savePipelineModels: (models: TierModels) => invoke<TierModels>("save_pipeline_models", { models }),
   listPipelines: () => invoke<PipelineRun[]>("list_pipelines"),

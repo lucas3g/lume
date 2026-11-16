@@ -244,6 +244,13 @@ pub trait ChatEngine: Send + Sync {
     ) -> TurnEnd;
 }
 
+/// Modelos que o CLI de um serviço aceita; vazio quando o serviço não lista (o Claude:
+/// a interface já conhece os apelidos e versões).
+#[async_trait]
+pub trait ModelCatalog: Send + Sync {
+    async fn models(&self, provider: Provider) -> AppResult<Vec<String>>;
+}
+
 /// Consulta o uso atual de uma conta junto ao provedor, sem uma conversa.
 #[async_trait]
 pub trait UsageProbe: Send + Sync {

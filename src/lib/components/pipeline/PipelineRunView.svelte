@@ -155,11 +155,11 @@
   });
   function complete() {
     // O pedido volta ao formulário com espaço para responder ao que a Triagem achou vago.
+    const task = detail.jira_key ? `Task do Jira: ${detail.jira_key}\n\n` : "";
     pipelines.draft = {
       projectId: detail.project_id,
-      jiraKey: detail.jira_key ?? "",
-      title: detail.jira_key ? "" : detail.title,
-      request: `${detail.request}\n\nRespostas às dúvidas da Triagem:\n- `.trimStart(),
+      title: detail.title,
+      request: `${task}${detail.request}\n\nRespostas às dúvidas da Triagem:\n- `.trimStart(),
     };
     void openPipeline(null);
   }

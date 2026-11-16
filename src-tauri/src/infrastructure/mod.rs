@@ -13,6 +13,7 @@ pub mod icons;
 pub mod knowledge_fs;
 pub mod mcp_registry;
 pub mod memory_fs;
+pub mod model_catalog;
 pub mod pty;
 pub mod skills;
 pub mod sqlite;
