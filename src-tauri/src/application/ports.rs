@@ -98,15 +98,19 @@ pub trait PipelineRepository: Send + Sync {
     fn stages(&self, run_id: &str) -> AppResult<Vec<StageRun>>;
     /// Cria ou substitui a etapa.
     fn save_stage(&self, stage: &StageRun) -> AppResult<()>;
-    /// Apaga a execução e o registro das etapas.
+    /// Apaga a execução, o registro das etapas e as imagens.
     fn delete_run(&self, id: &str) -> AppResult<()>;
+    /// Guarda as imagens coladas no pedido, na ordem.
+    fn save_images(&self, run_id: &str, images: &[Attachment]) -> AppResult<()>;
+    fn images(&self, run_id: &str) -> AppResult<Vec<Attachment>>;
 }
 
 /// Roda uma etapa da esteira: um turno na conversa dela, com troca de conta quando o
 /// limite acaba. Devolve a resposta final do bot.
 #[async_trait]
 pub trait StageRunner: Send + Sync {
-    async fn run(&self, conversation_id: &str, prompt: &str) -> AppResult<String>;
+    /// `images` vão anexadas ao pedido da etapa.
+    async fn run(&self, conversation_id: &str, prompt: &str, images: Vec<Attachment>) -> AppResult<String>;
     /// Interrompe o turno em andamento na conversa.
     fn cancel(&self, conversation_id: &str);
 }

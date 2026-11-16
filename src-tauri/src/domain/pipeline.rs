@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 pub const MAX_ROUNDS: i64 = 3;
 /// Orçamento padrão de uma execução, em minutos.
 pub const DEFAULT_BUDGET_MINUTES: i64 = 90;
+/// Imagens que um pedido pode levar, e o tamanho máximo de cada uma (bytes, já decodificada).
+pub const MAX_IMAGES: usize = 8;
+pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// Tamanho máximo do diff entregue ao Revisor, em caracteres.
 pub const MAX_DIFF_CHARS: usize = 60_000;
 
@@ -74,6 +77,12 @@ impl Role {
             Role::Tester => Tier::Balanced,
             Role::Planner | Role::Implementer | Role::Reviewer => Tier::Strong,
         }
+    }
+
+    /// Papéis que recebem as imagens do pedido: quem entende a task e quem a executa.
+    /// O Revisor vê só o diff, de propósito.
+    pub fn sees_images(self) -> bool {
+        matches!(self, Role::Triage | Role::Planner | Role::Implementer)
     }
 
     /// Modo de permissão da sessão: só o Implementador e o Testador alteram a pasta
@@ -311,6 +320,8 @@ pub struct PipelineRun {
     pub skipped: Vec<Role>,
     /// Agentes de cada papel quando a execução começou: mudar o projeto não muda uma execução já iniciada.
     pub agents: BTreeMap<Role, RunAgent>,
+    /// Imagens coladas no pedido (o conteúdo fica à parte, para não pesar a cada atualização).
+    pub image_count: i64,
     pub budget_minutes: i64,
     /// Motivo do fim, quando falhou ou parou.
     pub note: Option<String>,
@@ -428,7 +439,11 @@ pub struct StageContext {
 
 /// Prompt de uma etapa. Cada papel recebe só o que precisa.
 pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String {
-    let header = format!("Você é o {} da esteira de bots do Lume.\n{UNTRUSTED}\n{}\n\n", role.label(), place(run));
+    let images = match run.image_count {
+        n if n > 0 && role.sees_images() => format!("O pedido veio com {n} imagem(ns) anexada(s) a esta mensagem: use-as para entender a task.\n"),
+        _ => String::new(),
+    };
+    let header = format!("Você é o {} da esteira de bots do Lume.\n{UNTRUSTED}\n{}\n{images}\n", role.label(), place(run));
     let task = task_block(run);
     let body = match role {
         Role::Triage => {
@@ -661,6 +676,7 @@ mod tests {
             rounds: 0,
             skipped: vec![],
             agents: BTreeMap::new(),
+            image_count: 0,
             budget_minutes: 60,
             note: None,
             created_at: 0,
@@ -836,6 +852,14 @@ mod tests {
         assert_eq!(found_task("objetivo\n**TASK: lume-142**\nVEREDITO: CLARO"), Some("LUME-142".into()));
         assert_eq!(found_task("TASK: nenhuma\nVEREDITO: CLARO"), None);
         assert_eq!(found_task("sem linha"), None);
+    }
+
+    #[test]
+    fn only_some_roles_are_told_about_the_images() {
+        let with_images = PipelineRun { image_count: 2, ..run(WorkMode::Direct, None) };
+        assert!(stage_prompt(Role::Planner, &with_images, &StageContext::default()).contains("2 imagem(ns)"));
+        assert!(!stage_prompt(Role::Reviewer, &with_images, &StageContext::default()).contains("imagem"));
+        assert!(!stage_prompt(Role::Planner, &run(WorkMode::Direct, None), &StageContext::default()).contains("imagem(ns)"));
     }
 
     #[test]

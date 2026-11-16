@@ -106,6 +106,7 @@ pub fn run() {
             commands::pipeline_detail,
             commands::start_pipeline,
             commands::decide_pipeline_plan,
+            commands::pipeline_images,
             commands::cancel_pipeline,
             commands::retry_pipeline,
             commands::commit_pipeline,

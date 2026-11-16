@@ -1,7 +1,7 @@
 // Esteira de bots: execuções, a que está aberta e as mensagens das conversas das etapas.
 
 import { api } from "../api";
-import type { Message, PipelineDetail, PipelineRun } from "../types";
+import type { Message, PastedImage, PipelineDetail, PipelineRun } from "../types";
 import { loadConversations } from "./chat.svelte";
 
 export const pipelines = $state({
@@ -14,7 +14,7 @@ export const pipelines = $state({
   /** Mensagens das conversas das etapas, por conversa. */
   messages: {} as Record<string, Message[]>,
   /** Pedido para preencher o formulário de uma execução nova (ex.: completar uma task vaga). */
-  draft: null as { projectId: string; title: string; request: string } | null,
+  draft: null as { projectId: string; title: string; request: string; images: PastedImage[] } | null,
 });
 
 export async function loadPipelines(): Promise<void> {

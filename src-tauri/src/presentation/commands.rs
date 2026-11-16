@@ -704,13 +704,32 @@ pub fn start_pipeline(
     title: String,
     request: String,
     budget_minutes: Option<i64>,
+    images: Option<Vec<PastedImage>>,
 ) -> AppResult<PipelineRun> {
-    let run = app.pipelines.start(StartInput { project_id, jira_key, title, request, budget_minutes })?;
+    let images = images
+        .unwrap_or_default()
+        .into_iter()
+        .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
+        .collect();
+    let run = app.pipelines.start(StartInput { project_id, jira_key, title, request, budget_minutes, images })?;
     app.spawn_pipeline(run.id.clone());
     Ok(run)
 }
 
 /// Aprova o plano (sem `feedback`) ou pede ajustes ao Planejador.
+/// Imagens coladas no pedido da execução (base64), para as miniaturas.
+#[tauri::command]
+pub fn pipeline_images(app: App<'_>, id: String) -> AppResult<Vec<ImageOut>> {
+    Ok(app.pipelines.images(&id)?.into_iter().map(|i| ImageOut { name: i.name, media_type: i.media_type, data: i.data }).collect())
+}
+
+#[derive(Serialize)]
+pub struct ImageOut {
+    name: String,
+    media_type: String,
+    data: String,
+}
+
 #[tauri::command]
 pub fn decide_pipeline_plan(app: App<'_>, id: String, feedback: Option<String>) -> AppResult<()> {
     app.pipelines.decide_plan(&id, feedback.as_deref())?;

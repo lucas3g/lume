@@ -391,6 +391,8 @@ export interface PipelineRun {
   skipped: PipelineRole[];
   /** Agente de cada papel quando a execução começou; `model` nulo usa o modelo padrão do papel. */
   agents: Partial<Record<PipelineRole, { id: string; name: string; model: string | null }>>;
+  /** Imagens coladas no pedido; o conteúdo vem à parte (`pipelineImages`). */
+  image_count: number;
   budget_minutes: number;
   note: string | null;
   created_at: number;

@@ -103,8 +103,9 @@ export const api = {
   savePipelineModels: (models: TierModels) => invoke<TierModels>("save_pipeline_models", { models }),
   listPipelines: () => invoke<PipelineRun[]>("list_pipelines"),
   pipelineDetail: (id: string) => invoke<PipelineDetail>("pipeline_detail", { id }),
-  startPipeline: (input: { projectId: string; jiraKey: string | null; title: string; request: string; budgetMinutes: number | null }) =>
+  startPipeline: (input: { projectId: string; jiraKey: string | null; title: string; request: string; budgetMinutes: number | null; images: PastedImage[] }) =>
     invoke<PipelineRun>("start_pipeline", input),
+  pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),
   decidePipelinePlan: (id: string, feedback: string | null) => invoke<void>("decide_pipeline_plan", { id, feedback }),
   cancelPipeline: (id: string) => invoke<void>("cancel_pipeline", { id }),
   retryPipeline: (id: string) => invoke<void>("retry_pipeline", { id }),

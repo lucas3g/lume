@@ -10,7 +10,7 @@
   import { loadPipelines, openPipeline, pipelines } from "../state/pipelines.svelte";
   import { STATION } from "../pipeline";
   import { agentName } from "../state/agents.svelte";
-  import type { PipelineConfig, PipelineRole, View } from "../types";
+  import type { PastedImage, PipelineConfig, PipelineRole, View } from "../types";
 
   interface Props {
     onnavigate: (view: View) => void;
@@ -24,6 +24,40 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let config = $state<PipelineConfig | null>(null);
+  /** Imagens coladas na descrição, com a miniatura (data URL). */
+  let images = $state<(PastedImage & { preview: string })[]>([]);
+  let imageCount = 0;
+  const MAX_IMAGES = 8;
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+  /** Imagens coladas no campo viram anexos do pedido, com miniatura. */
+  async function onPaste(event: ClipboardEvent) {
+    const files = [...(event.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    error = null;
+    const read = (file: File) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    for (const file of files) {
+      if (images.length >= MAX_IMAGES) {
+        error = `Cole no máximo ${MAX_IMAGES} imagens.`;
+        break;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        error = "Cada imagem pode ter até 5 MB.";
+        continue;
+      }
+      const preview = await read(file);
+      const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+      imageCount += 1;
+      images = [...images, { name: file.name || `imagem-${imageCount}.${ext}`, media_type: file.type, data: preview.split(",")[1] ?? "", preview }];
+    }
+  }
 
   const withFolder = $derived(projects.list.filter((p) => p.folder));
   const project = $derived(withFolder.find((p) => p.id === projectId));
@@ -55,6 +89,7 @@
     projectId = draft.projectId;
     title = draft.title;
     request = draft.request;
+    images = draft.images.map((i) => ({ ...i, preview: `data:${i.media_type};base64,${i.data}` }));
     pipelines.draft = null;
   });
 
@@ -70,8 +105,10 @@
         title: title.trim(),
         request: request.trim(),
         budgetMinutes: Number(budget) || null,
+        images: images.map(({ name, media_type, data }) => ({ name, media_type, data })),
       });
       title = request = "";
+      images = [];
       await loadPipelines();
       await openPipeline(run.id);
     } catch (e) {
@@ -118,8 +155,20 @@
             <input class="input" bind:value={title} placeholder="Ex.: Exportar conversa em Markdown" />
           </label>
           <label><span>O que fazer</span>
-            <textarea class="input" rows="4" bind:value={request} placeholder="Descreva o problema ou a funcionalidade, com o que conta como pronto."></textarea>
+            <textarea class="input" rows="4" bind:value={request} onpaste={onPaste}
+              placeholder="Descreva o problema ou a funcionalidade, com o que conta como pronto. Cole imagens aqui (prints de tela, layouts)."></textarea>
           </label>
+          {#if images.length}
+            <div class="thumbs" role="list" aria-label="Imagens coladas">
+              {#each images as image, i (image.preview)}
+                <span class="thumb" role="listitem" title={image.name}>
+                  <img src={image.preview} alt={image.name} />
+                  <button type="button" aria-label={`Remover a imagem ${image.name}`} title={`Remover a imagem ${image.name}`} onclick={() => (images = images.filter((_, j) => j !== i))}>×</button>
+                </span>
+              {/each}
+            </div>
+            <p class="muted small">Triagem, Planejador e Implementador recebem as imagens; o Revisor vê só o diff.</p>
+          {/if}
           <p class="muted small">
             {config?.skipped.includes("triage")
               ? "A Triagem está desligada neste projeto: a esteira segue só com a descrição, sem procurar a task no Jira."
@@ -196,5 +245,9 @@
   .pill.acc { background: rgba(91, 106, 217, 0.16); color: var(--accent-text); }
   .pill.bad { background: var(--danger-bg); color: var(--danger-text); }
   .link-btn { border: 0; background: none; padding: 0; color: var(--accent-text); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .thumb { position: relative; width: 72px; height: 72px; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; background: var(--bg); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb button { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 13px; line-height: 1; }
   .empty { padding: 14px 20px; border-top: 1px solid var(--hairline); }
 </style>

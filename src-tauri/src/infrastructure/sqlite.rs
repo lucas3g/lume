@@ -9,7 +9,7 @@ use crate::application::{
 };
 use crate::domain::{
     account::{Account, Identity, Provider},
-    chat::{Conversation, Message, RateInfo, Switch, DEFAULT_PERMISSION_MODE},
+    chat::{Attachment, AttachmentKind, Conversation, Message, RateInfo, Switch, DEFAULT_PERMISSION_MODE},
     extension::{connector_key, Agent, Connector},
     pipeline::{PipelineRun, Role, RunStatus, StageRun, StageStatus, WorkMode},
     project::{Project, ProjectFile},
@@ -55,12 +55,15 @@ CREATE TABLE IF NOT EXISTS projects(
 CREATE TABLE IF NOT EXISTS pipeline_runs(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, jira_key TEXT, title TEXT NOT NULL, request TEXT NOT NULL,
   status TEXT NOT NULL, mode TEXT NOT NULL, workdir TEXT NOT NULL, branch TEXT, rounds INTEGER NOT NULL DEFAULT 0,
-  skipped TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '{}',
+  skipped TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '{}', image_count INTEGER NOT NULL DEFAULT 0,
   budget_minutes INTEGER NOT NULL, note TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pipeline_stages(
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL, role TEXT NOT NULL, round INTEGER NOT NULL, status TEXT NOT NULL,
   conversation_id TEXT NOT NULL, input TEXT NOT NULL, output TEXT, started_at INTEGER NOT NULL, finished_at INTEGER);
 CREATE INDEX IF NOT EXISTS idx_pipeline_stages_run ON pipeline_stages(run_id, started_at);
+CREATE TABLE IF NOT EXISTS pipeline_images(
+  run_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, media_type TEXT NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY(run_id, position));
 CREATE TABLE IF NOT EXISTS project_files(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks(
@@ -79,7 +82,7 @@ const ACCOUNT_COLUMNS: &str =
 const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 15] = [
+const MIGRATIONS: [&str; 16] = [
     "ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE conversations ADD COLUMN session_provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
@@ -96,6 +99,7 @@ const MIGRATIONS: [&str; 15] = [
     "ALTER TABLE projects ADD COLUMN versioned INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pipeline_runs ADD COLUMN skipped TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE pipeline_runs ADD COLUMN agents TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE pipeline_runs ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0",
 ];
 
 impl From<rusqlite::Error> for AppError {
@@ -644,7 +648,7 @@ impl TaskRepository for SqliteStore {
     }
 }
 
-const RUN_COLUMNS: &str = "id,project_id,jira_key,title,request,status,mode,workdir,branch,rounds,budget_minutes,note,created_at,updated_at,skipped,agents";
+const RUN_COLUMNS: &str = "id,project_id,jira_key,title,request,status,mode,workdir,branch,rounds,budget_minutes,note,created_at,updated_at,skipped,agents,image_count";
 const STAGE_COLUMNS: &str = "id,run_id,role,round,status,conversation_id,input,output,started_at,finished_at";
 
 fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
@@ -665,6 +669,7 @@ fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
         updated_at: r.get(13)?,
         skipped: r.get::<_, String>(14)?.split(',').filter_map(Role::parse).collect(),
         agents: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
+        image_count: r.get(16)?,
     })
 }
 
@@ -698,11 +703,11 @@ impl PipelineRepository for SqliteStore {
 
     fn save_run(&self, run: &PipelineRun) -> AppResult<()> {
         self.conn().execute(
-            &format!("INSERT OR REPLACE INTO pipeline_runs({RUN_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+            &format!("INSERT OR REPLACE INTO pipeline_runs({RUN_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
             params![run.id, run.project_id, run.jira_key, run.title, run.request, run.status.key(), run.mode.key(),
                 run.workdir, run.branch, run.rounds, run.budget_minutes, run.note, run.created_at, run.updated_at,
                 run.skipped.iter().map(|r| r.key()).collect::<Vec<_>>().join(","),
-                serde_json::to_string(&run.agents).unwrap_or_else(|_| "{}".into())],
+                serde_json::to_string(&run.agents).unwrap_or_else(|_| "{}".into()), run.image_count],
         )?;
         Ok(())
     }
@@ -730,8 +735,29 @@ impl PipelineRepository for SqliteStore {
     fn delete_run(&self, id: &str) -> AppResult<()> {
         let c = self.conn();
         c.execute("DELETE FROM pipeline_stages WHERE run_id=?", [id])?;
+        c.execute("DELETE FROM pipeline_images WHERE run_id=?", [id])?;
         c.execute("DELETE FROM pipeline_runs WHERE id=?", [id])?;
         Ok(())
+    }
+
+    fn save_images(&self, run_id: &str, images: &[Attachment]) -> AppResult<()> {
+        let c = self.conn();
+        for (position, image) in images.iter().enumerate() {
+            c.execute(
+                "INSERT OR REPLACE INTO pipeline_images(run_id,position,name,media_type,data) VALUES(?,?,?,?,?)",
+                params![run_id, position as i64, image.name, image.media_type, image.data],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn images(&self, run_id: &str) -> AppResult<Vec<Attachment>> {
+        let c = self.conn();
+        let mut st = c.prepare("SELECT name,media_type,data FROM pipeline_images WHERE run_id=? ORDER BY position")?;
+        let rows = st.query_map([run_id], |r| {
+            Ok(Attachment { name: r.get(0)?, kind: AttachmentKind::Image, media_type: r.get(1)?, data: r.get(2)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }
 

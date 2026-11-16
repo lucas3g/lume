@@ -12,10 +12,10 @@ use super::{
 };
 use crate::domain::{
     account::Provider,
-    chat::{Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
+    chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, found_task, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
-        suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -55,6 +55,8 @@ pub struct StartInput {
     pub title: String,
     pub request: String,
     pub budget_minutes: Option<i64>,
+    /// Imagens coladas no pedido.
+    pub images: Vec<Attachment>,
 }
 
 /// Execução com o registro das etapas, para a tela de acompanhamento.
@@ -180,6 +182,11 @@ impl ManagePipelines {
         Ok(models)
     }
 
+    /// Imagens coladas no pedido da execução.
+    pub fn images(&self, run_id: &str) -> AppResult<Vec<Attachment>> {
+        self.pipelines.images(run_id)
+    }
+
     /// Cria a execução e prepara a pasta de trabalho. A condução começa com `advance`.
     pub fn start(&self, input: StartInput) -> AppResult<PipelineRun> {
         let project = self.projects.get(&input.project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
@@ -201,6 +208,13 @@ impl ManagePipelines {
         };
         if jira_key.is_none() && request.is_empty() && title.chars().count() < 12 {
             return Err(AppError("Descreva o que os bots devem fazer.".into()));
+        }
+        if input.images.len() > MAX_IMAGES {
+            return Err(AppError(format!("Cole no máximo {MAX_IMAGES} imagens.")));
+        }
+        // Base64: 4 caracteres para cada 3 bytes.
+        if input.images.iter().any(|i| i.data.len() / 4 * 3 > MAX_IMAGE_BYTES) {
+            return Err(AppError(format!("Cada imagem pode ter até {} MB.", MAX_IMAGE_BYTES / (1024 * 1024))));
         }
         let skipped = self.stored_config(&project.id).skipped;
         let agents = self
@@ -229,12 +243,14 @@ impl ManagePipelines {
             rounds: 0,
             skipped,
             agents,
+            image_count: input.images.len() as i64,
             budget_minutes: input.budget_minutes.filter(|m| *m > 0).unwrap_or(DEFAULT_BUDGET_MINUTES),
             note: None,
             created_at: now,
             updated_at: now,
         };
         self.pipelines.save_run(&run)?;
+        self.pipelines.save_images(&run.id, &input.images)?;
         self.events.pipeline_changed(&run);
         Ok(run)
     }
@@ -356,7 +372,8 @@ impl ManagePipelines {
         let result = if lock(&self.cancelled).contains(&run.id) {
             Err(AppError("Cancelada por você.".into()))
         } else {
-            runner.run(&conversation_id, &prompt).await
+            let images = if role.sees_images() && run.image_count > 0 { self.pipelines.images(&run.id)? } else { vec![] };
+            runner.run(&conversation_id, &prompt, images).await
         };
         let cancelled = lock(&self.cancelled).contains(&run.id);
         (stage.status, stage.output) = match result {
@@ -567,19 +584,22 @@ mod tests {
     struct Bots {
         answers: Mutex<Vec<AppResult<String>>>,
         prompts: Mutex<Vec<String>>,
+        /// Imagens recebidas por chamada.
+        images: Mutex<Vec<usize>>,
     }
 
     impl Bots {
         fn new(answers: Vec<AppResult<&str>>) -> Bots {
             let answers = answers.into_iter().rev().map(|a| a.map(str::to_owned)).collect();
-            Bots { answers: Mutex::new(answers), prompts: Mutex::default() }
+            Bots { answers: Mutex::new(answers), prompts: Mutex::default(), images: Mutex::default() }
         }
     }
 
     #[async_trait]
     impl StageRunner for Bots {
-        async fn run(&self, _conversation_id: &str, prompt: &str) -> AppResult<String> {
+        async fn run(&self, _conversation_id: &str, prompt: &str, images: Vec<Attachment>) -> AppResult<String> {
             self.prompts.lock().unwrap().push(prompt.to_owned());
+            self.images.lock().unwrap().push(images.len());
             self.answers.lock().unwrap().pop().unwrap_or_else(|| Err(AppError("sem resposta".into())))
         }
         fn cancel(&self, _conversation_id: &str) {}
@@ -622,7 +642,7 @@ mod tests {
     }
 
     fn input(jira: Option<&str>) -> StartInput {
-        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), title: String::new(), request: String::new(), budget_minutes: None }
+        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), title: String::new(), request: String::new(), budget_minutes: None, images: vec![] }
     }
 
     fn roles(uc: &ManagePipelines, id: &str) -> Vec<(&'static str, &'static str)> {
@@ -693,16 +713,22 @@ mod tests {
         uc.save_config("p1", config).unwrap();
         assert_eq!(uc.config("p1").unwrap().skipped, [Role::Triage, Role::Tester, Role::Reporter]);
 
-        let run = uc.start(StartInput { title: "Corrigir o cálculo do frete".into(), ..input(Some("loja-9")) }).unwrap();
+        let image = |n: &str| Attachment { name: n.into(), kind: crate::domain::chat::AttachmentKind::Image, media_type: "image/png".into(), data: "iVBO".into() };
+        let too_many = StartInput { images: (0..=MAX_IMAGES).map(|i| image(&i.to_string())).collect(), ..input(Some("loja-9")) };
+        assert!(uc.start(too_many).is_err());
+        let run = uc.start(StartInput { title: "Corrigir o cálculo do frete".into(), images: vec![image("a.png"), image("b.png")], ..input(Some("loja-9")) }).unwrap();
+        assert_eq!((run.image_count, uc.images(&run.id).unwrap().len()), (2, 2));
         assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::Reporter]);
         // Mudar o projeto depois de começar não muda a execução.
         uc.save_config("p1", PipelineConfig::default()).unwrap();
         let bots = Bots::new(vec![Ok("plano")]);
         uc.advance(&run.id, &bots).await.unwrap();
         assert!(bots.prompts.lock().unwrap()[0].contains("Não houve triagem"), "o Planejador lê o Jira sozinho");
+        assert_eq!(bots.images.lock().unwrap()[0], 2, "o Planejador recebe as imagens");
         uc.decide_plan(&run.id, None).unwrap();
         let bots = Bots::new(vec![Ok("fiz"), Ok("VEREDITO: APROVADO")]);
         uc.advance(&run.id, &bots).await.unwrap();
+        assert_eq!(*bots.images.lock().unwrap(), [2, 0], "o Implementador vê as imagens; o Revisor, só o diff");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!(detail.run.status, RunStatus::Done);
         assert_eq!(roles(&uc, &run.id), [("planner", "done"), ("approval", "done"), ("implementer", "done"), ("reviewer", "done")]);

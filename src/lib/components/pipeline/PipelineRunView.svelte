@@ -10,7 +10,7 @@
     clock, duration, icon, inputSummary, isActive, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, VISUAL,
   } from "../../pipeline";
-  import type { PipelineDetail, PipelineRole, StageRun, View } from "../../types";
+  import type { PastedImage, PipelineDetail, PipelineRole, StageRun, View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
 
   interface Props {
@@ -184,6 +184,15 @@
     await loadPipelines();
     await openPipeline(null);
   });
+  /** Imagens do pedido, carregadas uma vez por execução. */
+  let images = $state<PastedImage[]>([]);
+  $effect(() => {
+    const id = detail.id;
+    images = [];
+    if (detail.image_count > 0) api.pipelineImages(id).then((list) => id === detail.id && (images = list), () => {});
+  });
+  const imageSrc = (i: PastedImage) => `data:${i.media_type};base64,${i.data}`;
+
   function complete() {
     // O pedido volta ao formulário com espaço para responder ao que a Triagem achou vago.
     const task = detail.jira_key ? `Task do Jira: ${detail.jira_key}\n\n` : "";
@@ -191,6 +200,7 @@
       projectId: detail.project_id,
       title: detail.title,
       request: `${task}${detail.request}\n\nRespostas às dúvidas da Triagem:\n- `.trimStart(),
+      images: $state.snapshot(images),
     };
     void openPipeline(null);
   }
@@ -412,6 +422,13 @@
             {/if}
             <details class="entry" bind:open={entryOpen}>
               <summary><h3 class="label">Entrada</h3><span class="res">{inputSummary(panelStage, detail)}</span>{@html icon("chev", 13, 2.2)}</summary>
+              {#if images.length && ["triage", "planner", "implementer"].includes(panelStage.role)}
+                <div class="thumbs" aria-label="Imagens do pedido">
+                  {#each images as image (image.name + image.data.length)}
+                    <a class="thumb" href={imageSrc(image)} target="_blank" rel="noreferrer" title={image.name}><img src={imageSrc(image)} alt={image.name} /></a>
+                  {/each}
+                </div>
+              {/if}
               {#if panelStage.role === "approval"}
                 <div class="md">{@html renderMarkdown(panelStage.input)}</div>
               {:else}
@@ -600,6 +617,9 @@
   .tlog li.error, .tlog li.error .a { color: var(--danger-text); }
   .tlog li.live .a { color: var(--text); }
   .failed { color: var(--danger-text); }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .thumb { width: 56px; height: 56px; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; background: var(--bg); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .md :global(:first-child) { margin-top: 0; }
   .md :global(p), .md :global(ul), .md :global(ol) { margin: 0 0 8px; }
   .md :global(h1), .md :global(h2), .md :global(h3), .md :global(h4) { margin: 12px 0 6px; font-size: 13px; font-family: var(--font); font-weight: 600; color: var(--text); }
