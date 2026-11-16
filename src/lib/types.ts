@@ -393,6 +393,10 @@ export interface PipelineRun {
   agents: Partial<Record<PipelineRole, { id: string; name: string; model: string | null }>>;
   /** Imagens coladas no pedido; o conteúdo vem à parte (`pipelineImages`). */
   image_count: number;
+  /** Modelo de task do Jira do projeto quando a execução começou. */
+  jira_template: string | null;
+  /** Link da task do Jira da execução, quando conhecido. */
+  jira_url: string | null;
   budget_minutes: number;
   note: string | null;
   created_at: number;
@@ -437,4 +441,6 @@ export interface TierModels {
 export interface PipelineConfig {
   agents: Partial<Record<PipelineRole, string>>;
   skipped: PipelineRole[];
+  /** Task do Jira que serve de modelo (link ou chave) para o Relator criar uma task nova. */
+  jira_template: string | null;
 }

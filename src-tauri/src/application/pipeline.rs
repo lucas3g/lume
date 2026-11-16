@@ -14,7 +14,7 @@ use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, found_task, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, created_task, found_task, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
         suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -142,6 +142,7 @@ impl ManagePipelines {
     }
 
     pub fn save_config(&self, project_id: &str, mut config: PipelineConfig) -> AppResult<PipelineConfig> {
+        config.jira_template = config.jira_template.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
         self.projects.get(project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
         config.validate().map_err(AppError)?;
         for id in config.agents.values() {
@@ -182,6 +183,12 @@ impl ManagePipelines {
         Ok(models)
     }
 
+    /// Link da task no site do Jira do modelo (o modelo dado por link diz o endereço do site).
+    fn link_for(&self, template: Option<&str>, key: &str) -> Option<String> {
+        let (_, site) = task_ref(template?)?;
+        Some(task_url(&site?, key))
+    }
+
     /// Imagens coladas no pedido da execução.
     pub fn images(&self, run_id: &str) -> AppResult<Vec<Attachment>> {
         self.pipelines.images(run_id)
@@ -216,7 +223,9 @@ impl ManagePipelines {
         if input.images.iter().any(|i| i.data.len() / 4 * 3 > MAX_IMAGE_BYTES) {
             return Err(AppError(format!("Cada imagem pode ter até {} MB.", MAX_IMAGE_BYTES / (1024 * 1024))));
         }
-        let skipped = self.stored_config(&project.id).skipped;
+        let stored = self.stored_config(&project.id);
+        let (skipped, jira_template) = (stored.skipped, stored.jira_template);
+        let jira_url = jira_key.as_deref().and_then(|key| self.link_for(jira_template.as_deref(), key));
         let agents = self
             .role_agents(&project.id)?
             .into_iter()
@@ -244,6 +253,8 @@ impl ManagePipelines {
             skipped,
             agents,
             image_count: input.images.len() as i64,
+            jira_template,
+            jira_url,
             budget_minutes: input.budget_minutes.filter(|m| *m > 0).unwrap_or(DEFAULT_BUDGET_MINUTES),
             note: None,
             created_at: now,
@@ -387,6 +398,14 @@ impl ManagePipelines {
         // e o Relator comenta nela no fim.
         if role == Role::Triage && run.jira_key.is_none() {
             run.jira_key = stage.output.as_deref().and_then(found_task);
+            run.jira_url = run.jira_key.as_deref().and_then(|key| self.link_for(run.jira_template.as_deref(), key));
+        }
+        // Sem task para o pedido, o Relator cria uma pelo modelo do projeto: ela passa a ser a da execução.
+        if role == Role::Reporter && run.jira_key.is_none() && stage.status == StageStatus::Done
+            && let Some((key, url)) = stage.output.as_deref().and_then(created_task)
+        {
+            run.jira_url = url.or_else(|| self.link_for(run.jira_template.as_deref(), &key));
+            run.jira_key = Some(key);
         }
         if stage.status == StageStatus::Failed {
             let note = format!("{} não terminou: {}", role.label(), stage.output.clone().unwrap_or_default());
@@ -706,10 +725,10 @@ mod tests {
         let (world, uc, _vcs) = setup(false);
         let agent = Agent { id: "a1".into(), name: "Revisor rigoroso".into(), instructions: "Seja rigoroso.".into(), model: None };
         AgentRepository::save(&*world.store, &agent).unwrap();
-        let bad = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "nao-existe".into())]), skipped: vec![] };
+        let bad = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "nao-existe".into())]), skipped: vec![], ..Default::default() };
         assert!(uc.save_config("p1", bad).is_err());
-        assert!(uc.save_config("p1", PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Planner] }).is_err());
-        let config = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Reporter, Role::Triage, Role::Tester] };
+        assert!(uc.save_config("p1", PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Planner], ..Default::default() }).is_err());
+        let config = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Reporter, Role::Triage, Role::Tester], ..Default::default() };
         uc.save_config("p1", config).unwrap();
         assert_eq!(uc.config("p1").unwrap().skipped, [Role::Triage, Role::Tester, Role::Reporter]);
 
@@ -721,6 +740,7 @@ mod tests {
         assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::Reporter]);
         // Mudar o projeto depois de começar não muda a execução.
         uc.save_config("p1", PipelineConfig::default()).unwrap();
+        assert_eq!(run.jira_url, None, "sem modelo, o site do Jira não é conhecido");
         let bots = Bots::new(vec![Ok("plano")]);
         uc.advance(&run.id, &bots).await.unwrap();
         assert!(bots.prompts.lock().unwrap()[0].contains("Não houve triagem"), "o Planejador lê o Jira sozinho");
@@ -745,6 +765,25 @@ mod tests {
         let config = uc.config("p1").unwrap();
         assert!(config.agents.is_empty());
         uc.save_config("p1", PipelineConfig { skipped: vec![Role::Triage], ..config }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reporter_creates_the_task_from_the_project_template() {
+        let (_world, uc, _vcs) = setup(false);
+        let template = "https://elinfo.atlassian.net/browse/EI-5198";
+        assert!(uc.save_config("p1", PipelineConfig { jira_template: Some("não é task".into()), ..Default::default() }).is_err());
+        uc.save_config("p1", PipelineConfig { jira_template: Some(format!(" {template} ")), skipped: vec![Role::Triage, Role::Tester], ..Default::default() }).unwrap();
+        assert_eq!(uc.config("p1").unwrap().jira_template.as_deref(), Some(template));
+        let run = uc.start(StartInput { request: "Exportar pedidos em CSV".into(), ..input(None) }).unwrap();
+        assert_eq!(run.jira_template.as_deref(), Some(template));
+        uc.advance(&run.id, &Bots::new(vec![Ok("plano")])).await.unwrap();
+        uc.decide_plan(&run.id, None).unwrap();
+        let bots = Bots::new(vec![Ok("fiz"), Ok("VEREDITO: APROVADO"), Ok("Relatório\nTASK_CRIADA: EI-6001\nCOMMIT: Exporta CSV")]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        assert!(bots.prompts.lock().unwrap()[2].contains("seguindo o modelo https://elinfo.atlassian.net/browse/EI-5198"));
+        let done = uc.detail(&run.id).unwrap().run;
+        assert_eq!(done.status, RunStatus::Done);
+        assert_eq!((done.jira_key.as_deref(), done.jira_url.as_deref()), (Some("EI-6001"), Some("https://elinfo.atlassian.net/browse/EI-6001")));
     }
 
     #[tokio::test]

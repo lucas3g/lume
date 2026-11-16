@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { api, errorMessage } from "../../api";
   import { renderMarkdown } from "../../format";
   import { accounts } from "../../state/accounts.svelte";
@@ -191,7 +192,12 @@
     images = [];
     if (detail.image_count > 0) api.pipelineImages(id).then((list) => id === detail.id && (images = list), () => {});
   });
+  /** Imagem ampliada sobre a tela. */
+  let zoomed = $state<PastedImage | null>(null);
   const imageSrc = (i: PastedImage) => `data:${i.media_type};base64,${i.data}`;
+
+  /** A task foi criada pelo Relator (a Triagem não tinha achado nenhuma). */
+  const createdTask = $derived(!!detail.jira_key && /TASK_CRIADA:/i.test(passes.reporter.at(-1)?.output ?? ""));
 
   function complete() {
     // O pedido volta ao formulário com espaço para responder ao que a Triagem achou vago.
@@ -220,7 +226,9 @@
         <button type="button" class="btn icon" aria-label="Voltar à lista de execuções" title="Voltar à lista" onclick={() => openPipeline(null)}>
           <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
         </button>
-        {#if detail.jira_key}<span class="key">{detail.jira_key}</span>{:else}<span class="key manual">Pedido escrito</span>{/if}
+        {#if detail.jira_key && detail.jira_url}
+          <button type="button" class="key link" title={`Abrir ${detail.jira_key} no Jira`} onclick={() => openUrl(detail.jira_url!)}>{detail.jira_key} ↗</button>
+        {:else if detail.jira_key}<span class="key">{detail.jira_key}</span>{:else}<span class="key manual">Pedido escrito</span>{/if}
         <h1>{detail.title}</h1>
         <span class="pill {status.tone}">{#if detail.status === "awaiting_approval"}<span class="dot warn pulse"></span>{:else if detail.status === "running"}<span class="dot acc"></span>{/if}{status.label}</span>
       </div>
@@ -327,7 +335,14 @@
             <ul class="o-body">
               <li>{detail.mode === "worktree" ? `Alterações no ramo ${detail.branch}, em ${detail.workdir}` : "Alterações feitas direto na pasta de desenvolvimento"}</li>
               <li>{detail.rounds === 0 ? "O Revisor aprovou de primeira" : `O trabalho voltou ${detail.rounds} ${detail.rounds === 1 ? "vez" : "vezes"} antes de ser aprovado`}</li>
-              {#if detail.jira_key}<li>{detail.jira_key} comentada pelo Relator</li>{/if}
+              {#if detail.jira_key}
+                <li>
+                  {createdTask ? "Task criada no Jira pelo Relator:" : "Task do Jira comentada pelo Relator:"}
+                  {#if detail.jira_url}<button type="button" class="lnk inline" onclick={() => openUrl(detail.jira_url!)}>{detail.jira_key} ↗</button>{:else}<b>{detail.jira_key}</b>{/if}
+                </li>
+              {:else if detail.jira_template && !detail.skipped.includes("reporter")}
+                <li class="warn-text">O Relator não criou a task no Jira; veja o motivo no relatório dele.</li>
+              {/if}
             </ul>
             {#if detail.mode === "worktree"}
               <div class="commit">
@@ -425,7 +440,7 @@
               {#if images.length && ["triage", "planner", "implementer"].includes(panelStage.role)}
                 <div class="thumbs" aria-label="Imagens do pedido">
                   {#each images as image (image.name + image.data.length)}
-                    <a class="thumb" href={imageSrc(image)} target="_blank" rel="noreferrer" title={image.name}><img src={imageSrc(image)} alt={image.name} /></a>
+                    <button type="button" class="thumb" title={`Ampliar ${image.name}`} onclick={() => (zoomed = image)}><img src={imageSrc(image)} alt={image.name} /></button>
                   {/each}
                 </div>
               {/if}
@@ -468,6 +483,12 @@
   </div>
 </div>
 
+{#if zoomed}
+  <button type="button" class="zoom" aria-label="Fechar a imagem" onclick={() => (zoomed = null)} onkeydown={(e) => e.key === "Escape" && (zoomed = null)}>
+    <img src={imageSrc(zoomed)} alt={zoomed.name} />
+  </button>
+{/if}
+
 <style>
   .screen { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 18px 24px; }
   .screen > * { width: 100%; max-width: 1440px; margin-inline: auto; }
@@ -476,6 +497,10 @@
   .l1 { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; }
   .head h1 { font-family: var(--display); font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.25; overflow-wrap: anywhere; }
   .key { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--accent-text); padding: 1px 7px; border-radius: 6px; background: rgba(91, 106, 217, 0.14); border: 1px solid rgba(91, 106, 217, 0.3); white-space: nowrap; }
+  .key.link { cursor: pointer; }
+  .key.link:hover { background: rgba(91, 106, 217, 0.24); }
+  .lnk.inline { align-self: auto; font-size: inherit; }
+  .warn-text { color: var(--warn-text); }
   .key.manual { color: var(--text-2); background: var(--surface-2); border-color: var(--border-strong); font-family: var(--font); font-weight: 600; font-size: 11.5px; }
   .meta { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 8px; font-size: 12.5px; color: var(--text-2); }
   .m { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
@@ -618,8 +643,10 @@
   .tlog li.live .a { color: var(--text); }
   .failed { color: var(--danger-text); }
   .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-  .thumb { width: 56px; height: 56px; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; background: var(--bg); }
+  .thumb { padding: 0; cursor: zoom-in; width: 56px; height: 56px; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; background: var(--bg); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .zoom { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 32px; border: 0; background: rgba(0, 0, 0, 0.75); cursor: zoom-out; }
+  .zoom img { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6); }
   .md :global(:first-child) { margin-top: 0; }
   .md :global(p), .md :global(ul), .md :global(ol) { margin: 0 0 8px; }
   .md :global(h1), .md :global(h2), .md :global(h3), .md :global(h4) { margin: 12px 0 6px; font-size: 13px; font-family: var(--font); font-weight: 600; color: var(--text); }

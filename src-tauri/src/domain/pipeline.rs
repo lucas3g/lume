@@ -182,6 +182,10 @@ pub struct PipelineConfig {
     /// Etapas opcionais desligadas.
     #[serde(default)]
     pub skipped: Vec<Role>,
+    /// Task do Jira que serve de modelo (link ou chave): sem task para o pedido, o Relator cria
+    /// uma nova no mesmo projeto, tipo, campos e estrutura de descrição.
+    #[serde(default)]
+    pub jira_template: Option<String>,
 }
 
 impl PipelineConfig {
@@ -192,6 +196,11 @@ impl PipelineConfig {
         }
         if self.skipped.iter().any(|r| !Role::OPTIONAL.contains(r)) {
             return Err("Só Triagem, Testador e Relator podem ser desligados.".into());
+        }
+        if let Some(template) = &self.jira_template
+            && task_ref(template).is_none()
+        {
+            return Err("Modelo de task inválido: cole o link da task no Jira ou a chave (ex.: EI-5198).".into());
         }
         Ok(())
     }
@@ -322,6 +331,10 @@ pub struct PipelineRun {
     pub agents: BTreeMap<Role, RunAgent>,
     /// Imagens coladas no pedido (o conteúdo fica à parte, para não pesar a cada atualização).
     pub image_count: i64,
+    /// Modelo de task do projeto quando a execução começou (link ou chave).
+    pub jira_template: Option<String>,
+    /// Link da task do Jira da execução, quando conhecido.
+    pub jira_url: Option<String>,
     pub budget_minutes: i64,
     /// Motivo do fim, quando falhou ou parou.
     pub note: Option<String>,
@@ -522,7 +535,20 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                     "Comente na task {key} do Jira (conector do Atlassian) um relatório curto do que foi feito e, se existir \
                      uma transição para revisão (ex.: \"Em revisão\", \"Code review\"), mova a task para ela. Não feche a task."
                 ),
-                None => "Não há task do Jira para comentar.".to_owned(),
+                None => match &run.jira_template {
+                    Some(template) => format!(
+                        "Não há task do Jira para este pedido: crie uma no Jira com o conector do Atlassian, seguindo o modelo \
+                         {template}. Leia o modelo e use o mesmo projeto, o mesmo tipo de issue e os mesmos valores dos campos \
+                         personalizados (ex.: Sistema, Nível de dificuldade). O resumo é o título do pedido. A descrição segue \
+                         exatamente os itens da descrição do modelo, na mesma ordem: preencha cada um com o que se sabe pelo \
+                         pedido, pelo plano, pela implementação e pelos testes (ex.: Descrição/Problema, Solução, Testes, Caminho, \
+                         Módulo). O que não se sabe (ex.: cliente, gestor, responsável), escreva \"Não informado\": nunca invente. \
+                         Depois de criar, se existir uma transição para revisão, mova a task para ela.\n\
+                         Antes da linha do commit, escreva `TASK_CRIADA: <link completo da task criada>`, ou \
+                         `TASK_CRIADA: nenhuma (<motivo>)` se não houver acesso ao Jira ou a criação falhar."
+                    ),
+                    None => "Não há task do Jira para comentar.".to_owned(),
+                },
             };
             format!(
                 "{task}\n<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n\n\
@@ -536,6 +562,40 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
         }
     };
     format!("{header}{body}")
+}
+
+/// Chave e, se houver, endereço do site de uma task citada por link
+/// (`https://site.atlassian.net/browse/EI-5198`) ou só pela chave.
+pub fn task_ref(text: &str) -> Option<(String, Option<String>)> {
+    let text = text.trim().trim_matches(['<', '>', '`', '*', '.', ' ']);
+    if let Some(key) = normalize_jira_key(text) {
+        return Some((key, None));
+    }
+    let (site, rest) = text.split_once("/browse/")?;
+    // O Jira também mostra a task em ".../jira/browse/CHAVE".
+    let site = site.strip_suffix("/jira").unwrap_or(site);
+    let host = site.strip_prefix("https://").or_else(|| site.strip_prefix("http://"))?;
+    if host.is_empty() || host.contains('/') {
+        return None;
+    }
+    let key = rest.split(['/', '?', '#']).next().and_then(normalize_jira_key)?;
+    Some((key, Some(site.to_owned())))
+}
+
+/// Link de uma task no site do Jira.
+pub fn task_url(site: &str, key: &str) -> String {
+    format!("{site}/browse/{key}")
+}
+
+/// Task que o Relator criou (linha `TASK_CRIADA: <link>`): chave e link.
+pub fn created_task(report: &str) -> Option<(String, Option<String>)> {
+    report.lines().rev().find_map(|l| {
+        let l = l.trim().trim_matches(['*', '`', '_', ' ']);
+        let rest = l.get(..12).filter(|p| p.eq_ignore_ascii_case("TASK_CRIADA:")).map(|_| &l[12..])?;
+        let (key, site) = task_ref(rest.trim().trim_matches(['*', '`', '_', ' ']))?;
+        let url = site.map(|s| task_url(&s, &key));
+        Some((key, url))
+    })
 }
 
 /// Task do Jira que a Triagem achou para o pedido (linha `TASK: CHAVE-123`).
@@ -677,6 +737,8 @@ mod tests {
             skipped: vec![],
             agents: BTreeMap::new(),
             image_count: 0,
+            jira_template: None,
+            jira_url: None,
             budget_minutes: 60,
             note: None,
             created_at: 0,
@@ -783,12 +845,12 @@ mod tests {
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
         assert_eq!(next_step(&stages, &quick), Next::Finish(RunStatus::Done, None));
         assert_eq!(next_step(&stages, &[Role::Tester]), Next::Run(Role::Reporter));
-        let config = PipelineConfig { agents: BTreeMap::from([(Role::Approval, "a".into())]), skipped: vec![] };
+        let config = PipelineConfig { agents: BTreeMap::from([(Role::Approval, "a".into())]), skipped: vec![], ..Default::default() };
         assert!(config.validate().is_err());
-        assert!(PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Reviewer] }.validate().is_err());
-        assert!(PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a".into())]), skipped: quick.to_vec() }.validate().is_ok());
-        let json = serde_json::to_string(&PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Tester] }).unwrap();
-        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"]}"#);
+        assert!(PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Reviewer], ..Default::default() }.validate().is_err());
+        assert!(PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a".into())]), skipped: quick.to_vec(), ..Default::default() }.validate().is_ok());
+        let json = serde_json::to_string(&PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Tester], ..Default::default() }).unwrap();
+        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"],"jira_template":null}"#);
     }
 
     #[test]
@@ -860,6 +922,28 @@ mod tests {
         assert!(stage_prompt(Role::Planner, &with_images, &StageContext::default()).contains("2 imagem(ns)"));
         assert!(!stage_prompt(Role::Reviewer, &with_images, &StageContext::default()).contains("imagem"));
         assert!(!stage_prompt(Role::Planner, &run(WorkMode::Direct, None), &StageContext::default()).contains("imagem(ns)"));
+    }
+
+    #[test]
+    fn reporter_creates_the_task_from_the_template_and_reports_the_link() {
+        let template = Some("https://elinfo.atlassian.net/browse/EI-5198".to_owned());
+        let with_template = PipelineRun { jira_template: template.clone(), ..run(WorkMode::Direct, None) };
+        let prompt = stage_prompt(Role::Reporter, &with_template, &StageContext::default());
+        assert!(prompt.contains("seguindo o modelo https://elinfo.atlassian.net/browse/EI-5198") && prompt.contains("Não informado"));
+        assert!(stage_prompt(Role::Reporter, &run(WorkMode::Direct, None), &StageContext::default()).contains("Não há task do Jira para comentar"));
+        let found = PipelineRun { jira_template: template, ..run(WorkMode::Direct, Some("EI-7")) };
+        assert!(stage_prompt(Role::Reporter, &found, &StageContext::default()).contains("Comente na task EI-7"));
+
+        assert_eq!(task_ref("https://elinfo.atlassian.net/browse/EI-5198"), Some(("EI-5198".into(), Some("https://elinfo.atlassian.net".into()))));
+        assert_eq!(task_ref("https://elinfo.atlassian.net/jira/browse/EI-5198?x=1"), Some(("EI-5198".into(), Some("https://elinfo.atlassian.net".into()))));
+        assert_eq!(task_ref(" ei-5198 "), Some(("EI-5198".into(), None)));
+        assert_eq!(task_ref("https://exemplo.com/outra/coisa"), None);
+        assert_eq!(
+            created_task("Relatório\nTASK_CRIADA: https://elinfo.atlassian.net/browse/EI-6001\nCOMMIT: x"),
+            Some(("EI-6001".into(), Some("https://elinfo.atlassian.net/browse/EI-6001".into())))
+        );
+        assert_eq!(created_task("TASK_CRIADA: nenhuma (sem acesso ao Jira)"), None);
+        assert!(PipelineConfig { jira_template: Some("qualquer coisa".into()), ..Default::default() }.validate().is_err());
     }
 
     #[test]

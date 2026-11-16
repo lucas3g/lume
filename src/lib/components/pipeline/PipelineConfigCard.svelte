@@ -11,7 +11,9 @@
   }
   let { projectId, onnavigate }: Props = $props();
 
-  const EMPTY: PipelineConfig = { agents: {}, skipped: [] };
+  const EMPTY: PipelineConfig = { agents: {}, skipped: [], jira_template: null };
+  /** Texto do campo do modelo de task, salvo ao sair do campo. */
+  let template = $state("");
   let config = $state<PipelineConfig>(EMPTY);
   /** Projeto cuja configuração está carregada; até chegar a nova, nada é salvo. */
   let loadedFor = $state<string | null>(null);
@@ -28,6 +30,7 @@
       (c) => {
         if (id !== projectId) return;
         config = c;
+        template = c.jira_template ?? "";
         loadedFor = id;
       },
       (e) => {
@@ -62,6 +65,11 @@
     if (agentId) next[role] = agentId;
     else delete next[role];
     void save({ ...config, agents: next });
+  }
+
+  function saveTemplate() {
+    const value = template.trim() || null;
+    if (value !== (config.jira_template ?? null)) void save({ ...config, jira_template: value });
   }
 
   function setEnabled(role: PipelineRole, enabled: boolean) {
@@ -102,6 +110,19 @@
       {/if}
     </div>
   {/each}
+  <div class="template">
+    <label class="grow" for={`tpl-${projectId}`}>
+      <span class="name">Modelo de task do Jira</span>
+      <span class="muted small">
+        Quando a Triagem não acha task para o pedido, o Relator cria uma no fim, copiando o projeto, o tipo, os campos e a
+        estrutura da descrição deste modelo, e mostra o link no relatório. Precisa do conector do Atlassian (Jira) na conta.
+        Vazio: não cria.
+      </span>
+    </label>
+    <input id={`tpl-${projectId}`} class="input tpl" bind:value={template} placeholder="https://empresa.atlassian.net/browse/EI-5198"
+      disabled={config.skipped.includes("reporter")} onblur={saveTemplate}
+      onkeydown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+  </div>
 </section>
 
 <style>
@@ -115,8 +136,12 @@
   .name { font-weight: 500; }
   .agent { width: 230px; min-height: 34px; }
   .toggle-space { width: 44px; flex-shrink: 0; }
+  .template { display: flex; align-items: center; gap: 12px; padding: 12px 16px 16px; border-top: 1px solid var(--hairline); }
+  .template label { display: flex; flex-direction: column; gap: 2px; }
+  .tpl { width: 330px; min-height: 34px; font-family: var(--mono); font-size: 12px; }
   @media (max-width: 640px) {
     .line { flex-wrap: wrap; }
-    .agent { width: 100%; }
+    .agent, .tpl { width: 100%; }
+    .template { flex-wrap: wrap; }
   }
 </style>
