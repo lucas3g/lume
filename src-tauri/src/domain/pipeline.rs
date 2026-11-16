@@ -2,7 +2,8 @@
 //! escrita pelo usuário) em um projeto. Cada etapa roda numa sessão própria; quem
 //! decide a próxima etapa é a esteira, não os bots.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Voltas máximas do Implementador depois de uma devolução (do Revisor ou do Testador).
 pub const MAX_ROUNDS: i64 = 3;
@@ -11,7 +12,7 @@ pub const DEFAULT_BUDGET_MINUTES: i64 = 90;
 /// Tamanho máximo do diff entregue ao Revisor, em caracteres.
 pub const MAX_DIFF_CHARS: usize = 60_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Triage,
@@ -27,6 +28,15 @@ pub enum Role {
 impl Role {
     pub const ALL: [Role; 7] =
         [Role::Triage, Role::Planner, Role::Approval, Role::Implementer, Role::Reviewer, Role::Tester, Role::Reporter];
+
+    /// Etapas que o projeto pode desligar. Planejador, aprovação, Implementador e Revisor
+    /// são obrigatórios: nada muda sem você ver o plano, e todo código passa por revisão.
+    pub const OPTIONAL: [Role; 3] = [Role::Triage, Role::Tester, Role::Reporter];
+
+    /// Papéis feitos por bots (que podem ter um agente).
+    pub fn is_bot(self) -> bool {
+        self != Role::Approval
+    }
 
     pub fn key(self) -> &'static str {
         match self {
@@ -72,6 +82,30 @@ impl Role {
             Role::Implementer | Role::Tester => "acceptEdits",
             _ => "manual",
         }
+    }
+}
+
+/// Como a esteira roda num projeto: o agente de cada papel e as etapas desligadas.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineConfig {
+    /// Agente cadastrado (id) por papel; sem entrada, o papel usa só as regras padrão.
+    #[serde(default)]
+    pub agents: BTreeMap<Role, String>,
+    /// Etapas opcionais desligadas.
+    #[serde(default)]
+    pub skipped: Vec<Role>,
+}
+
+impl PipelineConfig {
+    /// Confere os papéis: só bots têm agente e só as etapas opcionais podem ser desligadas.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.agents.keys().any(|r| !r.is_bot()) {
+            return Err("A sua aprovação não pode ser feita por um agente.".into());
+        }
+        if self.skipped.iter().any(|r| !Role::OPTIONAL.contains(r)) {
+            return Err("Só Triagem, Testador e Relator podem ser desligados.".into());
+        }
+        Ok(())
     }
 }
 
@@ -185,6 +219,8 @@ pub struct PipelineRun {
     pub branch: Option<String>,
     /// Voltas do Implementador já feitas depois de devoluções.
     pub rounds: i64,
+    /// Etapas desligadas no projeto quando a execução começou.
+    pub skipped: Vec<Role>,
     pub budget_minutes: i64,
     /// Motivo do fim, quando falhou ou parou.
     pub note: Option<String>,
@@ -324,11 +360,15 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 .as_deref()
                 .map(|f| format!("\nO usuário pediu ajustes ao plano anterior:\n<ajustes>\n{f}\n</ajustes>\n<plano_anterior>\n{}\n</plano_anterior>\n", ctx.plan.as_deref().unwrap_or("")))
                 .unwrap_or_default();
+            let triage = match (ctx.triage.as_deref(), &run.jira_key) {
+                (Some(t), _) => format!("<triagem>\n{t}\n</triagem>\n"),
+                (None, Some(_)) => "Não houve triagem: leia a task no Jira com o conector do Atlassian (descrição, critérios de aceite e comentários).\n".to_owned(),
+                (None, None) => String::new(),
+            };
             format!(
-                "{task}\n<triagem>\n{}\n</triagem>\n{feedback}\nEstude o código e escreva o plano de implementação. Não altere nada.\n\
+                "{task}\n{triage}{feedback}\nEstude o código e escreva o plano de implementação. Não altere nada.\n\
                  A sua última mensagem deve conter o plano completo, em Markdown: objetivo, arquivos a criar ou mudar \
-                 (com o que muda em cada um), abordagem, riscos e como verificar (comandos de teste do projeto).",
-                ctx.triage.as_deref().unwrap_or("(sem triagem)")
+                 (com o que muda em cada um), abordagem, riscos e como verificar (comandos de teste do projeto)."
             )
         }
         Role::Implementer => {
@@ -423,29 +463,37 @@ pub fn rounds(stages: &[StageRun]) -> i64 {
     (implementer_passes(stages) - 1).max(0)
 }
 
-/// Próximo passo da sequência fixa: Triagem → Planejador → aprovação → Implementador
-/// ⇄ (Revisor, Testador) → Relator.
-pub fn next_step(stages: &[StageRun]) -> Next {
-    let Some(last) = effective(stages).last() else { return Next::Run(Role::Triage) };
+/// Ordem das estações na esteira.
+const CHAIN: [Role; 7] = [Role::Triage, Role::Planner, Role::Approval, Role::Implementer, Role::Reviewer, Role::Tester, Role::Reporter];
+
+/// A estação seguinte a `from` (o começo, sem `from`) que não foi desligada.
+fn forward(from: Option<Role>, skipped: &[Role]) -> Next {
+    let start = from.and_then(|r| CHAIN.iter().position(|c| *c == r)).map_or(0, |i| i + 1);
+    match CHAIN[start..].iter().find(|r| !skipped.contains(r)) {
+        Some(Role::Approval) => Next::AskApproval,
+        Some(role) => Next::Run(*role),
+        None => Next::Finish(RunStatus::Done, None),
+    }
+}
+
+/// Próximo passo da sequência: Triagem → Planejador → aprovação → Implementador
+/// ⇄ (Revisor, Testador) → Relator, pulando as etapas desligadas no projeto.
+pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
+    let Some(last) = effective(stages).last() else { return forward(None, skipped) };
     if last.status == StageStatus::Running {
         return Next::Wait;
     }
     let returned = last.status == StageStatus::Returned;
     match last.role {
         Role::Triage if returned => Next::Finish(RunStatus::NeedsInfo, Some("A Triagem achou a task vaga demais para seguir.".into())),
-        Role::Triage => Next::Run(Role::Planner),
-        Role::Planner => Next::AskApproval,
         Role::Approval if returned => Next::Run(Role::Planner),
-        Role::Approval => Next::Run(Role::Implementer),
-        Role::Implementer => Next::Run(Role::Reviewer),
         Role::Reviewer | Role::Tester if returned && rounds(stages) >= MAX_ROUNDS => Next::Finish(
             RunStatus::Failed,
             Some(format!("O trabalho foi devolvido {MAX_ROUNDS} vezes; a esteira parou para você decidir.")),
         ),
         Role::Reviewer | Role::Tester if returned => Next::Run(Role::Implementer),
-        Role::Reviewer => Next::Run(Role::Tester),
-        Role::Tester => Next::Run(Role::Reporter),
         Role::Reporter => Next::Finish(RunStatus::Done, None),
+        role => forward(Some(role), skipped),
     }
 }
 
@@ -510,6 +558,7 @@ mod tests {
             workdir: "/dev/loja-esteira".into(),
             branch: Some("lume/esteira-loja-1".into()),
             rounds: 0,
+            skipped: vec![],
             budget_minutes: 60,
             note: None,
             created_at: 0,
@@ -577,46 +626,70 @@ mod tests {
     fn walks_the_fixed_sequence_with_approval_and_return_loops() {
         use StageStatus::*;
         let mut stages = vec![];
-        assert_eq!(next_step(&stages), Next::Run(Role::Triage));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Triage));
         stages.push(stage(Role::Triage, Done, "VEREDITO: CLARO"));
-        assert_eq!(next_step(&stages), Next::Run(Role::Planner));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Planner));
         stages.push(stage(Role::Planner, Done, "plano 1"));
-        assert_eq!(next_step(&stages), Next::AskApproval);
+        assert_eq!(next_step(&stages, &[]), Next::AskApproval);
         stages.push(stage(Role::Approval, Running, ""));
-        assert_eq!(next_step(&stages), Next::Wait);
+        assert_eq!(next_step(&stages, &[]), Next::Wait);
         stages.last_mut().unwrap().status = Returned;
         stages.last_mut().unwrap().output = Some("use CSV".into());
-        assert_eq!(next_step(&stages), Next::Run(Role::Planner));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Planner));
         assert_eq!(context_for(&stages).plan_feedback.as_deref(), Some("use CSV"));
         stages.push(stage(Role::Planner, Done, "plano 2"));
         stages.push(stage(Role::Approval, Done, ""));
-        assert_eq!(next_step(&stages), Next::Run(Role::Implementer));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Implementer));
         assert_eq!(context_for(&stages).plan.as_deref(), Some("plano 2"));
         stages.push(stage(Role::Implementer, Failed, "caiu"));
-        assert_eq!(next_step(&stages), Next::Run(Role::Implementer), "etapa que falhou é refeita ao retomar");
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Implementer), "etapa que falhou é refeita ao retomar");
         stages.push(stage(Role::Implementer, Done, "fiz"));
         stages.push(stage(Role::Reviewer, Returned, "bug"));
-        assert_eq!((next_step(&stages), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("bug")));
+        assert_eq!((next_step(&stages, &[]), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("bug")));
         stages.push(stage(Role::Implementer, Done, "corrigi"));
         assert_eq!(rounds(&stages), 1);
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
-        assert_eq!(next_step(&stages), Next::Run(Role::Tester));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Tester));
         stages.push(stage(Role::Tester, Done, "ok"));
-        assert_eq!(next_step(&stages), Next::Run(Role::Reporter));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter));
         stages.push(stage(Role::Reporter, Done, "COMMIT: x"));
-        assert_eq!(next_step(&stages), Next::Finish(RunStatus::Done, None));
+        assert_eq!(next_step(&stages, &[]), Next::Finish(RunStatus::Done, None));
+    }
+
+    #[test]
+    fn skipped_stages_are_jumped_over() {
+        use StageStatus::*;
+        let quick = [Role::Triage, Role::Tester, Role::Reporter];
+        assert_eq!(next_step(&[], &quick), Next::Run(Role::Planner));
+        let mut stages = vec![stage(Role::Planner, Done, "plano"), stage(Role::Approval, Done, ""), stage(Role::Implementer, Done, "")];
+        stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
+        assert_eq!(next_step(&stages, &quick), Next::Finish(RunStatus::Done, None));
+        assert_eq!(next_step(&stages, &[Role::Tester]), Next::Run(Role::Reporter));
+        let config = PipelineConfig { agents: BTreeMap::from([(Role::Approval, "a".into())]), skipped: vec![] };
+        assert!(config.validate().is_err());
+        assert!(PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Reviewer] }.validate().is_err());
+        assert!(PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a".into())]), skipped: quick.to_vec() }.validate().is_ok());
+        let json = serde_json::to_string(&PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Tester] }).unwrap();
+        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"]}"#);
+    }
+
+    #[test]
+    fn planner_reads_jira_when_there_is_no_triage() {
+        let prompt = stage_prompt(Role::Planner, &run(WorkMode::Direct, Some("LUME-1")), &StageContext::default());
+        assert!(prompt.contains("Não houve triagem") && prompt.contains("conector do Atlassian"));
+        assert!(!stage_prompt(Role::Planner, &run(WorkMode::Direct, None), &StageContext::default()).contains("Não houve triagem"));
     }
 
     #[test]
     fn stops_on_vague_task_and_after_max_rounds() {
         use StageStatus::*;
-        assert!(matches!(next_step(&[stage(Role::Triage, Returned, "")]), Next::Finish(RunStatus::NeedsInfo, _)));
+        assert!(matches!(next_step(&[stage(Role::Triage, Returned, "")], &[]), Next::Finish(RunStatus::NeedsInfo, _)));
         let mut stages = vec![stage(Role::Approval, Done, "")];
         for _ in 0..=MAX_ROUNDS {
             stages.push(stage(Role::Implementer, Done, ""));
             stages.push(stage(Role::Tester, Returned, "falhou"));
         }
-        assert!(matches!(next_step(&stages), Next::Finish(RunStatus::Failed, Some(_))));
+        assert!(matches!(next_step(&stages, &[]), Next::Finish(RunStatus::Failed, Some(_))));
     }
 
     #[test]

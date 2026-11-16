@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
   Account, AccountConnector, Agent, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PipelineDetail, PipelineRun, PipelineStatus, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
+  MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -95,6 +95,9 @@ export const api = {
   saveProject: (project: { id: string | null; name: string; instructions: string }) =>
     invoke<Project>("save_project", project),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
+  pipelineConfig: (projectId: string) => invoke<PipelineConfig>("pipeline_config", { projectId }),
+  savePipelineConfig: (projectId: string, config: PipelineConfig) =>
+    invoke<PipelineConfig>("save_pipeline_config", { projectId, config }),
   listPipelines: () => invoke<PipelineRun[]>("list_pipelines"),
   pipelineDetail: (id: string) => invoke<PipelineDetail>("pipeline_detail", { id }),
   startPipeline: (input: { projectId: string; jiraKey: string | null; title: string; request: string; budgetMinutes: number | null }) =>

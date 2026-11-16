@@ -7,7 +7,9 @@
   import { dayClock } from "../state/clock.svelte";
   import { projectName, projects } from "../state/projects.svelte";
   import { loadPipelines, openPipeline, pipelines } from "../state/pipelines.svelte";
-  import type { View } from "../types";
+  import { STATION } from "../pipeline";
+  import { agentName } from "../state/agents.svelte";
+  import type { PipelineConfig, PipelineRole, View } from "../types";
 
   interface Props {
     onnavigate: (view: View) => void;
@@ -21,6 +23,7 @@
   let budget = $state(90);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  let config = $state<PipelineConfig | null>(null);
 
   const withFolder = $derived(projects.list.filter((p) => p.folder));
   const project = $derived(withFolder.find((p) => p.id === projectId));
@@ -33,6 +36,16 @@
   $effect(() => {
     if (!projectId && withFolder.length) projectId = withFolder[0].id;
   });
+
+  // Configuração da esteira no projeto escolhido, para mostrar no formulário.
+  $effect(() => {
+    const id = projectId;
+    config = null;
+    if (id) void api.pipelineConfig(id).then((c) => id === projectId && (config = c));
+  });
+  const assigned = $derived(
+    config ? (Object.entries(config.agents) as [PipelineRole, string][]).map(([role, id]) => `${STATION[role].name}: ${agentName(id) ?? "?"}`) : [],
+  );
 
   // Rascunho vindo de uma execução que precisava de mais informação.
   $effect(() => {
@@ -118,6 +131,13 @@
               {/if}
             </p>
           {/if}
+          {#if config && (config.skipped.length || assigned.length)}
+            <p class="muted small">
+              {#if config.skipped.length}Desligadas neste projeto: {config.skipped.map((r) => STATION[r].name).join(", ")}.{/if}
+              {#if assigned.length}Agentes: {assigned.join(" · ")}.{/if}
+              <button type="button" class="link-btn" onclick={() => { projects.selectedId = projectId; onnavigate("project"); }}>Mudar no projeto</button>
+            </p>
+          {/if}
           <p class="muted small">O texto da task é tratado como dado, não como instrução. Nenhum bot faz commit nem push: o commit fica com você no fim.</p>
           <div class="row">
             <button type="submit" class="btn primary" disabled={busy || !projectId || (!jiraKey.trim() && !title.trim() && !request.trim())}>Iniciar a esteira</button>
@@ -170,5 +190,6 @@
   .pill.warn { background: var(--warn-bg); color: var(--warn-text); }
   .pill.acc { background: rgba(91, 106, 217, 0.16); color: var(--accent-text); }
   .pill.bad { background: var(--danger-bg); color: var(--danger-text); }
+  .link-btn { border: 0; background: none; padding: 0; color: var(--accent-text); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
   .empty { padding: 14px 20px; border-top: 1px solid var(--hairline); }
 </style>

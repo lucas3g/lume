@@ -6,6 +6,7 @@
   import { loadProjects, projects } from "../state/projects.svelte";
   import type { MemoryFile, ProjectFile, View } from "../types";
   import Toggle from "../components/Toggle.svelte";
+  import PipelineConfigCard from "../components/pipeline/PipelineConfigCard.svelte";
 
   interface Props {
     onnavigate: (view: View) => void;
@@ -218,6 +219,8 @@
             <Toggle checked={project.versioned} label="Projeto com versionamento" onchange={setVersioned} />
           </div>
         </section>
+
+        <PipelineConfigCard projectId={project.id} {onnavigate} />
 
         <section class="card" aria-label="Memória do projeto">
           <div class="head">

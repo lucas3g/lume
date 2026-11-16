@@ -15,7 +15,7 @@ use crate::domain::{
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
     history::{HistSession, HistoryStatus},
-    pipeline::PipelineRun,
+    pipeline::{PipelineConfig, PipelineRun},
     project::{MemoryFile, Project, ProjectFile},
     schedule::{Repeat, Task},
     store::{PluginListing, ServerListing},
@@ -656,6 +656,17 @@ pub fn environment(app: App<'_>) -> Environment {
 }
 
 // ---- esteira de bots
+
+/// Agente de cada papel e etapas desligadas da esteira no projeto.
+#[tauri::command]
+pub fn pipeline_config(app: App<'_>, project_id: String) -> AppResult<PipelineConfig> {
+    app.pipelines.config(&project_id)
+}
+
+#[tauri::command]
+pub fn save_pipeline_config(app: App<'_>, project_id: String, config: PipelineConfig) -> AppResult<PipelineConfig> {
+    app.pipelines.save_config(&project_id, config)
+}
 
 #[tauri::command]
 pub fn list_pipelines(app: App<'_>) -> AppResult<Vec<PipelineRun>> {

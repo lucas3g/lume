@@ -39,6 +39,9 @@ export const STATIONS: Station[] = [
     receives: "Plano, resumo da implementação, revisão e testes.", delivers: "O comentário no Jira, a mudança de status e a sugestão de commit." },
 ];
 
+/** Etapas que o projeto pode desligar; as demais garantem plano aprovado e código revisado. */
+export const OPTIONAL_ROLES: PipelineRole[] = ["triage", "tester", "reporter"];
+
 export const STATION = Object.fromEntries(STATIONS.map((s) => [s.role, s])) as Record<PipelineRole, Station>;
 
 /** Estado visual de uma estação. */
@@ -137,7 +140,9 @@ export function passLabel(stage: StageRun, index: number, maxRounds: number): st
 export function inputSummary(stage: StageRun, detail: PipelineDetail): string {
   switch (stage.role) {
     case "triage": return detail.jira_key ? `Task ${detail.jira_key}` : "Pedido escrito";
-    case "planner": return stage.input.includes("<ajustes>") ? "Plano + seus ajustes" : "Task + triagem";
+    case "planner":
+      if (stage.input.includes("<ajustes>")) return "Plano + seus ajustes";
+      return stage.input.includes("<triagem>") ? "Task + triagem" : "Task (sem triagem)";
     case "approval": return "Plano";
     case "implementer": return stage.input.includes("<problemas>") ? "Problemas apontados" : "Plano aprovado";
     case "reviewer": return stage.input.includes("<diff>") ? "Só o diff" : "Resumo do Implementador";

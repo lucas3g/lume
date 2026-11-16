@@ -346,7 +346,7 @@
             {#if panelVisual}<span class="chip c-{panelVisual.visual}"><i></i>{panelVisual.label}</span>{/if}
           </div>
           <div class="p-meta">
-            {#if panelStation.model}{panelStation.model} · {panelStation.perm}{:else}{panelStation.perm}{/if}
+            {#if detail.agents[panelStation.role]}agente <b>{detail.agents[panelStation.role]}</b> · {/if}{#if panelStation.model}{panelStation.model} · {panelStation.perm}{:else}{panelStation.perm}{/if}
             {#if panelStage && panelStage.role !== "approval"} · conta <b>{stageAccount(panelStage)}</b>{/if}
             {#if panelStage} · <span class="mono">{duration(stageSeconds(panelStage))}</span>{/if}
           </div>
@@ -370,7 +370,7 @@
             <section><h3 class="label">O que faz</h3><p>{panelStation.does}</p>
               <div class="pair"><div><span class="label">Recebe</span>{panelStation.receives}</div><div><span class="label">Entrega</span>{panelStation.delivers}</div></div>
             </section>
-            <p class="muted small">{active ? "Ainda não recebeu o trabalho." : "Não rodou nesta execução."}</p>
+            <p class="muted small">{detail.skipped.includes(panelStation.role) ? "Desligada neste projeto: a esteira passa direto por ela." : active ? "Ainda não recebeu o trabalho." : "Não rodou nesta execução."}</p>
           {:else}
             {#if panelAsking}
               <p class="ask">{@html icon("you", 13)}<span>A etapa pede sua autorização para usar uma ferramenta.</span>

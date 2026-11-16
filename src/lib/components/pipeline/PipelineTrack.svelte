@@ -33,8 +33,9 @@
     STATIONS.map((station) => {
       const list = passes[station.role];
       const last = list.at(-1);
-      let visual: Visual = finished ? "skipped" : "waiting";
-      let label = VISUAL[visual].label;
+      const off = detail.skipped.includes(station.role);
+      let visual: Visual = finished || off ? "skipped" : "waiting";
+      let label = off ? "Desligada" : VISUAL[visual].label;
       let account: string | null = null;
       if (last) {
         const asking = !!chat.permissions[last.conversation_id];
@@ -47,7 +48,8 @@
         if (station.gate) account = "você";
       }
       const spent = list.reduce((sum, s) => sum + ((s.finished_at ?? now) - s.started_at), 0);
-      return { station, visual, label, account, time: list.length ? duration(spent) : "" };
+      const agent = detail.agents[station.role] ?? null;
+      return { station, visual, label, account, agent, off, time: list.length ? duration(spent) : "" };
     }),
   );
 
@@ -58,7 +60,12 @@
     test: returnedBy("tester"),
   });
   /** Trilho até a estação já percorrido. */
-  const reached = (role: PipelineRole) => passes[role].length > 0;
+  const reached = (role: PipelineRole): boolean => {
+    if (passes[role].length > 0) return true;
+    // Estação desligada: o trilho conta como percorrido quando o trabalho já passou adiante.
+    const i = ORDER.indexOf(role);
+    return detail.skipped.includes(role) && ORDER.slice(i + 1).some((r) => passes[r].length > 0 || (detail.status === "done" && r === ORDER.at(-1)));
+  };
 
   // ---- geometria
 
@@ -134,7 +141,7 @@
     const toIdx = ORDER.indexOf(latest.role);
     let d: string;
     let back = false;
-    let label = FORWARD_LABEL[latest.role] ?? "";
+    let label = fromIdx < 0 ? "task" : (FORWARD_LABEL[latest.role] ?? "");
     if (fromIdx > toIdx && before) {
       back = true;
       const key = before.role === "approval" ? "plan" : before.role === "tester" ? "test" : "review";
@@ -234,7 +241,11 @@
           </span>
           <span class="card-s">
             <span class="name">{c.station.name}</span>
-            <span class="role">{c.station.model ? `${c.station.model} · ${c.station.perm}` : c.station.perm}</span>
+            {#if c.agent}
+              <span class="role agent" title={`Agente ${c.agent}`}>{c.agent}</span>
+            {:else}
+              <span class="role">{c.station.model ? `${c.station.model} · ${c.station.perm}` : c.station.perm}</span>
+            {/if}
             <span class="chip c-{c.visual}"><i></i><span class="ctx">{c.label}</span></span>
             <span class="foot">
               <span class="acct">{#if c.account}{#if c.account !== "você"}<span class="dot ok"></span>{/if}<span class="ellipsis">{c.account}</span>{/if}</span>
@@ -302,6 +313,7 @@
   .station.sel .card-s::after { content: ""; position: absolute; left: 50%; bottom: -5px; width: 8px; height: 8px; margin-left: -4px; border-right: 1px solid; border-bottom: 1px solid; border-color: inherit; background: inherit; transform: rotate(45deg); }
   .name { max-width: 100%; font-family: var(--display); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .s-waiting .name { color: var(--text-2); }
+  .role.agent { color: var(--accent-text); }
   .role { max-width: 100%; margin-bottom: 6px; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 7px 1px 6px; border: 1px solid transparent; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; overflow: hidden; }
   .chip i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }

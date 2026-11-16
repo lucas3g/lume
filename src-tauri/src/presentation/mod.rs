@@ -192,6 +192,8 @@ impl Container {
             },
             pipelines: ManagePipelines {
                 pipelines: store.clone(),
+                agents: store.clone(),
+                settings: store.clone(),
                 projects: store.clone(),
                 conversations: store.clone(),
                 vcs: vcs.clone(),

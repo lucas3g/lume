@@ -3,7 +3,10 @@
 
 use super::{
     projects::add_free_worktree,
-    ports::{Clock, ConversationRepository, EventSink, IdGenerator, PipelineRepository, ProjectRepository, StageRunner, VersionControl},
+    ports::{
+        AgentRepository, Clock, ConversationRepository, EventSink, IdGenerator, PipelineRepository, ProjectRepository, Settings,
+        StageRunner, VersionControl,
+    },
     send_message::make_title,
     AppError, AppResult,
 };
@@ -11,21 +14,26 @@ use crate::domain::{
     chat::{Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
-        suggested_commit, Next, PipelineRun, Role, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, Next, PipelineConfig, PipelineRun, Role, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
 use serde::Serialize;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     sync::{Arc, Mutex},
 };
 
 /// Minutos acrescentados ao orçamento quando o usuário retoma uma execução que o esgotou.
 const EXTRA_BUDGET_MINUTES: i64 = 30;
 
+/// Configuração da esteira de cada projeto, guardada como texto: prefixo + id do projeto.
+const CONFIG_PREFIX: &str = "pipeline_config:";
+
 pub struct ManagePipelines {
     pub pipelines: Arc<dyn PipelineRepository>,
+    pub agents: Arc<dyn AgentRepository>,
+    pub settings: Arc<dyn Settings>,
     pub projects: Arc<dyn ProjectRepository>,
     pub conversations: Arc<dyn ConversationRepository>,
     pub vcs: Arc<dyn VersionControl>,
@@ -59,6 +67,8 @@ pub struct RunDetail {
     pub commit_message: Option<String>,
     /// Voltas máximas do Implementador antes de a esteira parar.
     pub max_rounds: i64,
+    /// Nome do agente de cada papel no projeto.
+    pub agents: BTreeMap<Role, String>,
 }
 
 /// Resposta final de um bot: a última mensagem do assistente depois do pedido.
@@ -90,7 +100,41 @@ impl ManagePipelines {
             .rev()
             .find(|s| s.role == Role::Reporter && s.status == StageStatus::Done)
             .and_then(|s| s.output.as_deref().and_then(suggested_commit));
-        Ok(RunDetail { max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+        let agents = self.role_agents(&run.project_id)?.into_iter().map(|(role, agent)| (role, agent.name)).collect();
+        Ok(RunDetail { agents, max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+    }
+
+    /// Como a esteira roda no projeto; sem configuração, todos os papéis com as regras padrão.
+    pub fn config(&self, project_id: &str) -> AppResult<PipelineConfig> {
+        Ok(self
+            .settings
+            .text(&format!("{CONFIG_PREFIX}{project_id}"))
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default())
+    }
+
+    pub fn save_config(&self, project_id: &str, mut config: PipelineConfig) -> AppResult<PipelineConfig> {
+        self.projects.get(project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
+        config.validate().map_err(AppError)?;
+        for id in config.agents.values() {
+            self.agents.get(id)?.ok_or_else(|| AppError("Agente não encontrado.".into()))?;
+        }
+        config.skipped.sort();
+        config.skipped.dedup();
+        let text = serde_json::to_string(&config).map_err(|e| AppError(e.to_string()))?;
+        self.settings.set_text(&format!("{CONFIG_PREFIX}{project_id}"), &text)?;
+        Ok(config)
+    }
+
+    /// Agentes da configuração que ainda existem (um agente apagado volta às regras padrão).
+    fn role_agents(&self, project_id: &str) -> AppResult<BTreeMap<Role, crate::domain::extension::Agent>> {
+        let mut out = BTreeMap::new();
+        for (role, id) in self.config(project_id)?.agents {
+            if let Some(agent) = self.agents.get(&id)? {
+                out.insert(role, agent);
+            }
+        }
+        Ok(out)
     }
 
     /// Cria a execução e prepara a pasta de trabalho. A condução começa com `advance`.
@@ -115,6 +159,7 @@ impl ManagePipelines {
         if jira_key.is_none() && request.is_empty() && title.chars().count() < 12 {
             return Err(AppError("Descreva o que os bots devem fazer.".into()));
         }
+        let skipped = self.config(&project.id)?.skipped;
         let id = self.ids.new_id();
         let (mode, workdir, branch) = if project.versioned {
             let (path, branch) = self.create_worktree(&folder, &branch_slug(jira_key.as_deref(), &id))?;
@@ -134,6 +179,7 @@ impl ManagePipelines {
             workdir,
             branch,
             rounds: 0,
+            skipped,
             budget_minutes: input.budget_minutes.filter(|m| *m > 0).unwrap_or(DEFAULT_BUDGET_MINUTES),
             note: None,
             created_at: now,
@@ -179,8 +225,9 @@ impl ManagePipelines {
             // Retomada ou aprovação enquanto a condução saía: a chamada delas achou esta
             // ainda ativa e desistiu, então esta continua.
             let resumed = result.is_ok()
-                && self.get(run_id).is_ok_and(|r| r.status == RunStatus::Running)
-                && self.pipelines.stages(run_id).is_ok_and(|s| next_step(&s) != Next::Wait);
+                && self.get(run_id).is_ok_and(|r| {
+                    r.status == RunStatus::Running && self.pipelines.stages(run_id).is_ok_and(|s| next_step(&s, &r.skipped) != Next::Wait)
+                });
             if !resumed {
                 return result;
             }
@@ -197,7 +244,7 @@ impl ManagePipelines {
                 return self.finish(&mut run, RunStatus::Cancelled, Some("Cancelada por você.".into()));
             }
             let stages = self.pipelines.stages(run_id)?;
-            let role = match next_step(&stages) {
+            let role = match next_step(&stages, &run.skipped) {
                 Next::Wait => return Ok(()),
                 Next::Finish(status, note) => return self.finish(&mut run, status, note),
                 Next::AskApproval => return self.ask_approval(&mut run, &stages),
@@ -222,6 +269,10 @@ impl ManagePipelines {
         self.conversations.insert(&conversation_id, &format!("🤖 {} · {label}", role.label()), role.model(), &run.workdir, KIND_AGENT, None)?;
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
+        // O agente do papel soma as instruções, o modelo e as skills dele às regras fixas do papel.
+        if let Some(agent) = self.role_agents(&run.project_id)?.get(&role) {
+            self.conversations.set_agent(&conversation_id, Some(&agent.id))?;
+        }
         // A volta do Implementador é o número de passagens dele antes desta.
         let round = if role == Role::Implementer { implementer_passes(stages) } else { rounds(stages) };
         let mut stage = StageRun {
@@ -364,7 +415,7 @@ impl ManagePipelines {
             return Err(AppError("Só dá para retomar uma execução que falhou ou foi cancelada.".into()));
         }
         let stages = self.pipelines.stages(run_id)?;
-        if matches!(next_step(&stages), Next::Finish(..)) {
+        if matches!(next_step(&stages, &run.skipped), Next::Finish(..)) {
             return Err(AppError("Esta execução já chegou ao fim da sequência; comece uma nova.".into()));
         }
         let spent = spent_seconds(&stages, self.clock.now());
@@ -481,6 +532,8 @@ mod tests {
         let vcs = Arc::new(FakeVcs::default());
         let uc = ManagePipelines {
             pipelines: world.store.clone(),
+            agents: world.store.clone(),
+            settings: world.store.clone(),
             projects: world.store.clone(),
             conversations: world.store.clone(),
             vcs: vcs.clone(),
@@ -552,6 +605,37 @@ mod tests {
 
         uc.commit(&run.id, "Exporta CSV").unwrap();
         assert_eq!(vcs.commits.lock().unwrap().last().unwrap(), &("/dev/loja-esteira-loja-7".to_owned(), "Exporta CSV".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn project_config_gives_roles_their_agents_and_skips_optional_stages() {
+        use crate::domain::extension::Agent;
+        let (world, uc, _vcs) = setup(false);
+        let agent = Agent { id: "a1".into(), name: "Revisor rigoroso".into(), instructions: "Seja rigoroso.".into(), model: None };
+        AgentRepository::save(&*world.store, &agent).unwrap();
+        let bad = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "nao-existe".into())]), skipped: vec![] };
+        assert!(uc.save_config("p1", bad).is_err());
+        assert!(uc.save_config("p1", PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Planner] }).is_err());
+        let config = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Reporter, Role::Triage, Role::Tester] };
+        uc.save_config("p1", config).unwrap();
+        assert_eq!(uc.config("p1").unwrap().skipped, [Role::Triage, Role::Tester, Role::Reporter]);
+
+        let run = uc.start(StartInput { title: "Corrigir o cálculo do frete".into(), ..input(Some("loja-9")) }).unwrap();
+        assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::Reporter]);
+        let bots = Bots::new(vec![Ok("plano")]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        assert!(bots.prompts.lock().unwrap()[0].contains("Não houve triagem"), "o Planejador lê o Jira sozinho");
+        uc.decide_plan(&run.id, None).unwrap();
+        let bots = Bots::new(vec![Ok("fiz"), Ok("VEREDITO: APROVADO")]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!(detail.run.status, RunStatus::Done);
+        assert_eq!(roles(&uc, &run.id), [("planner", "done"), ("approval", "done"), ("implementer", "done"), ("reviewer", "done")]);
+        assert_eq!(detail.agents.get(&Role::Reviewer).map(String::as_str), Some("Revisor rigoroso"));
+        let reviewer = detail.stages.iter().find(|s| s.role == Role::Reviewer).unwrap();
+        assert_eq!(world.conversation(&reviewer.conversation_id).agent_id.as_deref(), Some("a1"));
+        let implementer = detail.stages.iter().find(|s| s.role == Role::Implementer).unwrap();
+        assert_eq!(world.conversation(&implementer.conversation_id).agent_id, None);
     }
 
     #[tokio::test]
