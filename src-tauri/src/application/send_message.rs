@@ -713,7 +713,7 @@ mod tests {
         use crate::application::ports::ProjectRepository;
         use crate::domain::project::Project;
         let world = World::with_accounts(vec![sample("a", 1)]);
-        let mut project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: None };
+        let mut project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: None, versioned: false };
         ProjectRepository::save(&*world.store, &project).unwrap();
         world.store.set_project("c1", Some("p1")).unwrap();
         world.store.add_file("f1", "p1", "glossario.md", "SKU é o código.").unwrap();
@@ -746,7 +746,7 @@ mod tests {
         use crate::application::ports::ProjectRepository;
         use crate::domain::project::Project;
         let world = World::with_accounts(vec![sample("a", 1)]);
-        let project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: None };
+        let project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: None, versioned: false };
         ProjectRepository::save(&*world.store, &project).unwrap();
         world.store.set_project("c1", Some("p1")).unwrap();
         world.store.add_file("f1", "p1", "precos.csv", "a;1").unwrap();

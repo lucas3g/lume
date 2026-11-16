@@ -11,9 +11,10 @@ use crate::application::{
     draft_agent::DraftAgent,
     extensions::{ManageAgents, ManageConnectors, ManageSkills},
     history::ManageHistory,
+    pipeline::{final_answer, ManagePipelines},
     ports::{
-        AccountGateway, ChatEngine, Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings, SwitchLog, UsageProbe,
-        VersionControl,
+        AccountGateway, ChatEngine, Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings,
+        StageRunner, SwitchLog, UsageProbe, VersionControl,
     },
     projects::ManageProjects,
     send_message::SendMessage,
@@ -64,6 +65,7 @@ pub struct Container {
     pub projects: ManageProjects,
     pub workspace: ManageWorkspace,
     pub tasks: ManageTasks,
+    pub pipelines: ManagePipelines,
     pub terminals: ManageTerminals,
     pub send_message: SendMessage,
     pub switches: Arc<dyn SwitchLog>,
@@ -178,7 +180,7 @@ impl Container {
             workspace: ManageWorkspace {
                 conversations: store.clone(),
                 workspace: Arc::new(FsWorkspace),
-                vcs,
+                vcs: vcs.clone(),
             },
             tasks: ManageTasks {
                 tasks: store.clone(),
@@ -187,6 +189,17 @@ impl Container {
                 ids: ids.clone(),
                 clock: clock.clone(),
                 chat_dir: chat_dir.to_string_lossy().into_owned(),
+            },
+            pipelines: ManagePipelines {
+                pipelines: store.clone(),
+                projects: store.clone(),
+                conversations: store.clone(),
+                vcs: vcs.clone(),
+                events: events.clone(),
+                ids: ids.clone(),
+                clock: clock.clone(),
+                active: Default::default(),
+                cancelled: Default::default(),
             },
             terminals: ManageTerminals {
                 conversations: store.clone(),
@@ -252,8 +265,40 @@ impl Container {
     }
 }
 
+/// Executor das etapas da esteira: cada etapa é um turno comum na conversa dela,
+/// registrado entre os turnos em andamento para a interface poder autorizar e cancelar.
+pub struct Bots(pub Arc<Container>);
+
+#[async_trait::async_trait]
+impl StageRunner for Bots {
+    async fn run(&self, conversation_id: &str, prompt: &str) -> AppResult<String> {
+        let c = &self.0;
+        let control = c.running.start(conversation_id).ok_or_else(|| AppError("A conversa da etapa já está em uso.".into()))?;
+        let result = c.send_message.execute(conversation_id, prompt, &[], vec![], control).await;
+        c.running.finish(conversation_id);
+        result?;
+        final_answer(&c.pipelines.conversations.messages(conversation_id)?)
+    }
+
+    fn cancel(&self, conversation_id: &str) {
+        self.0.running.cancel(conversation_id);
+    }
+}
+
+impl Container {
+    /// Conduz a execução da esteira em segundo plano até a próxima parada.
+    pub fn spawn_pipeline(self: &Arc<Self>, run_id: String) {
+        let container = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            let bots = Bots(container.clone());
+            let _ = container.pipelines.advance(&run_id, &bots).await;
+        });
+    }
+}
+
 /// Tarefas de inicialização que não devem atrasar a abertura da janela.
 pub fn start_background_work(container: Arc<Container>) {
+    let _ = container.pipelines.recover();
     let c = container.clone();
     tauri::async_runtime::spawn(async move {
         let _ = c.accounts.ensure_default().await;

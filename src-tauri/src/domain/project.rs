@@ -12,6 +12,9 @@ pub struct Project {
     pub instructions: String,
     /// Pasta do projeto no computador; as sessões de agente do projeto trabalham nela.
     pub folder: Option<String>,
+    /// O usuário diz que o projeto tem versionamento (git): a esteira de bots trabalha
+    /// numa cópia isolada. Sem versionamento, trabalha direto na pasta.
+    pub versioned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -128,7 +131,7 @@ mod tests {
     use super::*;
 
     fn project(instructions: &str) -> Project {
-        Project { id: "p".into(), name: "Portal".into(), instructions: instructions.into(), folder: None }
+        Project { id: "p".into(), name: "Portal".into(), instructions: instructions.into(), folder: None, versioned: false }
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 use super::windows::MAIN_WINDOW;
 use crate::application::{flags, ports::{EventSink, Settings}, ChatEvent};
+use crate::domain::pipeline::{PipelineRun, RunStatus};
 use serde::Serialize;
 use std::{
     collections::HashSet,
@@ -15,6 +16,7 @@ pub const CHAT_EVENT: &str = "chat";
 pub const ACCOUNTS_CHANGED: &str = "accounts-changed";
 pub const HISTORY_PROGRESS: &str = "history-progress";
 pub const TERMINAL_OUTPUT: &str = "terminal-output";
+pub const PIPELINE_CHANGED: &str = "pipeline-changed";
 const NOTICE_MAX_CHARS: usize = 140;
 
 #[derive(Serialize, Clone)]
@@ -29,6 +31,12 @@ struct TerminalPayload {
     id: String,
     /// Saída em base64: o terminal produz bytes, não só texto.
     data: String,
+}
+
+#[derive(Serialize, Clone)]
+struct PipelinePayload {
+    id: String,
+    status: RunStatus,
 }
 
 #[derive(Serialize, Clone)]
@@ -70,6 +78,18 @@ fn notice_for(event: &ChatEvent) -> Option<(&'static str, String)> {
     }
 }
 
+/// Aviso do sistema quando uma execução da esteira precisa do usuário ou terminou.
+fn pipeline_notice(run: &PipelineRun) -> Option<(&'static str, String)> {
+    let title = match run.status {
+        RunStatus::AwaitingApproval => "Esteira: plano pronto para aprovação",
+        RunStatus::Done => "Esteira concluída",
+        RunStatus::NeedsInfo => "Esteira: a task precisa de mais informação",
+        RunStatus::Failed => "Esteira parou",
+        RunStatus::Running | RunStatus::Cancelled => return None,
+    };
+    Some((title, run.jira_key.as_ref().map_or_else(|| run.title.clone(), |k| format!("{k} · {}", run.title))))
+}
+
 impl TauriEvents {
     pub fn new(app: AppHandle, settings: Arc<dyn Settings>) -> Self {
         TauriEvents { app, settings, waiting: Mutex::default() }
@@ -92,13 +112,18 @@ impl TauriEvents {
     }
 
     fn notify(&self, conversation_id: &str, event: &ChatEvent) {
-        let Some((title, body)) = notice_for(event) else { return };
+        if let Some((title, body)) = notice_for(event) {
+            self.show_notice(conversation_id, title, body);
+        }
+    }
+
+    fn show_notice(&self, key: &str, title: &str, body: String) {
         if self.main_focused() || !self.settings.flag(flags::NOTIFY_DESKTOP, true) {
             return;
         }
         let count = {
             let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
-            waiting.insert(conversation_id.to_owned());
+            waiting.insert(key.to_owned());
             waiting.len()
         };
         self.set_badge(count);
@@ -125,6 +150,13 @@ impl EventSink for TauriEvents {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.encode(data);
         let _ = self.app.emit(TERMINAL_OUTPUT, TerminalPayload { id: terminal_id.to_owned(), data });
+    }
+
+    fn pipeline_changed(&self, run: &PipelineRun) {
+        if let Some((title, body)) = pipeline_notice(run) {
+            self.show_notice(&format!("pipeline:{}", run.id), title, body);
+        }
+        let _ = self.app.emit(PIPELINE_CHANGED, PipelinePayload { id: run.id.clone(), status: run.status });
     }
 }
 

@@ -17,6 +17,9 @@
   import SkillsView from "$lib/views/SkillsView.svelte";
   import HistoryView from "$lib/views/HistoryView.svelte";
   import TasksView from "$lib/views/TasksView.svelte";
+  import PipelinesView from "$lib/views/PipelinesView.svelte";
+  import { handlePipelineChanged, isStageConversation, loadPipelines, loadStageMessages } from "$lib/state/pipelines.svelte";
+  import type { ChatEvent } from "$lib/types";
 
   let view = $state<View>("chat");
   let cliFound = $state(true);
@@ -33,8 +36,16 @@
       await openConversation(id);
       view = "chat";
     };
+    void loadPipelines();
+    // O que as etapas da esteira gravam aparece no log da tela de acompanhamento.
+    const STAGE_REFRESH = new Set<ChatEvent["kind"]>(["step", "done", "waiting", "notice", "error", "exhausted", "cancelled"]);
+    const onChat = (event: ChatEvent) => {
+      handleChatEvent(event);
+      if (STAGE_REFRESH.has(event.kind) && isStageConversation(event.conversation_id)) void loadStageMessages(event.conversation_id);
+    };
     const listeners = [
-      api.onChat(handleChatEvent),
+      api.onChat(onChat),
+      api.onPipelineChanged((p) => void handlePipelineChanged(p.id)),
       api.onAccountsChanged(() => void loadAccounts()),
       api.onOpenConversation((id) => void showConversation(id)),
     ];
@@ -64,6 +75,8 @@
       <ConnectorsView />
     {:else if view === "history"}
       <HistoryView onnavigate={(v) => (view = v)} />
+    {:else if view === "pipelines"}
+      <PipelinesView onnavigate={(v) => (view = v)} />
     {:else if view === "tasks"}
       <TasksView onnavigate={(v) => (view = v)} />
     {:else}

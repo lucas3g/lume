@@ -5,6 +5,7 @@
   import { chat, loadConversations, openConversation, startAgentSession } from "../state/chat.svelte";
   import { loadProjects, projects } from "../state/projects.svelte";
   import type { MemoryFile, ProjectFile, View } from "../types";
+  import Toggle from "../components/Toggle.svelte";
 
   interface Props {
     onnavigate: (view: View) => void;
@@ -99,6 +100,13 @@
       saved = true;
     });
   };
+
+  const setVersioned = (versioned: boolean) =>
+    run(async () => {
+      if (!project) return;
+      await api.setProjectVersioned(project.id, versioned);
+      await loadProjects();
+    });
 
   const remove = () =>
     run(async () => {
@@ -197,6 +205,20 @@
       </section>
 
       {#if project.folder}
+        <section class="card" aria-label="Versionamento">
+          <div class="head">
+            <div>
+              <h2 class="section-title">Projeto com versionamento</h2>
+              <div class="muted small">
+                {project.versioned
+                  ? "A esteira de bots trabalha numa cópia isolada (git worktree), num ramo novo, sem mexer na pasta principal."
+                  : "Sem versionamento, a esteira de bots altera os arquivos direto na pasta de desenvolvimento."}
+              </div>
+            </div>
+            <Toggle checked={project.versioned} label="Projeto com versionamento" onchange={setVersioned} />
+          </div>
+        </section>
+
         <section class="card" aria-label="Memória do projeto">
           <div class="head">
             <div>

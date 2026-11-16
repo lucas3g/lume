@@ -1,12 +1,21 @@
 //! Comandos expostos à interface. Só traduzem a chamada para um caso de uso.
 
-use super::{windows, Container};
-use crate::application::{extensions::SkillView, flags, prefs, store::ServerPage, tasks::TaskInput, AppError, AppResult};
+use super::{windows, Bots, Container};
+use crate::application::{
+    extensions::SkillView,
+    flags,
+    pipeline::{RunDetail, StartInput},
+    prefs,
+    store::ServerPage,
+    tasks::TaskInput,
+    AppError, AppResult,
+};
 use crate::domain::{
     account::{Account, Provider, ProviderInfo, UsageLimit},
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
     history::{HistSession, HistoryStatus},
+    pipeline::PipelineRun,
     project::{MemoryFile, Project, ProjectFile},
     schedule::{Repeat, Task},
     store::{PluginListing, ServerListing},
@@ -414,6 +423,12 @@ pub fn save_project(app: App<'_>, id: Option<String>, name: String, instructions
     app.projects.save(id, &name, &instructions)
 }
 
+/// O usuário diz se o projeto tem versionamento: com ele, a esteira usa uma cópia isolada.
+#[tauri::command]
+pub fn set_project_versioned(app: App<'_>, id: String, versioned: bool) -> AppResult<Project> {
+    app.projects.set_versioned(&id, versioned)
+}
+
 #[tauri::command]
 pub fn delete_project(app: App<'_>, id: String) -> AppResult<()> {
     app.projects.delete(&id)
@@ -638,4 +653,61 @@ pub struct Environment {
 #[tauri::command]
 pub fn environment(app: App<'_>) -> Environment {
     Environment { cli_found: app.cli_found }
+}
+
+// ---- esteira de bots
+
+#[tauri::command]
+pub fn list_pipelines(app: App<'_>) -> AppResult<Vec<PipelineRun>> {
+    app.pipelines.list()
+}
+
+#[tauri::command]
+pub fn pipeline_detail(app: App<'_>, id: String) -> AppResult<RunDetail> {
+    app.pipelines.detail(&id)
+}
+
+/// Cria a execução (e a cópia isolada, se o projeto tem versionamento) e põe os bots para trabalhar.
+#[tauri::command(async)]
+pub fn start_pipeline(
+    app: App<'_>,
+    project_id: String,
+    jira_key: Option<String>,
+    title: String,
+    request: String,
+    budget_minutes: Option<i64>,
+) -> AppResult<PipelineRun> {
+    let run = app.pipelines.start(StartInput { project_id, jira_key, title, request, budget_minutes })?;
+    app.spawn_pipeline(run.id.clone());
+    Ok(run)
+}
+
+/// Aprova o plano (sem `feedback`) ou pede ajustes ao Planejador.
+#[tauri::command]
+pub fn decide_pipeline_plan(app: App<'_>, id: String, feedback: Option<String>) -> AppResult<()> {
+    app.pipelines.decide_plan(&id, feedback.as_deref())?;
+    app.spawn_pipeline(id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_pipeline(app: App<'_>, id: String) -> AppResult<()> {
+    app.pipelines.cancel(&id, &Bots(Arc::clone(&app)))
+}
+
+#[tauri::command]
+pub fn retry_pipeline(app: App<'_>, id: String) -> AppResult<()> {
+    app.pipelines.retry(&id)?;
+    app.spawn_pipeline(id);
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn commit_pipeline(app: App<'_>, id: String, message: String) -> AppResult<()> {
+    app.pipelines.commit(&id, &message)
+}
+
+#[tauri::command]
+pub fn delete_pipeline(app: App<'_>, id: String) -> AppResult<()> {
+    app.pipelines.delete(&id)
 }

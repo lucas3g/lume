@@ -2,8 +2,8 @@
 
 use crate::application::{
     ports::{
-        AccountRepository, AgentRepository, Clock, ConnectorRepository, ConversationRepository, ProjectRepository,
-        Settings, SwitchLog, TaskRepository,
+        AccountRepository, AgentRepository, Clock, ConnectorRepository, ConversationRepository, PipelineRepository,
+        ProjectRepository, Settings, SwitchLog, TaskRepository,
     },
     AppError, AppResult,
 };
@@ -11,6 +11,7 @@ use crate::domain::{
     account::{Account, Identity, Provider},
     chat::{Conversation, Message, RateInfo, Switch, DEFAULT_PERMISSION_MODE},
     extension::{connector_key, Agent, Connector},
+    pipeline::{PipelineRun, Role, RunStatus, StageRun, StageStatus, WorkMode},
     project::{Project, ProjectFile},
     schedule::{Repeat, Task},
 };
@@ -50,7 +51,15 @@ CREATE TABLE IF NOT EXISTS skill_rules(
   scope TEXT NOT NULL, skill TEXT NOT NULL, enabled INTEGER NOT NULL, PRIMARY KEY(scope, skill));
 CREATE TABLE IF NOT EXISTS skill_catalog(name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS projects(
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, instructions TEXT NOT NULL, folder TEXT);
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, instructions TEXT NOT NULL, folder TEXT, versioned INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS pipeline_runs(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, jira_key TEXT, title TEXT NOT NULL, request TEXT NOT NULL,
+  status TEXT NOT NULL, mode TEXT NOT NULL, workdir TEXT NOT NULL, branch TEXT, rounds INTEGER NOT NULL DEFAULT 0,
+  budget_minutes INTEGER NOT NULL, note TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pipeline_stages(
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, role TEXT NOT NULL, round INTEGER NOT NULL, status TEXT NOT NULL,
+  conversation_id TEXT NOT NULL, input TEXT NOT NULL, output TEXT, started_at INTEGER NOT NULL, finished_at INTEGER);
+CREATE INDEX IF NOT EXISTS idx_pipeline_stages_run ON pipeline_stages(run_id, started_at);
 CREATE TABLE IF NOT EXISTS project_files(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks(
@@ -69,7 +78,7 @@ const ACCOUNT_COLUMNS: &str =
 const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 12] = [
+const MIGRATIONS: [&str; 13] = [
     "ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE conversations ADD COLUMN session_provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
@@ -83,6 +92,7 @@ const MIGRATIONS: [&str; 12] = [
     "ALTER TABLE conversations ADD COLUMN agent_id TEXT",
     "ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'",
     "ALTER TABLE conversations ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE projects ADD COLUMN versioned INTEGER NOT NULL DEFAULT 0",
 ];
 
 impl From<rusqlite::Error> for AppError {
@@ -471,7 +481,7 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<Agent> {
 impl ProjectRepository for SqliteStore {
     fn list(&self) -> AppResult<Vec<Project>> {
         let c = self.conn();
-        let mut st = c.prepare("SELECT id,name,instructions,folder FROM projects ORDER BY name")?;
+        let mut st = c.prepare("SELECT id,name,instructions,folder,versioned FROM projects ORDER BY name")?;
         let rows = st.query_map([], project_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -479,15 +489,15 @@ impl ProjectRepository for SqliteStore {
     fn get(&self, id: &str) -> AppResult<Option<Project>> {
         Ok(self
             .conn()
-            .query_row("SELECT id,name,instructions,folder FROM projects WHERE id=?", [id], project_row)
+            .query_row("SELECT id,name,instructions,folder,versioned FROM projects WHERE id=?", [id], project_row)
             .optional()?)
     }
 
     fn save(&self, project: &Project) -> AppResult<()> {
         self.conn().execute(
-            "INSERT INTO projects(id,name,instructions,folder) VALUES(?,?,?,?)
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, instructions=excluded.instructions, folder=excluded.folder",
-            params![project.id, project.name, project.instructions, project.folder],
+            "INSERT INTO projects(id,name,instructions,folder,versioned) VALUES(?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, instructions=excluded.instructions, folder=excluded.folder, versioned=excluded.versioned",
+            params![project.id, project.name, project.instructions, project.folder, project.versioned as i64],
         )?;
         Ok(())
     }
@@ -531,7 +541,7 @@ impl ProjectRepository for SqliteStore {
 }
 
 fn project_row(r: &Row<'_>) -> rusqlite::Result<Project> {
-    Ok(Project { id: r.get(0)?, name: r.get(1)?, instructions: r.get(2)?, folder: r.get(3)? })
+    Ok(Project { id: r.get(0)?, name: r.get(1)?, instructions: r.get(2)?, folder: r.get(3)?, versioned: r.get::<_, i64>(4)? != 0 })
 }
 
 impl ConnectorRepository for SqliteStore {
@@ -627,6 +637,93 @@ impl TaskRepository for SqliteStore {
 
     fn delete(&self, id: &str) -> AppResult<()> {
         self.conn().execute("DELETE FROM tasks WHERE id=?", [id])?;
+        Ok(())
+    }
+}
+
+const RUN_COLUMNS: &str = "id,project_id,jira_key,title,request,status,mode,workdir,branch,rounds,budget_minutes,note,created_at,updated_at";
+const STAGE_COLUMNS: &str = "id,run_id,role,round,status,conversation_id,input,output,started_at,finished_at";
+
+fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
+    Ok(PipelineRun {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        jira_key: r.get(2)?,
+        title: r.get(3)?,
+        request: r.get(4)?,
+        status: RunStatus::parse(&r.get::<_, String>(5)?),
+        mode: WorkMode::parse(&r.get::<_, String>(6)?),
+        workdir: r.get(7)?,
+        branch: r.get(8)?,
+        rounds: r.get(9)?,
+        budget_minutes: r.get(10)?,
+        note: r.get(11)?,
+        created_at: r.get(12)?,
+        updated_at: r.get(13)?,
+    })
+}
+
+fn stage_row(r: &Row<'_>) -> rusqlite::Result<Option<StageRun>> {
+    let Some(role) = Role::parse(&r.get::<_, String>(2)?) else { return Ok(None) };
+    Ok(Some(StageRun {
+        id: r.get(0)?,
+        run_id: r.get(1)?,
+        role,
+        round: r.get(3)?,
+        status: StageStatus::parse(&r.get::<_, String>(4)?),
+        conversation_id: r.get(5)?,
+        input: r.get(6)?,
+        output: r.get(7)?,
+        started_at: r.get(8)?,
+        finished_at: r.get(9)?,
+    }))
+}
+
+impl PipelineRepository for SqliteStore {
+    fn runs(&self) -> AppResult<Vec<PipelineRun>> {
+        let c = self.conn();
+        let mut st = c.prepare(&format!("SELECT {RUN_COLUMNS} FROM pipeline_runs ORDER BY created_at DESC, rowid DESC"))?;
+        let rows = st.query_map([], run_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn run(&self, id: &str) -> AppResult<Option<PipelineRun>> {
+        Ok(self.conn().query_row(&format!("SELECT {RUN_COLUMNS} FROM pipeline_runs WHERE id=?"), [id], run_row).optional()?)
+    }
+
+    fn save_run(&self, run: &PipelineRun) -> AppResult<()> {
+        self.conn().execute(
+            &format!("INSERT OR REPLACE INTO pipeline_runs({RUN_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+            params![run.id, run.project_id, run.jira_key, run.title, run.request, run.status.key(), run.mode.key(),
+                run.workdir, run.branch, run.rounds, run.budget_minutes, run.note, run.created_at, run.updated_at],
+        )?;
+        Ok(())
+    }
+
+    fn stages(&self, run_id: &str) -> AppResult<Vec<StageRun>> {
+        let c = self.conn();
+        let mut st = c.prepare(&format!("SELECT {STAGE_COLUMNS} FROM pipeline_stages WHERE run_id=? ORDER BY started_at, rowid"))?;
+        let rows = st.query_map([run_id], stage_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?.into_iter().flatten().collect())
+    }
+
+    fn save_stage(&self, stage: &StageRun) -> AppResult<()> {
+        // REPLACE apagaria a linha e mudaria o rowid (a ordem): atualiza no lugar.
+        self.conn().execute(
+            &format!(
+                "INSERT INTO pipeline_stages({STAGE_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(id) DO UPDATE SET status=excluded.status, output=excluded.output, finished_at=excluded.finished_at"
+            ),
+            params![stage.id, stage.run_id, stage.role.key(), stage.round, stage.status.key(), stage.conversation_id,
+                stage.input, stage.output, stage.started_at, stage.finished_at],
+        )?;
+        Ok(())
+    }
+
+    fn delete_run(&self, id: &str) -> AppResult<()> {
+        let c = self.conn();
+        c.execute("DELETE FROM pipeline_stages WHERE run_id=?", [id])?;
+        c.execute("DELETE FROM pipeline_runs WHERE id=?", [id])?;
         Ok(())
     }
 }

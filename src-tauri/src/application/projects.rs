@@ -127,16 +127,18 @@ impl ManageProjects {
         if name.is_empty() {
             return Err(AppError("Dê um nome para o projeto.".into()));
         }
-        // A pasta de um projeto existente não muda ao editar nome e instruções.
-        let folder = match &id {
-            Some(id) => self.projects.get(id)?.and_then(|p| p.folder),
+        // A pasta e o versionamento de um projeto existente não mudam ao editar nome e instruções.
+        let existing = match &id {
+            Some(id) => self.projects.get(id)?,
             None => None,
         };
+        let (folder, versioned) = existing.map_or((None, false), |p| (p.folder, p.versioned));
         let project = Project {
             id: id.unwrap_or_else(|| self.ids.new_id()),
             name: name.to_owned(),
             instructions: instructions.trim().to_owned(),
             folder,
+            versioned,
         };
         self.projects.save(&project)?;
         Ok(project)
@@ -158,6 +160,7 @@ impl ManageProjects {
                     name: folder_name(&folder),
                     instructions: String::new(),
                     folder: Some(folder.clone()),
+                    versioned: false,
                 };
                 self.projects.save(&project)?;
                 project
@@ -190,6 +193,14 @@ impl ManageProjects {
         self.conversations
             .get(&id)?
             .ok_or_else(|| AppError("Conversa não encontrada.".into()))
+    }
+
+    /// Diz se o projeto tem versionamento; decide onde a esteira de bots trabalha.
+    pub fn set_versioned(&self, id: &str, versioned: bool) -> AppResult<Project> {
+        let mut project = self.projects.get(id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
+        project.versioned = versioned;
+        self.projects.save(&project)?;
+        Ok(project)
     }
 
     pub fn delete(&self, id: &str) -> AppResult<()> {

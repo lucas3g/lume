@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn project_with_folder_runs_as_an_agent_session_that_accepts_edits() {
         let world = World::with_accounts(vec![]);
-        let project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: Some("/tmp/loja".into()) };
+        let project = Project { id: "p1".into(), name: "Loja".into(), instructions: String::new(), folder: Some("/tmp/loja".into()), versioned: false };
         ProjectRepository::save(&*world.store, &project).unwrap();
         let uc = use_case(&world);
         let task = uc.save(input(Some("p1"))).unwrap();

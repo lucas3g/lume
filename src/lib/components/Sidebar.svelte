@@ -5,6 +5,7 @@
   import { api, errorMessage } from "../api";
   import { chat, openConversation, removeConversation, startAgentSession, startIsolatedSession } from "../state/chat.svelte";
   import { projects } from "../state/projects.svelte";
+  import { pipelines } from "../state/pipelines.svelte";
   import type { Account, Conversation, Project, View } from "../types";
   import Logo from "./Logo.svelte";
   import NewConversationDialog from "./NewConversationDialog.svelte";
@@ -40,6 +41,7 @@
   const SHORTCUTS: { id: View; label: string; hint: string; icon: string }[] = [
     { id: "skills", label: "Skills e agentes", hint: "Skills instaladas, agentes com instruções próprias e a loja de plugins", icon: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11" },
     { id: "connectors", label: "Conectores", hint: "Serviços e servidores MCP que o assistente pode usar", icon: "M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" },
+    { id: "pipelines", label: "Esteira de bots", hint: "Bots com papéis fixos resolvem tasks do Jira ou pedidos seus, com a sua aprovação do plano", icon: "M3 12h3M18 12h3M9 12h6M6 9h3v6H6zM15 9h3v6h-3zM10.5 5h3l-1.5-2zM12 5v4" },
     { id: "tasks", label: "Tarefas agendadas", hint: "Pedidos que rodam sozinhos em horários definidos", icon: "M8 3v3M16 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 14l2 2 4-4" },
     { id: "history", label: "Histórico importado", hint: "Conversas antigas do Claude Code e do Claude Desktop usadas como contexto", icon: "M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" },
   ];
@@ -211,6 +213,7 @@
       <button type="button" class="item" class:active={view === item.id} aria-current={view === item.id ? "page" : undefined} title={item.hint} onclick={() => onnavigate(item.id)}>
         <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d={item.icon} /></svg>
         {item.label}
+        {#if item.id === "pipelines" && pipelines.list.some((r) => r.status === "awaiting_approval")}<span class="waiting-dot" title="Um plano espera a sua aprovação"></span>{/if}
       </button>
     {/each}
   </div>
@@ -331,6 +334,7 @@
   .item { display: flex; align-items: center; gap: 9px; min-height: 30px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); text-align: left; }
   .item:hover, .item.active { background: var(--hover); }
   .item.active { color: #fff; }
+  .waiting-dot { width: 7px; height: 7px; margin-left: auto; border-radius: 50%; background: var(--warn); }
 
   .projects { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
   .heading { display: flex; align-items: center; padding: 0 4px 0 8px; }

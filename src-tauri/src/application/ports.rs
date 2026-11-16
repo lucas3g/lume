@@ -7,6 +7,7 @@ use crate::domain::{
     chat::{Attachment, Conversation, Message, RateInfo, Switch, TurnEnd, TurnEvent, TurnRequest},
     extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
+    pipeline::{PipelineRun, StageRun},
     project::{MemoryFile, Project, ProjectFile},
     schedule::Task,
     store::{PluginListing, ServerListing},
@@ -84,6 +85,30 @@ pub trait TaskRepository: Send + Sync {
     /// Cria ou substitui a tarefa.
     fn save(&self, task: &Task) -> AppResult<()>;
     fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+/// Execuções da esteira de bots e o registro das etapas.
+pub trait PipelineRepository: Send + Sync {
+    /// Execuções, das mais recentes para as mais antigas.
+    fn runs(&self) -> AppResult<Vec<PipelineRun>>;
+    fn run(&self, id: &str) -> AppResult<Option<PipelineRun>>;
+    /// Cria ou substitui a execução.
+    fn save_run(&self, run: &PipelineRun) -> AppResult<()>;
+    /// Etapas da execução, na ordem em que começaram.
+    fn stages(&self, run_id: &str) -> AppResult<Vec<StageRun>>;
+    /// Cria ou substitui a etapa.
+    fn save_stage(&self, stage: &StageRun) -> AppResult<()>;
+    /// Apaga a execução e o registro das etapas.
+    fn delete_run(&self, id: &str) -> AppResult<()>;
+}
+
+/// Roda uma etapa da esteira: um turno na conversa dela, com troca de conta quando o
+/// limite acaba. Devolve a resposta final do bot.
+#[async_trait]
+pub trait StageRunner: Send + Sync {
+    async fn run(&self, conversation_id: &str, prompt: &str) -> AppResult<String>;
+    /// Interrompe o turno em andamento na conversa.
+    fn cancel(&self, conversation_id: &str);
 }
 
 /// Cópia em disco dos arquivos de conhecimento de cada projeto, para o assistente ler
@@ -259,6 +284,8 @@ pub trait EventSink: Send + Sync {
     fn history_progress(&self, done: usize, total: usize);
     /// Bytes que um terminal produziu.
     fn terminal_output(&self, terminal_id: &str, data: &[u8]);
+    /// Uma execução da esteira (ou uma etapa dela) mudou.
+    fn pipeline_changed(&self, run: &PipelineRun);
 }
 
 /// Recebe os bytes que um terminal produz.

@@ -182,7 +182,7 @@ export const MODES: { id: string; label: string; description: string; isDefault?
 ];
 
 /** Telas principais do aplicativo. */
-export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts" | "tasks";
+export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts" | "tasks" | "pipelines";
 
 export type Repeat =
   | { kind: "every_minutes"; minutes: number }
@@ -223,6 +223,8 @@ export interface Project {
   instructions: string;
   /** Pasta do projeto; as sessões de agente do projeto trabalham nela. */
   folder: string | null;
+  /** Tem versionamento (git): a esteira de bots trabalha numa cópia isolada; sem ele, direto na pasta. */
+  versioned: boolean;
 }
 
 export interface FileEntry {
@@ -366,3 +368,47 @@ export const CATEGORY_LABEL: Record<string, string> = {
 
 /** Escopo das skills que valem para qualquer conversa e agente. */
 export const SCOPE_ALL = "all";
+
+// ---- esteira de bots
+
+export type PipelineRole = "triage" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "reporter";
+export type PipelineStatus = "running" | "awaiting_approval" | "needs_info" | "done" | "failed" | "cancelled";
+export type StageStatus = "running" | "done" | "returned" | "failed" | "cancelled";
+
+export interface PipelineRun {
+  id: string;
+  project_id: string;
+  jira_key: string | null;
+  title: string;
+  request: string;
+  status: PipelineStatus;
+  /** worktree: cópia isolada num ramo novo; direct: direto na pasta do projeto. */
+  mode: "worktree" | "direct";
+  workdir: string;
+  branch: string | null;
+  rounds: number;
+  budget_minutes: number;
+  note: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface StageRun {
+  id: string;
+  run_id: string;
+  role: PipelineRole;
+  round: number;
+  status: StageStatus;
+  /** Conversa da etapa: o andamento chega pelos eventos de conversa dela. */
+  conversation_id: string;
+  input: string;
+  output: string | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface PipelineDetail extends PipelineRun {
+  stages: StageRun[];
+  spent_seconds: number;
+  commit_message: string | null;
+}

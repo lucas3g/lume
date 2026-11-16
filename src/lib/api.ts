@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
   Account, AccountConnector, Agent, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
+  MemoryFile, Message, PipelineDetail, PipelineRun, PipelineStatus, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -95,6 +95,16 @@ export const api = {
   saveProject: (project: { id: string | null; name: string; instructions: string }) =>
     invoke<Project>("save_project", project),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
+  listPipelines: () => invoke<PipelineRun[]>("list_pipelines"),
+  pipelineDetail: (id: string) => invoke<PipelineDetail>("pipeline_detail", { id }),
+  startPipeline: (input: { projectId: string; jiraKey: string | null; title: string; request: string; budgetMinutes: number | null }) =>
+    invoke<PipelineRun>("start_pipeline", input),
+  decidePipelinePlan: (id: string, feedback: string | null) => invoke<void>("decide_pipeline_plan", { id, feedback }),
+  cancelPipeline: (id: string) => invoke<void>("cancel_pipeline", { id }),
+  retryPipeline: (id: string) => invoke<void>("retry_pipeline", { id }),
+  commitPipeline: (id: string, message: string) => invoke<void>("commit_pipeline", { id, message }),
+  deletePipeline: (id: string) => invoke<void>("delete_pipeline", { id }),
+  setProjectVersioned: (id: string, versioned: boolean) => invoke<Project>("set_project_versioned", { id, versioned }),
   listProjectFiles: (projectId: string) => invoke<ProjectFile[]>("list_project_files", { projectId }),
   addProjectFiles: (projectId: string, paths: string[]) => invoke<void>("add_project_files", { projectId, paths }),
   removeProjectFile: (projectId: string, fileId: string) => invoke<void>("remove_project_file", { projectId, fileId }),
@@ -151,6 +161,8 @@ export const api = {
   onChat: (handler: (e: ChatEvent) => void): Promise<UnlistenFn> =>
     listen<ChatEvent>("chat", (e) => handler(e.payload)),
   onAccountsChanged: (handler: () => void): Promise<UnlistenFn> => listen("accounts-changed", handler),
+  onPipelineChanged: (handler: (p: { id: string; status: PipelineStatus }) => void): Promise<UnlistenFn> =>
+    listen<{ id: string; status: PipelineStatus }>("pipeline-changed", (e) => handler(e.payload)),
   onHistoryProgress: (handler: (p: { done: number; total: number }) => void): Promise<UnlistenFn> =>
     listen<{ done: number; total: number }>("history-progress", (e) => handler(e.payload)),
 };
