@@ -8,7 +8,7 @@
     duration, icon, isActive, passesByRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
     type Visual,
   } from "../../pipeline";
-  import type { PipelineDetail, PipelineRole, Provider, TierModels } from "../../types";
+  import { EFFORTS, type PipelineDetail, type PipelineRole, type Provider, type TierModels } from "../../types";
 
   interface Props {
     detail: PipelineDetail;
@@ -71,7 +71,9 @@
       }
       const spent = list.reduce((sum, s) => sum + ((s.finished_at ?? now) - s.started_at), 0);
       const agent = agentInfo?.name ?? null;
-      return { station, visual, label, account, agent, model, off, time: list.length ? duration(spent) : "" };
+      const effortId = detail.efforts[station.role];
+      const effort = effortId ? (EFFORTS.find((e) => e.id === effortId)?.label.toLowerCase() ?? effortId) : null;
+      return { station, visual, label, account, agent, model, effort, off, time: list.length ? duration(spent) : "" };
     }),
   );
 
@@ -278,7 +280,7 @@
             {:else}
               <span class="role" title={c.station.model ? `${c.station.model} · ${c.station.perm}` : c.station.perm}>{c.station.perm.charAt(0).toUpperCase() + c.station.perm.slice(1)}</span>
             {/if}
-            <span class="model" title={c.model ? `Modelo: ${c.model}` : undefined}>{c.model ?? "\u00a0"}</span>
+            <span class="model" title={c.model ? `Modelo: ${c.model}${c.effort ? ` · esforço ${c.effort}` : ""}` : undefined}>{c.model ?? "\u00a0"}{c.effort ? ` · ${c.effort}` : ""}</span>
             <span class="chip c-{c.visual}"><i></i><span class="ctx">{c.label}</span></span>
             <span class="foot">
               <span class="acct">{#if c.account}{#if c.account !== "você"}<span class="dot ok"></span>{/if}<span class="ellipsis">{c.account}</span>{/if}</span>

@@ -397,6 +397,8 @@ export interface PipelineRun {
   jira_template: string | null;
   /** Link da task do Jira da execução, quando conhecido. */
   jira_url: string | null;
+  /** Esforço de cada papel quando a execução começou; ausente = padrão (médio). */
+  efforts: Partial<Record<PipelineRole, string>>;
   budget_minutes: number;
   note: string | null;
   created_at: number;
@@ -443,4 +445,6 @@ export interface PipelineConfig {
   skipped: PipelineRole[];
   /** Task do Jira que serve de modelo (link ou chave) para o Relator criar uma task nova. */
   jira_template: string | null;
+  /** Esforço de raciocínio por papel; ausente = padrão (médio). */
+  efforts: Partial<Record<PipelineRole, string>>;
 }

@@ -2,7 +2,7 @@
   import { api, errorMessage } from "../../api";
   import { OPTIONAL_ROLES, STATIONS } from "../../pipeline";
   import { agents } from "../../state/agents.svelte";
-  import type { PipelineConfig, PipelineRole, View } from "../../types";
+  import { EFFORTS, type PipelineConfig, type PipelineRole, type View } from "../../types";
   import Toggle from "../Toggle.svelte";
 
   interface Props {
@@ -11,7 +11,7 @@
   }
   let { projectId, onnavigate }: Props = $props();
 
-  const EMPTY: PipelineConfig = { agents: {}, skipped: [], jira_template: null };
+  const EMPTY: PipelineConfig = { agents: {}, skipped: [], jira_template: null, efforts: {} };
   /** Texto do campo do modelo de task, salvo ao sair do campo. */
   let template = $state("");
   let config = $state<PipelineConfig>(EMPTY);
@@ -72,6 +72,13 @@
     if (value !== (config.jira_template ?? null)) void save({ ...config, jira_template: value });
   }
 
+  function setEffort(role: PipelineRole, effort: string) {
+    const next = { ...config.efforts };
+    if (effort) next[role] = effort;
+    else delete next[role];
+    void save({ ...config, efforts: next });
+  }
+
   function setEnabled(role: PipelineRole, enabled: boolean) {
     const skipped = enabled ? config.skipped.filter((r) => r !== role) : [...config.skipped, role];
     void save({ ...config, skipped });
@@ -83,7 +90,7 @@
     <div>
       <h2 class="section-title">Esteira de bots</h2>
       <div class="muted small">
-        O agente de um papel soma as instruções, as skills e o modelo dele (só nas contas Claude) às regras fixas do papel (veredito, sem commit,
+        Cada papel pode ter um agente e um nível de esforço. O agente soma as instruções, as skills e o modelo dele (só nas contas Claude) às regras fixas do papel (veredito, sem commit,
         o texto do Jira é dado). Triagem, Testador e Relator podem ser desligados; vale para as próximas execuções.
       </div>
     </div>
@@ -102,6 +109,11 @@
         onchange={(e) => setAgent(s.role, e.currentTarget.value)}>
         <option value="">Regras padrão do papel</option>
         {#each agents.list as a (a.id)}<option value={a.id}>{a.name}{a.model ? ` · ${a.model}` : ""}</option>{/each}
+      </select>
+      <select class="input effort" aria-label={`Esforço do ${s.name}`} title="Esforço de raciocínio do modelo nesta etapa"
+        value={config.efforts[s.role] ?? ""} disabled={!on} onchange={(e) => setEffort(s.role, e.currentTarget.value)}>
+        <option value="">Esforço padrão</option>
+        {#each EFFORTS as e (e.id)}<option value={e.id}>Esforço {e.label.toLowerCase()}{e.warn ? " (consome mais)" : ""}</option>{/each}
       </select>
       {#if optional}
         <Toggle checked={on} label={`${on ? "Desligar" : "Ligar"} ${s.name}`} onchange={(v) => setEnabled(s.role, v)} />
@@ -134,14 +146,15 @@
   .pad { padding: 10px 16px 0; }
   .line.off .name { color: var(--muted); text-decoration: line-through; }
   .name { font-weight: 500; }
-  .agent { width: 230px; min-height: 34px; }
+  .agent { width: 210px; min-height: 34px; }
+  .effort { width: 170px; min-height: 34px; }
   .toggle-space { width: 44px; flex-shrink: 0; }
   .template { display: flex; align-items: center; gap: 12px; padding: 12px 16px 16px; border-top: 1px solid var(--hairline); }
   .template label { display: flex; flex-direction: column; gap: 2px; }
   .tpl { width: 330px; min-height: 34px; font-family: var(--mono); font-size: 12px; }
   @media (max-width: 640px) {
     .line { flex-wrap: wrap; }
-    .agent, .tpl { width: 100%; }
+    .agent, .effort, .tpl { width: 100%; }
     .template { flex-wrap: wrap; }
   }
 </style>

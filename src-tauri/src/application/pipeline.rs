@@ -220,7 +220,7 @@ impl ManagePipelines {
             return Err(AppError(format!("Cada imagem pode ter até {} MB.", MAX_IMAGE_BYTES / (1024 * 1024))));
         }
         let stored = self.stored_config(&project.id);
-        let (skipped, jira_template) = (stored.skipped, stored.jira_template);
+        let (skipped, jira_template, efforts) = (stored.skipped, stored.jira_template, stored.efforts);
         let jira_url = jira_key.as_deref().and_then(|key| self.link_for(jira_template.as_deref(), key));
         let agents = self
             .role_agents(&project.id)?
@@ -251,6 +251,7 @@ impl ManagePipelines {
             image_count: input.images.len() as i64,
             jira_template,
             jira_url,
+            efforts,
             budget_minutes: input.budget_minutes.filter(|m| *m > 0).unwrap_or(DEFAULT_BUDGET_MINUTES),
             note: None,
             created_at: now,
@@ -355,6 +356,9 @@ impl ManagePipelines {
             && self.agents.get(&agent.id)?.is_some()
         {
             self.conversations.set_agent(&conversation_id, Some(&agent.id))?;
+        }
+        if let Some(effort) = run.efforts.get(&role) {
+            self.conversations.set_effort(&conversation_id, effort)?;
         }
         // A volta do Implementador é o número de passagens dele antes desta.
         let round = if role == Role::Implementer { implementer_passes(stages) } else { rounds(stages) };
@@ -761,7 +765,12 @@ mod tests {
         let bad = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "nao-existe".into())]), skipped: vec![], ..Default::default() };
         assert!(uc.save_config("p1", bad).is_err());
         assert!(uc.save_config("p1", PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Planner], ..Default::default() }).is_err());
-        let config = PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Reporter, Role::Triage, Role::Tester], ..Default::default() };
+        let config = PipelineConfig {
+            agents: BTreeMap::from([(Role::Reviewer, "a1".into())]),
+            skipped: vec![Role::Reporter, Role::Triage, Role::Tester],
+            efforts: BTreeMap::from([(Role::Planner, "max".into())]),
+            ..Default::default()
+        };
         uc.save_config("p1", config).unwrap();
         assert_eq!(uc.config("p1").unwrap().skipped, [Role::Triage, Role::Tester, Role::Reporter]);
 
@@ -790,6 +799,9 @@ mod tests {
         assert_eq!(reviewer_models.claude, "opus", "agente sem modelo próprio usa o do nível");
         let reviewer = detail.stages.iter().find(|s| s.role == Role::Reviewer).unwrap();
         assert_eq!(world.conversation(&reviewer.conversation_id).agent_id.as_deref(), Some("a1"));
+        let planner = detail.stages.iter().find(|s| s.role == Role::Planner).unwrap();
+        assert_eq!(world.conversation(&planner.conversation_id).effort, "max", "esforço escolhido para o papel");
+        assert_eq!(world.conversation(&reviewer.conversation_id).effort, "medium", "sem escolha, o padrão");
         let implementer = detail.stages.iter().find(|s| s.role == Role::Implementer).unwrap();
         assert_eq!(world.conversation(&implementer.conversation_id).agent_id, None);
 

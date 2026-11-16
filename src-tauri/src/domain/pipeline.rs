@@ -191,6 +191,9 @@ pub struct PipelineConfig {
     /// uma nova no mesmo projeto, tipo, campos e estrutura de descrição.
     #[serde(default)]
     pub jira_template: Option<String>,
+    /// Esforço de raciocínio por papel ("low" … "max"); sem entrada, o padrão da conversa.
+    #[serde(default)]
+    pub efforts: BTreeMap<Role, String>,
 }
 
 impl PipelineConfig {
@@ -201,6 +204,12 @@ impl PipelineConfig {
         }
         if self.skipped.iter().any(|r| !Role::OPTIONAL.contains(r)) {
             return Err("Só Triagem, Testador e Relator podem ser desligados.".into());
+        }
+        if self.efforts.keys().any(|r| !r.is_bot()) {
+            return Err("Só os bots têm nível de esforço.".into());
+        }
+        if self.efforts.values().any(|e| !super::chat::EFFORTS.contains(&e.as_str())) {
+            return Err("Nível de esforço inválido.".into());
         }
         if let Some(template) = &self.jira_template
             && task_ref(template).is_none()
@@ -340,6 +349,8 @@ pub struct PipelineRun {
     pub jira_template: Option<String>,
     /// Link da task do Jira da execução, quando conhecido.
     pub jira_url: Option<String>,
+    /// Esforço de cada papel quando a execução começou; sem entrada, o padrão da conversa.
+    pub efforts: BTreeMap<Role, String>,
     pub budget_minutes: i64,
     /// Motivo do fim, quando falhou ou parou.
     pub note: Option<String>,
@@ -791,6 +802,7 @@ mod tests {
             image_count: 0,
             jira_template: None,
             jira_url: None,
+            efforts: BTreeMap::new(),
             budget_minutes: 60,
             note: None,
             created_at: 0,
@@ -902,7 +914,7 @@ mod tests {
         assert!(PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Reviewer], ..Default::default() }.validate().is_err());
         assert!(PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a".into())]), skipped: quick.to_vec(), ..Default::default() }.validate().is_ok());
         let json = serde_json::to_string(&PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Tester], ..Default::default() }).unwrap();
-        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"],"jira_template":null}"#);
+        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"],"jira_template":null,"efforts":{}}"#);
     }
 
     #[test]
@@ -1003,6 +1015,9 @@ mod tests {
             "link em Markdown"
         );
         assert!(PipelineConfig { jira_template: Some("qualquer coisa".into()), ..Default::default() }.validate().is_err());
+        assert!(PipelineConfig { efforts: BTreeMap::from([(Role::Planner, "enorme".into())]), ..Default::default() }.validate().is_err());
+        assert!(PipelineConfig { efforts: BTreeMap::from([(Role::Approval, "high".into())]), ..Default::default() }.validate().is_err());
+        assert!(PipelineConfig { efforts: BTreeMap::from([(Role::Planner, "max".into())]), ..Default::default() }.validate().is_ok());
     }
 
     #[test]

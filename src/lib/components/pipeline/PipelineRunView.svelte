@@ -11,7 +11,7 @@
     clock, duration, icon, inputSummary, isActive, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, VISUAL,
   } from "../../pipeline";
-  import type { PastedImage, PipelineDetail, PipelineRole, StageRun, View } from "../../types";
+  import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
 
   interface Props {
@@ -114,6 +114,12 @@
     const id = stageAccountId(pipelines.messages[panelStage.conversation_id] ?? []);
     const account = accounts.list.find((a) => (live ? a.name === live : a.id === id));
     return stageModelText(detail, panelStage, account?.provider ?? "claude");
+  });
+
+  /** Esforço escolhido para o papel aberto nesta execução. */
+  const panelEffort = $derived.by(() => {
+    const id = panelRole ? detail.efforts[panelRole] : undefined;
+    return id ? (EFFORTS.find((e) => e.id === id)?.label.toLowerCase() ?? id) : null;
   });
 
   function configureAgents() {
@@ -437,7 +443,7 @@
             {#if panelVisual}<span class="chip c-{panelVisual.visual}"><i></i>{panelVisual.label}</span>{/if}
           </div>
           <div class="p-meta">
-            {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelModel}modelo <b>{panelModel}</b> · {:else if panelStation.model}{panelStation.model.toLowerCase()} · {/if}{panelStation.perm}
+            {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelModel}modelo <b>{panelModel}</b> · {:else if panelStation.model}{panelStation.model.toLowerCase()} · {/if}{#if panelEffort}esforço <b>{panelEffort}</b> · {/if}{panelStation.perm}
             {#if panelStage && panelStage.role !== "approval" && panelStage.role !== "feedback"} · conta <b>{stageAccount(panelStage)}</b>{/if}
             {#if panelStage} · <span class="mono">{duration(stageSeconds(panelStage))}</span>{/if}
           </div>
