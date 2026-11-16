@@ -86,6 +86,23 @@
   const panelAsking = $derived(!!panelStage && panelStage.status === "running" && !!chat.permissions[panelStage.conversation_id]);
   const panelVisual = $derived(panelStage ? stageVisual(panelStage, panelAsking) : null);
   const panelLog = $derived(stageLog(panelMessages));
+  /** Log da etapa: acompanha a última linha, a não ser que o usuário role para cima para ler. */
+  let logEl = $state<HTMLOListElement>();
+  let logStuck = $state(true);
+  const onLogScroll = () => {
+    if (logEl) logStuck = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
+  };
+  // Outra etapa no painel: volta a acompanhar o fim.
+  $effect(() => {
+    void panelStageId;
+    logStuck = true;
+  });
+  $effect(() => {
+    void panelLog.length;
+    void liveStatus;
+    if (logEl && logStuck) logEl.scrollTop = logEl.scrollHeight;
+  });
+
   const liveStatus = $derived(panelStage?.status === "running" && panelStage.conversation_id ? chat.turns[panelStage.conversation_id]?.status : null);
 
   const accountName = (id: string | null) => accounts.list.find((a) => a.id === id)?.name ?? null;
@@ -389,7 +406,7 @@
             {#if panelStage.role !== "approval"}
               <section>
                 <h3 class="label">{panelStage.status === "running" ? "Agora" : "O que fez"}</h3>
-                <ol class="tlog">
+                <ol class="tlog" bind:this={logEl} onscroll={onLogScroll}>
                   {#each panelLog as l, i (i)}
                     <li class={l.tone}><span class="t">{clock(l.at - detail.created_at)}</span><span class="i">{@html icon(l.glyph, 12)}</span><span class="va"><span class="v">{l.verb}</span> <span class="a">{l.target}</span></span></li>
                   {/each}
