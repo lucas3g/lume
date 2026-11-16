@@ -613,12 +613,28 @@ pub fn task_url(site: &str, key: &str) -> String {
     format!("{site}/browse/{key}")
 }
 
+/// Task citada no começo de uma linha de resposta do bot. Aceita o link ou a chave sozinhos
+/// e também o que os modelos costumam escrever em volta: link em Markdown
+/// (`[EI-1](https://…/browse/EI-1)`) ou a chave seguida do título (`EI-1 — Exportar CSV`).
+fn reply_task_ref(text: &str) -> Option<(String, Option<String>)> {
+    let text = text.trim().trim_matches(['*', '`', '_', ' ']);
+    if let Some(found) = task_ref(text) {
+        return Some(found);
+    }
+    let tokens = || text.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']')).filter(|t| !t.is_empty());
+    // Um link em qualquer ponto da linha diz também o site; sem link, só vale a chave logo no começo.
+    tokens()
+        .filter(|t| t.contains("/browse/"))
+        .find_map(task_ref)
+        .or_else(|| tokens().next().and_then(|t| task_ref(t.trim_end_matches([',', ';', ':']))))
+}
+
 /// Task que o Relator criou (linha `TASK_CRIADA: <link>`): chave e link.
 pub fn created_task(report: &str) -> Option<(String, Option<String>)> {
     report.lines().rev().find_map(|l| {
         let l = l.trim().trim_matches(['*', '`', '_', ' ']);
         let rest = l.get(..12).filter(|p| p.eq_ignore_ascii_case("TASK_CRIADA:")).map(|_| &l[12..])?;
-        let (key, site) = task_ref(rest.trim().trim_matches(['*', '`', '_', ' ']))?;
+        let (key, site) = reply_task_ref(rest)?;
         let url = site.map(|s| task_url(&s, &key));
         Some((key, url))
     })
@@ -629,7 +645,7 @@ pub fn found_task(triage: &str) -> Option<String> {
     triage.lines().rev().find_map(|l| {
         let l = l.trim().trim_matches(['*', '`', '_', ' ']);
         let rest = l.get(..5).filter(|p| p.eq_ignore_ascii_case("TASK:")).map(|_| &l[5..])?;
-        normalize_jira_key(rest.trim().trim_matches(['*', '`', '_', ' ', '.']))
+        reply_task_ref(rest).map(|(key, _)| key)
     })
 }
 
@@ -950,6 +966,8 @@ mod tests {
         assert_eq!(found_task("objetivo\n**TASK: lume-142**\nVEREDITO: CLARO"), Some("LUME-142".into()));
         assert_eq!(found_task("TASK: nenhuma\nVEREDITO: CLARO"), None);
         assert_eq!(found_task("sem linha"), None);
+        assert_eq!(found_task("TASK: LOJA-12 — Exportar pedidos em CSV\nVEREDITO: CLARO"), Some("LOJA-12".into()), "a chave seguida do título");
+        assert_eq!(found_task("TASK: nenhuma (achei LOJA-3, mas não corresponde)"), None);
     }
 
     #[test]
@@ -979,6 +997,11 @@ mod tests {
             Some(("EI-6001".into(), Some("https://elinfo.atlassian.net/browse/EI-6001".into())))
         );
         assert_eq!(created_task("TASK_CRIADA: nenhuma (sem acesso ao Jira)"), None);
+        assert_eq!(
+            created_task("TASK_CRIADA: [EI-6001](https://elinfo.atlassian.net/browse/EI-6001)"),
+            Some(("EI-6001".into(), Some("https://elinfo.atlassian.net/browse/EI-6001".into()))),
+            "link em Markdown"
+        );
         assert!(PipelineConfig { jira_template: Some("qualquer coisa".into()), ..Default::default() }.validate().is_err());
     }
 

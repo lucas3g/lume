@@ -116,11 +116,7 @@ impl ManagePipelines {
         for stage in stages.iter().filter(|s| !s.conversation_id.is_empty()) {
             let Some(conversation) = self.conversations.get(&stage.conversation_id)? else { continue };
             let claude = run.agents.get(&stage.role).and_then(|a| a.model.clone()).unwrap_or(conversation.model);
-            let others = self
-                .settings
-                .text(&format!("{}{}", super::prefs::PROVIDER_MODELS_PREFIX, stage.conversation_id))
-                .and_then(|t| serde_json::from_str(&t).ok())
-                .unwrap_or_default();
+            let others = conversation.provider_models;
             stage_models.insert(stage.id.clone(), StageModels { claude, others });
         }
         Ok(RunDetail { stage_models, max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
@@ -343,14 +339,13 @@ impl ManagePipelines {
         let conversation_id = self.ids.new_id();
         let label = run.jira_key.clone().unwrap_or_else(|| run.title.clone());
         // Cada serviço tem os próprios modelos: o do Claude fica na conversa; os dos outros
-        // ficam ao lado, para valer se a conta trocar para o ChatGPT ou o Gemini no meio.
+        // ficam na conversa também, para valer se a conta trocar para o ChatGPT ou o Gemini no meio.
         let models = self.models();
         let claude_model = models.model(Provider::Claude, role.tier()).unwrap_or_default();
         self.conversations.insert(&conversation_id, &format!("🤖 {} · {label}", role.label()), &claude_model, &run.workdir, KIND_AGENT, None)?;
         let others = models.others(role.tier());
         if !others.is_empty() {
-            let text = serde_json::to_string(&others).map_err(|e| AppError(e.to_string()))?;
-            self.settings.set_text(&format!("{}{conversation_id}", super::prefs::PROVIDER_MODELS_PREFIX), &text)?;
+            self.conversations.set_provider_models(&conversation_id, &others)?;
         }
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
@@ -558,11 +553,10 @@ impl ManagePipelines {
             finished_at: Some(now),
         };
         self.pipelines.save_stage(&stage)?;
-        // O ajuste ganha tempo próprio: o orçamento não pode acabar antes de ele começar.
+        // O ajuste ganha tempo próprio: a folga conta a partir do que já foi gasto, para que o
+        // orçamento não acabe no meio do ciclo (ex.: depois do Implementador, antes do Revisor).
         let spent = spent_seconds(&stages, now);
-        if spent >= run.budget_minutes * 60 {
-            run.budget_minutes = (spent + 59) / 60 + EXTRA_BUDGET_MINUTES;
-        }
+        run.budget_minutes = run.budget_minutes.max((spent + 59) / 60 + EXTRA_BUDGET_MINUTES);
         lock(&self.cancelled).remove(run_id);
         run.status = RunStatus::Running;
         run.rounds = 0;
@@ -725,8 +719,8 @@ mod tests {
         assert_eq!(roles(&uc, &run.id), [("triage", "done"), ("planner", "done"), ("approval", "running")]);
         assert_eq!(detail.stages[2].input, "## Plano\nfazer X");
         let triage_conv = world.conversation(&detail.stages[0].conversation_id);
-        let planner_models = uc.settings.text(&format!("{}{}", crate::application::prefs::PROVIDER_MODELS_PREFIX, detail.stages[1].conversation_id));
-        assert_eq!(planner_models.as_deref(), Some(r#"{"chatgpt":"gpt-forte"}"#), "o Planejador usa o modelo forte do ChatGPT");
+        let planner_conv = world.conversation(&detail.stages[1].conversation_id);
+        assert_eq!(planner_conv.provider_models.get("chatgpt").map(String::as_str), Some("gpt-forte"), "o Planejador usa o modelo forte do ChatGPT");
         let planner = &detail.stage_models[&detail.stages[1].id];
         assert_eq!((planner.claude.as_str(), planner.others.get("chatgpt").map(String::as_str)), ("opus", Some("gpt-forte")));
         assert_eq!((triage_conv.cwd.as_str(), triage_conv.model.as_str(), triage_conv.permission_mode.as_str()), ("/dev/loja-esteira-loja-7", "haiku", "manual"));

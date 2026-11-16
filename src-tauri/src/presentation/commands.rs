@@ -716,7 +716,6 @@ pub fn start_pipeline(
     Ok(run)
 }
 
-/// Aprova o plano (sem `feedback`) ou pede ajustes ao Planejador.
 /// Imagens coladas no pedido da execução (base64), para as miniaturas.
 #[tauri::command]
 pub fn pipeline_images(app: App<'_>, id: String) -> AppResult<Vec<ImageOut>> {
@@ -730,6 +729,7 @@ pub struct ImageOut {
     data: String,
 }
 
+/// Aprova o plano (sem `feedback`) ou pede ajustes ao Planejador.
 #[tauri::command]
 pub fn decide_pipeline_plan(app: App<'_>, id: String, feedback: Option<String>) -> AppResult<()> {
     app.pipelines.decide_plan(&id, feedback.as_deref())?;

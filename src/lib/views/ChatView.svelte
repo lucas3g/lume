@@ -26,6 +26,7 @@
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
   import { closeSubagent, loadSubagents, openSubagent, runOf, runsOf, statusLabel, subagents } from "../state/subagents.svelte";
   import { isAgentTool, parseToolUse, type ToolUse } from "../tools";
+  import { pastedImageFiles, readPastedImage } from "../paste";
   import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
   import { onMount } from "svelte";
   import { dayClock } from "../state/clock.svelte";
@@ -49,7 +50,6 @@
   let attachments = $state<string[]>([]);
   /** Imagens coladas, com a prévia (data URL) para a miniatura. */
   let pasted = $state<(PastedImage & { preview: string })[]>([]);
-  let pastedCount = 0;
   let scroller = $state<HTMLElement>();
 
   // Subagentes da conversa aberta: os que ainda trabalham e o aberto no painel.
@@ -143,22 +143,7 @@
 
   /** Imagens coladas no campo entram como anexos, com miniatura. */
   async function onPaste(event: ClipboardEvent) {
-    const files = [...(event.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
-    if (!files.length) return;
-    event.preventDefault();
-    const read = (file: File) =>
-      new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      });
-    for (const file of files) {
-      const preview = await read(file);
-      const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
-      pastedCount += 1;
-      pasted = [...pasted, { name: file.name || `imagem-${pastedCount}.${ext}`, media_type: file.type, data: preview.split(",")[1] ?? "", preview }];
-    }
+    for (const file of pastedImageFiles(event)) pasted = [...pasted, await readPastedImage(file)];
   }
 
   function removePasted(index: number) {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { pastedImageFiles, readPastedImage, type PreviewImage } from "../paste";
   import { api, errorMessage } from "../api";
   import PipelineRunView from "../components/pipeline/PipelineRunView.svelte";
   import PipelineModelsCard from "../components/pipeline/PipelineModelsCard.svelte";
@@ -25,24 +26,15 @@
   let busy = $state(false);
   let config = $state<PipelineConfig | null>(null);
   /** Imagens coladas na descrição, com a miniatura (data URL). */
-  let images = $state<(PastedImage & { preview: string })[]>([]);
-  let imageCount = 0;
+  let images = $state<PreviewImage[]>([]);
   const MAX_IMAGES = 8;
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
   /** Imagens coladas no campo viram anexos do pedido, com miniatura. */
   async function onPaste(event: ClipboardEvent) {
-    const files = [...(event.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+    const files = pastedImageFiles(event);
     if (!files.length) return;
-    event.preventDefault();
     error = null;
-    const read = (file: File) =>
-      new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      });
     for (const file of files) {
       if (images.length >= MAX_IMAGES) {
         error = `Cole no máximo ${MAX_IMAGES} imagens.`;
@@ -52,10 +44,7 @@
         error = "Cada imagem pode ter até 5 MB.";
         continue;
       }
-      const preview = await read(file);
-      const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
-      imageCount += 1;
-      images = [...images, { name: file.name || `imagem-${imageCount}.${ext}`, media_type: file.type, data: preview.split(",")[1] ?? "", preview }];
+      images = [...images, await readPastedImage(file)];
     }
   }
 
@@ -160,7 +149,7 @@
           </label>
           {#if images.length}
             <div class="thumbs" role="list" aria-label="Imagens coladas">
-              {#each images as image, i (image.preview)}
+              {#each images as image, i (i)}
                 <span class="thumb" role="listitem" title={image.name}>
                   <img src={image.preview} alt={image.name} />
                   <button type="button" aria-label={`Remover a imagem ${image.name}`} title={`Remover a imagem ${image.name}`} onclick={() => (images = images.filter((_, j) => j !== i))}>×</button>

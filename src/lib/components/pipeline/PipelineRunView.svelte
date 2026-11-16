@@ -198,10 +198,14 @@
   });
   /** Imagens do pedido, carregadas uma vez por execução. */
   let images = $state<PastedImage[]>([]);
+  // Valores derivados: o `detail` é trocado a cada atualização, mas a busca só se repete
+  // quando muda a execução (ou a quantidade de imagens).
+  const runId = $derived(detail.id);
+  const imageCount = $derived(detail.image_count);
   $effect(() => {
-    const id = detail.id;
+    const id = runId;
     images = [];
-    if (detail.image_count > 0) api.pipelineImages(id).then((list) => id === detail.id && (images = list), () => {});
+    if (imageCount > 0) api.pipelineImages(id).then((list) => id === detail.id && (images = list), () => {});
   });
   /** Imagem ampliada sobre a tela. */
   let zoomed = $state<PastedImage | null>(null);
@@ -468,7 +472,7 @@
               <summary><h3 class="label">Entrada</h3><span class="res">{inputSummary(panelStage, detail)}</span>{@html icon("chev", 13, 2.2)}</summary>
               {#if images.length && ["triage", "planner", "implementer"].includes(panelStage.role)}
                 <div class="thumbs" aria-label="Imagens do pedido">
-                  {#each images as image (image.name + image.data.length)}
+                  {#each images as image, i (i)}
                     <button type="button" class="thumb" title={`Ampliar ${image.name}`} onclick={() => (zoomed = image)}><img src={imageSrc(image)} alt={image.name} /></button>
                   {/each}
                 </div>
@@ -513,8 +517,10 @@
   </div>
 </div>
 
+<svelte:window onkeydown={(e) => zoomed && e.key === "Escape" && (zoomed = null)} />
+
 {#if zoomed}
-  <button type="button" class="zoom" aria-label="Fechar a imagem" onclick={() => (zoomed = null)} onkeydown={(e) => e.key === "Escape" && (zoomed = null)}>
+  <button type="button" class="zoom" aria-label="Fechar a imagem" onclick={() => (zoomed = null)}>
     <img src={imageSrc(zoomed)} alt={zoomed.name} />
   </button>
 {/if}

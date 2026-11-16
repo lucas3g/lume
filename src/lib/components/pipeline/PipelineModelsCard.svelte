@@ -1,37 +1,36 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, errorMessage } from "../../api";
-  import { TIERS } from "../../pipeline";
+  import { SERVICE, TIERS } from "../../pipeline";
   import { accounts } from "../../state/accounts.svelte";
   import { MODELS, MORE_MODELS, type Provider, type Tier, type TierModels } from "../../types";
 
+  const CLAUDE = [...MODELS, ...MORE_MODELS].map((m) => ({ id: m.id as string, label: m.label as string }));
   let models = $state<TierModels>({ claude: {}, chatgpt: {}, gemini: {} });
   let error = $state<string | null>(null);
   /** Modelos que o CLI de cada serviço listou; `null` enquanto carrega. */
-  let listed = $state<Record<Provider, { id: string; label: string }[] | null>>({ claude: [], chatgpt: null, gemini: null });
+  let listed = $state<Record<Provider, { id: string; label: string }[] | null>>({ claude: CLAUDE, chatgpt: null, gemini: null });
   let listError = $state<Partial<Record<Provider, string>>>({});
 
-  const CLAUDE = [...MODELS, ...MORE_MODELS].map((m) => ({ id: m.id as string, label: m.label as string }));
-  const SERVICES: { provider: Provider; label: string; cli: string }[] = [
-    { provider: "claude", label: "Claude", cli: "Claude Code" },
-    { provider: "chatgpt", label: "ChatGPT", cli: "Codex" },
-    { provider: "gemini", label: "Gemini", cli: "Antigravity" },
-  ];
+  const SERVICES = (["claude", "chatgpt", "gemini"] as const).map((provider) => ({ provider: provider as Provider, ...SERVICE[provider] }));
   const CLAUDE_DEFAULT: Record<Tier, string> = { fast: "Haiku", balanced: "Sonnet", strong: "Opus" };
 
   /** Serviços com conta conectada; o Claude aparece sempre. */
   const visible = $derived(SERVICES.filter((s) => s.provider === "claude" || accounts.list.some((a) => a.provider === s.provider)));
 
   onMount(() => {
-    listed.claude = CLAUDE;
     void api.pipelineModels().then((m) => (models = m), (e) => (error = errorMessage(e)));
   });
+
+  /** Serviços cuja lista já foi pedida (fora do estado: pedir não deve rodar o efeito de novo). */
+  const requested = new Set<Provider>();
 
   // Pede a lista ao CLI de cada serviço conectado, uma vez.
   $effect(() => {
     for (const s of visible) {
-      if (s.provider === "claude" || listed[s.provider] !== null || listError[s.provider]) continue;
+      if (s.provider === "claude" || requested.has(s.provider)) continue;
       const provider = s.provider;
+      requested.add(provider);
       api.cliModels(provider).then(
         (ids) => (listed[provider] = ids.map((id) => ({ id, label: id }))),
         (e) => {

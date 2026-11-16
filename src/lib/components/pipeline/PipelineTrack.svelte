@@ -158,6 +158,11 @@
     const before = detail.stages[count - 2];
     const latest = detail.stages[count - 1];
     seenCount = count;
+    // O ajuste sozinho não é estação: o pacote sai dele quando o Implementador começa.
+    if (latest.role === "feedback") {
+      seenCount = count - 1;
+      return;
+    }
     if (!geo.w || (before && before.role === latest.role)) return;
     const fromIdx = before ? ORDER.indexOf(before.role) : -1;
     const toIdx = ORDER.indexOf(latest.role);

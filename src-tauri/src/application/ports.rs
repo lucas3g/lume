@@ -46,6 +46,8 @@ pub trait ConversationRepository: Send + Sync {
     fn set_project(&self, id: &str, project_id: Option<&str>) -> AppResult<()>;
     fn set_context_percent(&self, id: &str, percent: i64) -> AppResult<()>;
     fn set_effort(&self, id: &str, effort: &str) -> AppResult<()>;
+    /// Modelo da conversa em cada serviço que não é o Claude.
+    fn set_provider_models(&self, id: &str, models: &std::collections::BTreeMap<String, String>) -> AppResult<()>;
     fn set_permission_mode(&self, id: &str, mode: &str) -> AppResult<()>;
     fn delete(&self, id: &str) -> AppResult<()>;
     fn messages(&self, conversation_id: &str) -> AppResult<Vec<Message>>;

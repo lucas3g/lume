@@ -58,9 +58,6 @@ pub mod prefs {
     pub const PROJECT_ORDERS: [&str; 3] = ["recent", "name", "created"];
     /// Modelo de cada nível em cada serviço para a esteira de bots (JSON de `TierModels`).
     pub const PIPELINE_MODELS: &str = "pipeline_models";
-    /// Modelo da conversa nos serviços que não são o Claude: prefixo + id da conversa,
-    /// JSON { "chatgpt": "...", "gemini": "..." }. Sem entrada, o CLI do serviço escolhe.
-    pub const PROVIDER_MODELS_PREFIX: &str = "provider_models:";
 }
 
 /// Eventos de uma conversa enviados à interface.

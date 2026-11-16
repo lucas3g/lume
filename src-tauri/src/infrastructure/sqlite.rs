@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS conversations(
   id TEXT PRIMARY KEY, title TEXT NOT NULL, cli_session_id TEXT, model TEXT NOT NULL,
   cwd TEXT NOT NULL, agent_id TEXT, kind TEXT NOT NULL DEFAULT 'chat', allowed_tools TEXT NOT NULL DEFAULT '',
   project_id TEXT, context_percent INTEGER,
-  effort TEXT NOT NULL DEFAULT 'medium', permission_mode TEXT NOT NULL DEFAULT 'manual',
+  effort TEXT NOT NULL DEFAULT 'medium', permission_mode TEXT NOT NULL DEFAULT 'manual', provider_models TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, role TEXT NOT NULL,
@@ -80,10 +80,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hist_fts USING fts5(
 
 const ACCOUNT_COLUMNS: &str =
     "id,name,email,plan,config_dir,priority,enabled,auth_ok,limited_until,util_5h,util_7d,resets_5h,login_expires_at,resets_7d,provider";
-const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider";
+const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider,provider_models";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 18] = [
+const MIGRATIONS: [&str; 19] = [
     "ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE conversations ADD COLUMN session_provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
@@ -103,6 +103,7 @@ const MIGRATIONS: [&str; 18] = [
     "ALTER TABLE pipeline_runs ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pipeline_runs ADD COLUMN jira_template TEXT",
     "ALTER TABLE pipeline_runs ADD COLUMN jira_url TEXT",
+    "ALTER TABLE conversations ADD COLUMN provider_models TEXT NOT NULL DEFAULT '{}'",
 ];
 
 impl From<rusqlite::Error> for AppError {
@@ -176,6 +177,7 @@ fn conversation_row(r: &Row<'_>) -> rusqlite::Result<Conversation> {
         effort: r.get(11)?,
         permission_mode: r.get(12)?,
         session_provider: Provider::parse(&r.get::<_, String>(13)?),
+        provider_models: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
     })
 }
 
@@ -324,8 +326,8 @@ impl ConversationRepository for SqliteStore {
         let c = self.conn();
         c.execute(
             "INSERT INTO conversations(id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,
-             context_percent,effort,permission_mode,created_at,updated_at)
-             SELECT ?,?,NULL,model,cwd,agent_id,kind,allowed_tools,project_id,NULL,effort,permission_mode,?,?
+             context_percent,effort,permission_mode,provider_models,created_at,updated_at)
+             SELECT ?,?,NULL,model,cwd,agent_id,kind,allowed_tools,project_id,NULL,effort,permission_mode,provider_models,?,?
              FROM conversations WHERE id=?",
             params![new_id, title, now, now, source_id],
         )?;
@@ -357,6 +359,12 @@ impl ConversationRepository for SqliteStore {
     fn set_context_percent(&self, id: &str, percent: i64) -> AppResult<()> {
         self.conn()
             .execute("UPDATE conversations SET context_percent=? WHERE id=?", params![percent, id])?;
+        Ok(())
+    }
+
+    fn set_provider_models(&self, id: &str, models: &std::collections::BTreeMap<String, String>) -> AppResult<()> {
+        let text = serde_json::to_string(models).unwrap_or_else(|_| "{}".into());
+        self.conn().execute("UPDATE conversations SET provider_models=? WHERE id=?", params![text, id])?;
         Ok(())
     }
 

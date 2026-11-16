@@ -100,22 +100,36 @@ impl SendMessage {
         text: &str,
         attachment_paths: &[String],
         pasted: Vec<Attachment>,
+        control: TurnControl,
+    ) -> AppResult<()> {
+        self.execute_turn(conversation_id, text, attachment_paths, pasted, control, true).await
+    }
+
+    /// Turno de uma etapa da esteira: as imagens do pedido já ficam guardadas com a execução,
+    /// então a mensagem registra só os nomes delas, sem copiar o conteúdo a cada etapa.
+    pub async fn execute_stage(&self, conversation_id: &str, text: &str, images: Vec<Attachment>, control: TurnControl) -> AppResult<()> {
+        self.execute_turn(conversation_id, text, &[], images, control, false).await
+    }
+
+    async fn execute_turn(
+        &self,
+        conversation_id: &str,
+        text: &str,
+        attachment_paths: &[String],
+        pasted: Vec<Attachment>,
         mut control: TurnControl,
+        keep_image_data: bool,
     ) -> AppResult<()> {
         let conversation = self
             .conversations
             .get(conversation_id)?
             .ok_or_else(|| AppError("Conversa não encontrada.".into()))?;
         let mut attachments = attachment_paths.iter().map(|p| self.files.load(p)).collect::<AppResult<Vec<_>>>()?;
-        let meta = user_meta(&attachments, attachment_paths, &pasted);
+        let meta = user_meta(&attachments, attachment_paths, &pasted, keep_image_data);
         attachments.extend(pasted);
         let title = self.store_user_message(&conversation, text, meta.as_deref())?;
         let setup = self.prepare.prepare(&conversation, text)?;
-        let provider_models: std::collections::BTreeMap<String, String> = self
-            .settings
-            .text(&format!("{}{conversation_id}", super::prefs::PROVIDER_MODELS_PREFIX))
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let provider_models = conversation.provider_models.clone();
         let context_meta = self.announce_context(conversation_id, &setup.context_titles);
         // Quem respondeu por último nesta conversa: poupar uma conta só é novidade se a conta mudou.
         let last_account = self
@@ -475,7 +489,7 @@ impl SendMessage {
     /// Monta a mensagem a entregar durante o turno e o registro dos anexos para gravá-la.
     pub fn injection(&self, id: &str, text: &str, attachment_paths: &[String], pasted: Vec<Attachment>) -> AppResult<(Injection, Option<String>)> {
         let mut attachments = attachment_paths.iter().map(|p| self.files.load(p)).collect::<AppResult<Vec<_>>>()?;
-        let meta = user_meta(&attachments, attachment_paths, &pasted);
+        let meta = user_meta(&attachments, attachment_paths, &pasted, true);
         attachments.extend(pasted);
         Ok((Injection { id: id.to_owned(), prompt: text.to_owned(), attachments }, meta))
     }
@@ -483,13 +497,16 @@ impl SendMessage {
 
 /// Registro dos anexos na mensagem do usuário: nomes para exibir e o necessário
 /// para reenviar (caminhos dos arquivos e conteúdo das imagens coladas).
-fn user_meta(files: &[Attachment], paths: &[String], pasted: &[Attachment]) -> Option<String> {
+/// `keep_image_data`: guarda o conteúdo das imagens coladas (para as miniaturas da conversa);
+/// sem ele, só os nomes.
+fn user_meta(files: &[Attachment], paths: &[String], pasted: &[Attachment], keep_image_data: bool) -> Option<String> {
     if files.is_empty() && pasted.is_empty() {
         return None;
     }
     let names: Vec<&str> = files.iter().chain(pasted).map(|a| a.name.as_str()).collect();
     let images: Vec<serde_json::Value> = pasted
         .iter()
+        .filter(|_| keep_image_data)
         .map(|a| serde_json::json!({ "name": a.name, "media_type": a.media_type, "data": a.data }))
         .collect();
     Some(serde_json::json!({ "attachments": names, "paths": paths, "images": images }).to_string())
@@ -536,6 +553,15 @@ pub fn make_title(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn stage_turns_record_only_the_image_names() {
+        let image = Attachment { name: "tela.png".into(), kind: crate::domain::chat::AttachmentKind::Image, media_type: "image/png".into(), data: "iVBORw0K".into() };
+        let full = user_meta(&[], &[], std::slice::from_ref(&image), true).unwrap();
+        let names_only = user_meta(&[], &[], &[image], false).unwrap();
+        assert!(full.contains("iVBORw0K"));
+        assert!(!names_only.contains("iVBORw0K") && names_only.contains("tela.png"));
+    }
 
     #[test]
     fn each_service_gets_its_own_model() {

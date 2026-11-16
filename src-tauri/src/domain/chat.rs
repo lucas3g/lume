@@ -58,6 +58,9 @@ pub struct Conversation {
     pub updated_at: i64,
     pub effort: String,
     pub permission_mode: String,
+    /// Modelo da conversa nos serviços que não são o Claude ("chatgpt", "gemini"); sem
+    /// entrada, o CLI do serviço escolhe. O da conversa (`model`) é o do Claude.
+    pub provider_models: std::collections::BTreeMap<String, String>,
 }
 
 impl Conversation {
