@@ -68,6 +68,10 @@ fn print_args(request: &TurnRequest, prompt: &str) -> Vec<String> {
     if let Some(conversation) = &request.resume {
         args.extend(["--conversation".to_owned(), conversation.clone()]);
     }
+    // Vazio: o modelo configurado no próprio Antigravity.
+    if !request.model.is_empty() {
+        args.extend(["--model".to_owned(), request.model.clone()]);
+    }
     // Fora do terminal o Antigravity não pergunta: o que precisaria de aprovação é recusado.
     match request.permission_mode.as_str() {
         "plan" => args.extend(["--mode", "plan"].map(String::from)),
@@ -274,6 +278,8 @@ mod tests {
         assert_eq!(print_args(&request, "olá")[4..], ["--conversation", "c-1", "--mode", "accept-edits"]);
         request.permission_mode = "bypassPermissions".into();
         assert_eq!(print_args(&request, "olá").last().map(String::as_str), Some("--dangerously-skip-permissions"));
+        request.model = "gemini-pro".into();
+        assert!(print_args(&request, "olá").windows(2).any(|w| w == ["--model", "gemini-pro"]));
     }
 
     #[tokio::test]

@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, errorMessage } from "../api";
   import PipelineRunView from "../components/pipeline/PipelineRunView.svelte";
+  import PipelineModelsCard from "../components/pipeline/PipelineModelsCard.svelte";
   import { formatWhen } from "../format";
   import { RUN_STATUS } from "../pipeline";
   import { dayClock } from "../state/clock.svelte";
@@ -105,22 +106,22 @@
           <p class="muted small">A esteira trabalha na pasta de um projeto. Abra uma pasta como projeto na barra lateral para começar.</p>
         {:else}
           <div class="grid">
-            <label>Projeto
+            <label><span>Projeto</span>
               <select class="input" bind:value={projectId}>
                 {#each withFolder as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
               </select>
             </label>
-            <label>Task do Jira <span class="opt">(opcional)</span>
+            <label><span>Task do Jira <span class="opt">(opcional)</span></span>
               <input class="input mono-in" bind:value={jiraKey} placeholder="Ex.: LUME-142" autocapitalize="characters" />
             </label>
-            <label>Orçamento (minutos)
+            <label><span>Orçamento (minutos)</span>
               <input class="input" type="number" min="10" step="10" bind:value={budget} />
             </label>
           </div>
-          <label>Título {#if jiraKey.trim()}<span class="opt">(opcional: sem ele, vale o da task)</span>{/if}
+          <label><span>Título {#if jiraKey.trim()}<span class="opt">(opcional: sem ele, vale o da task)</span>{/if}</span>
             <input class="input" bind:value={title} placeholder="Ex.: Exportar conversa em Markdown" />
           </label>
-          <label>O que fazer {#if jiraKey.trim()}<span class="opt">(opcional: observações sobre a task)</span>{/if}
+          <label><span>O que fazer {#if jiraKey.trim()}<span class="opt">(opcional: observações sobre a task)</span>{/if}</span>
             <textarea class="input" rows="4" bind:value={request} placeholder="Descreva o problema ou a funcionalidade, com o que conta como pronto."></textarea>
           </label>
           {#if project}
@@ -145,6 +146,8 @@
           </div>
         {/if}
       </form>
+
+      <PipelineModelsCard />
 
       <section class="card" aria-label="Execuções">
         <div class="head"><h2 class="section-title">Execuções</h2></div>

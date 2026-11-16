@@ -1,13 +1,14 @@
 // Como apresentar a esteira de bots: estações, estados, rótulos e o log de cada etapa.
 
 import { parseToolUse, summarize } from "./tools";
-import type { Message, PipelineDetail, PipelineRole, PipelineStatus, StageRun } from "./types";
+import type { Message, PipelineDetail, Tier, PipelineRole, PipelineStatus, StageRun } from "./types";
 
 export interface Station {
   role: PipelineRole;
   name: string;
-  /** Modelo e permissão, como aparecem no cartão. */
+  /** Nível de modelo, como aparece no cartão; cada serviço tem o modelo dele para o nível. */
   model: string | null;
+  tier: Tier | null;
   perm: string;
   does: string;
   receives: string;
@@ -16,27 +17,33 @@ export interface Station {
 }
 
 export const STATIONS: Station[] = [
-  { role: "triage", name: "Triagem", model: "Haiku", perm: "só leitura",
+  { role: "triage", name: "Triagem", model: "Modelo rápido", tier: "fast", perm: "só leitura",
     does: "Lê a task e aponta o que está vago. Se faltar informação para um plano seguro, a esteira para aqui.",
     receives: "A task: título, descrição e critérios de aceite.", delivers: "O objetivo, os critérios e o que está vago, com o veredito." },
-  { role: "planner", name: "Planejador", model: "Opus", perm: "só leitura",
+  { role: "planner", name: "Planejador", model: "Modelo forte", tier: "strong", perm: "só leitura",
     does: "Estuda o código e escreve o plano: arquivos, abordagem, riscos e como verificar.",
     receives: "A task e as notas da Triagem.", delivers: "O plano em Markdown." },
-  { role: "approval", name: "Sua aprovação", model: null, perm: "você decide", gate: true,
+  { role: "approval", name: "Sua aprovação", model: null, tier: null, perm: "você decide", gate: true,
     does: "Você lê o plano e aprova ou pede ajustes. Nada é alterado antes disso, e a espera não conta no orçamento.",
     receives: "O plano do Planejador.", delivers: "A sua decisão: aprovar o plano ou pedir ajustes." },
-  { role: "implementer", name: "Implementador", model: "Opus", perm: "edita",
+  { role: "implementer", name: "Implementador", model: "Modelo forte", tier: "strong", perm: "edita",
     does: "Executa o plano aprovado na pasta de trabalho. Quando o trabalho volta, corrige só o que foi apontado.",
     receives: "O plano aprovado e, nas voltas, a lista de problemas.", delivers: "As alterações e um resumo arquivo por arquivo." },
-  { role: "reviewer", name: "Revisor", model: "Opus", perm: "só leitura",
+  { role: "reviewer", name: "Revisor", model: "Modelo forte", tier: "strong", perm: "só leitura",
     does: "Recebe só o diff, sem ver o raciocínio de quem implementou. Aprova ou devolve com a lista de problemas.",
     receives: "Só o diff das alterações.", delivers: "A aprovação ou a lista de problemas." },
-  { role: "tester", name: "Testador", model: "Sonnet", perm: "executa",
+  { role: "tester", name: "Testador", model: "Modelo equilibrado", tier: "balanced", perm: "executa",
     does: "Roda as verificações do projeto (tipos, testes, lint) e relata o resultado. Não corrige código.",
     receives: "A pasta de trabalho com as alterações aprovadas.", delivers: "Cada comando rodado, o resultado e os erros." },
-  { role: "reporter", name: "Relator", model: "Haiku", perm: "Jira",
+  { role: "reporter", name: "Relator", model: "Modelo rápido", tier: "fast", perm: "Jira",
     does: "Comenta o resultado na task, move para revisão e sugere a mensagem de commit. Não faz commit nem push.",
     receives: "Plano, resumo da implementação, revisão e testes.", delivers: "O comentário no Jira, a mudança de status e a sugestão de commit." },
+];
+
+export const TIERS: { tier: Tier; label: string }[] = [
+  { tier: "fast", label: "Rápido" },
+  { tier: "balanced", label: "Equilibrado" },
+  { tier: "strong", label: "Forte" },
 ];
 
 /** Etapas que o projeto pode desligar; as demais garantem plano aprovado e código revisado. */

@@ -15,7 +15,7 @@ use crate::domain::{
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
     history::{HistSession, HistoryStatus},
-    pipeline::{PipelineConfig, PipelineRun},
+    pipeline::{PipelineConfig, PipelineRun, TierModels},
     project::{MemoryFile, Project, ProjectFile},
     schedule::{Repeat, Task},
     store::{PluginListing, ServerListing},
@@ -666,6 +666,17 @@ pub fn pipeline_config(app: App<'_>, project_id: String) -> AppResult<PipelineCo
 #[tauri::command]
 pub fn save_pipeline_config(app: App<'_>, project_id: String, config: PipelineConfig) -> AppResult<PipelineConfig> {
     app.pipelines.save_config(&project_id, config)
+}
+
+/// Modelo de cada nível (rápido, equilibrado, forte) em cada serviço, para a esteira.
+#[tauri::command]
+pub fn pipeline_models(app: App<'_>) -> TierModels {
+    app.pipelines.models()
+}
+
+#[tauri::command]
+pub fn save_pipeline_models(app: App<'_>, models: TierModels) -> AppResult<TierModels> {
+    app.pipelines.save_models(models)
 }
 
 #[tauri::command]

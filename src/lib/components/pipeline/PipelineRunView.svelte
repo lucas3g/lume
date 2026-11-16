@@ -327,7 +327,7 @@
                 <span class="r-body">
                   <span class="r-l1">
                     <b>{STATION[s.role].name}</b>{#if tag}<span class="tag">{tag}</span>{/if}
-                    <span class="r-right"><span class="mono">{duration(stageSeconds(s))}</span><span class="sep">·</span>{stageAccount(s)}{#if STATION[s.role].model}<span class="sep">·</span>{detail.agents[s.role]?.model ?? STATION[s.role].model}{/if}</span>
+                    <span class="r-right"><span class="mono">{duration(stageSeconds(s))}</span><span class="sep">·</span>{stageAccount(s)}{#if STATION[s.role].model}<span class="sep">·</span>{detail.agents[s.role]?.model ? `${detail.agents[s.role]?.model} no Claude` : STATION[s.role].model}{/if}</span>
                   </span>
                   <span class="r-l2"><span class="io">{inputSummary(s, detail)}</span>{@html icon("arrow", 11)}<span class="io out o-{v.visual}">{outputSummary(s)}</span></span>
                 </span>
@@ -348,7 +348,7 @@
             {#if panelVisual}<span class="chip c-{panelVisual.visual}"><i></i>{panelVisual.label}</span>{/if}
           </div>
           <div class="p-meta">
-            {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelStation.model}{panelAgent?.model ?? panelStation.model} · {panelStation.perm}{:else}{panelStation.perm}{/if}
+            {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelStation.model}{panelAgent?.model ? `${panelAgent.model} no Claude` : panelStation.model} · {panelStation.perm}{:else}{panelStation.perm}{/if}
             {#if panelStage && panelStage.role !== "approval"} · conta <b>{stageAccount(panelStage)}</b>{/if}
             {#if panelStage} · <span class="mono">{duration(stageSeconds(panelStage))}</span>{/if}
           </div>

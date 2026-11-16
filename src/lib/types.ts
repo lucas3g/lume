@@ -419,6 +419,16 @@ export interface PipelineDetail extends PipelineRun {
   max_rounds: number;
 }
 
+/** Nível de modelo de um papel da esteira. */
+export type Tier = "fast" | "balanced" | "strong";
+
+/** Modelo de cada nível em cada serviço; ausente = padrão (Claude: haiku/sonnet/opus; outros: o do CLI). */
+export interface TierModels {
+  claude: Partial<Record<Tier, string>>;
+  chatgpt: Partial<Record<Tier, string>>;
+  gemini: Partial<Record<Tier, string>>;
+}
+
 /** Como a esteira roda num projeto: agente (id) de cada papel e etapas desligadas. */
 export interface PipelineConfig {
   agents: Partial<Record<PipelineRole, string>>;

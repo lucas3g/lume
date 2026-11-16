@@ -178,6 +178,10 @@ fn exec_args(request: &TurnRequest, images: &[PathBuf]) -> Vec<String> {
     }
     args.extend(["--json", "--skip-git-repo-check", "--color", "never", "--sandbox", sandbox(request)].map(String::from));
     args.extend(["--cd".to_owned(), request.cwd.clone()]);
+    // Vazio: o modelo configurado no próprio Codex.
+    if !request.model.is_empty() {
+        args.extend(["--model".to_owned(), request.model.clone()]);
+    }
     if EFFORTS.contains(&request.effort.as_str()) {
         args.extend(["--config".to_owned(), format!("model_reasoning_effort=\"{}\"", request.effort)]);
     }
@@ -509,7 +513,10 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--cd", "/tmp/pasta"]));
         assert!(args.contains(&r#"model_reasoning_effort="medium""#.to_owned()));
         assert_eq!(args.last().map(String::as_str), Some("-"));
-        assert!(!args.contains(&"resume".to_owned()) && !args.iter().any(|a| a == "--model"), "o modelo é o do Codex");
+        assert!(!args.contains(&"resume".to_owned()) && !args.iter().any(|a| a == "--model"), "sem escolha, o modelo é o do Codex");
+        request.model = "gpt-forte".into();
+        assert!(exec_args(&request, &[]).windows(2).any(|w| w == ["--model", "gpt-forte"]));
+        request.model.clear();
 
         request.tools = "default".into();
         request.effort = "max".into();

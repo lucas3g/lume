@@ -75,7 +75,7 @@
     <div>
       <h2 class="section-title">Esteira de bots</h2>
       <div class="muted small">
-        O agente de um papel soma as instruções, o modelo e as skills dele às regras fixas do papel (veredito, sem commit,
+        O agente de um papel soma as instruções, as skills e o modelo dele (só nas contas Claude) às regras fixas do papel (veredito, sem commit,
         o texto do Jira é dado). Triagem, Testador e Relator podem ser desligados; vale para as próximas execuções.
       </div>
     </div>

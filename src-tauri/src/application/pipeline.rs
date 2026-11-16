@@ -11,10 +11,11 @@ use super::{
     AppError, AppResult,
 };
 use crate::domain::{
+    account::Provider,
     chat::{Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
-        suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -138,6 +139,18 @@ impl ManagePipelines {
             }
         }
         Ok(out)
+    }
+
+    /// Modelo de cada nível em cada serviço (vale para todos os projetos).
+    pub fn models(&self) -> TierModels {
+        self.settings.text(super::prefs::PIPELINE_MODELS).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    pub fn save_models(&self, models: TierModels) -> AppResult<TierModels> {
+        let models = models.normalized().map_err(AppError)?;
+        let text = serde_json::to_string(&models).map_err(|e| AppError(e.to_string()))?;
+        self.settings.set_text(super::prefs::PIPELINE_MODELS, &text)?;
+        Ok(models)
     }
 
     /// Cria a execução e prepara a pasta de trabalho. A condução começa com `advance`.
@@ -275,7 +288,16 @@ impl ManagePipelines {
         let prompt = stage_prompt(role, run, &ctx);
         let conversation_id = self.ids.new_id();
         let label = run.jira_key.clone().unwrap_or_else(|| run.title.clone());
-        self.conversations.insert(&conversation_id, &format!("🤖 {} · {label}", role.label()), role.model(), &run.workdir, KIND_AGENT, None)?;
+        // Cada serviço tem os próprios modelos: o do Claude fica na conversa; os dos outros
+        // ficam ao lado, para valer se a conta trocar para o ChatGPT ou o Gemini no meio.
+        let models = self.models();
+        let claude_model = models.model(Provider::Claude, role.tier()).unwrap_or_default();
+        self.conversations.insert(&conversation_id, &format!("🤖 {} · {label}", role.label()), &claude_model, &run.workdir, KIND_AGENT, None)?;
+        let others = models.others(role.tier());
+        if !others.is_empty() {
+            let text = serde_json::to_string(&others).map_err(|e| AppError(e.to_string()))?;
+            self.settings.set_text(&format!("{}{conversation_id}", super::prefs::PROVIDER_MODELS_PREFIX), &text)?;
+        }
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
         // O agente do papel soma as instruções, o modelo e as skills dele às regras fixas do papel.
@@ -579,6 +601,8 @@ mod tests {
         let (world, uc, vcs) = setup(true);
         assert!(uc.start(input(None)).is_err(), "sem chave nem pedido");
         assert!(uc.start(input(Some("loja"))).is_err(), "chave inválida");
+        let models = TierModels { chatgpt: BTreeMap::from([(crate::domain::pipeline::Tier::Strong, "gpt-forte".into())]), ..Default::default() };
+        uc.save_models(models).unwrap();
         let run = uc.start(input(Some("loja-7"))).unwrap();
         assert_eq!((run.mode, run.workdir.as_str(), run.branch.as_deref()), (WorkMode::Worktree, "/dev/loja-esteira-loja-7", Some("lume/esteira-loja-7")));
         assert_eq!(vcs.commits.lock().unwrap()[0].1, "worktree /dev/loja-esteira-loja-7 lume/esteira-loja-7");
@@ -590,6 +614,8 @@ mod tests {
         assert_eq!(roles(&uc, &run.id), [("triage", "done"), ("planner", "done"), ("approval", "running")]);
         assert_eq!(detail.stages[2].input, "## Plano\nfazer X");
         let triage_conv = world.conversation(&detail.stages[0].conversation_id);
+        let planner_models = uc.settings.text(&format!("{}{}", crate::application::prefs::PROVIDER_MODELS_PREFIX, detail.stages[1].conversation_id));
+        assert_eq!(planner_models.as_deref(), Some(r#"{"chatgpt":"gpt-forte"}"#), "o Planejador usa o modelo forte do ChatGPT");
         assert_eq!((triage_conv.cwd.as_str(), triage_conv.model.as_str(), triage_conv.permission_mode.as_str()), ("/dev/loja-esteira-loja-7", "haiku", "manual"));
 
         uc.decide_plan(&run.id, Some("use CSV")).unwrap();

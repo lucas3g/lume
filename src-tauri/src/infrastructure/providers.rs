@@ -237,7 +237,8 @@ pub(crate) fn sample_request(provider: Provider) -> TurnRequest {
         provider,
         config_dir: None,
         cwd: std::env::temp_dir().to_string_lossy().into_owned(),
-        model: "opus".into(),
+        // Só o Claude recebe o modelo da conversa; os outros, o escolhido para eles (ou nenhum).
+        model: if provider == Provider::Claude { "opus".into() } else { String::new() },
         resume: None,
         prompt: "olá".into(),
         attachments: vec![],

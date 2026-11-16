@@ -13,7 +13,7 @@ use super::{
     AppError, AppResult, ChatEvent, PendingUsers, TurnControl,
 };
 use crate::domain::{
-    account::{earliest_reset, pick_next, Account},
+    account::{earliest_reset, pick_next, Account, Provider},
     workspace::context_percent,
     chat::{
         tool_message, Attachment, APP_NOTE_CLOSE, APP_NOTE_OPEN, Conversation, Injection, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
@@ -74,6 +74,15 @@ impl Journal {
     }
 }
 
+/// Modelo do turno no serviço da conta: o da conversa é do Claude; nos outros serviços
+/// vale o escolhido para a conversa ou, sem escolha, o padrão do CLI (texto vazio).
+fn model_for(provider: Provider, claude_model: &str, others: &std::collections::BTreeMap<String, String>) -> String {
+    match provider {
+        Provider::Claude => claude_model.to_owned(),
+        other => others.get(other.as_str()).cloned().unwrap_or_default(),
+    }
+}
+
 /// Por que a conta anterior deixou de atender.
 enum Handoff {
     Limit,
@@ -102,6 +111,11 @@ impl SendMessage {
         attachments.extend(pasted);
         let title = self.store_user_message(&conversation, text, meta.as_deref())?;
         let setup = self.prepare.prepare(&conversation, text)?;
+        let provider_models: std::collections::BTreeMap<String, String> = self
+            .settings
+            .text(&format!("{}{conversation_id}", super::prefs::PROVIDER_MODELS_PREFIX))
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
         let context_meta = self.announce_context(conversation_id, &setup.context_titles);
         // Quem respondeu por último nesta conversa: poupar uma conta só é novidade se a conta mudou.
         let last_account = self
@@ -172,7 +186,7 @@ impl SendMessage {
                 provider: account.provider,
                 config_dir: account.config_dir.clone(),
                 cwd: conversation.cwd.clone(),
-                model: setup.model.clone(),
+                model: model_for(account.provider, &setup.model, &provider_models),
                 resume,
                 prompt,
                 attachments: attachments.clone(),
@@ -522,6 +536,15 @@ pub fn make_title(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn each_service_gets_its_own_model() {
+        let others = std::collections::BTreeMap::from([("gemini".to_owned(), "gemini-pro".to_owned())]);
+        assert_eq!(model_for(Provider::Claude, "opus", &others), "opus");
+        assert_eq!(model_for(Provider::Gemini, "opus", &others), "gemini-pro");
+        assert_eq!(model_for(Provider::ChatGpt, "opus", &others), "", "sem escolha, o Codex usa o modelo dele");
+    }
+
     use super::*;
     use crate::application::fakes::*;
     use crate::domain::{account::{sample, Provider}, chat::{AttachmentKind, RateInfo, TurnRequest}, history::Snippet};

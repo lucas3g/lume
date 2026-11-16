@@ -3,6 +3,7 @@
 //! decide a próxima etapa é a esteira, não os bots.
 
 use serde::{Deserialize, Serialize};
+use super::account::Provider;
 use std::collections::BTreeMap;
 
 /// Voltas máximas do Implementador depois de uma devolução (do Revisor ou do Testador).
@@ -66,12 +67,12 @@ impl Role {
         }
     }
 
-    /// Modelo de cada papel: leitura rápida no Haiku, raciocínio e código no Opus.
-    pub fn model(self) -> &'static str {
+    /// Nível de modelo do papel: leitura rápida no rápido, raciocínio e código no forte.
+    pub fn tier(self) -> Tier {
         match self {
-            Role::Triage | Role::Reporter | Role::Approval => "haiku",
-            Role::Planner | Role::Implementer | Role::Reviewer => "opus",
-            Role::Tester => "sonnet",
+            Role::Triage | Role::Reporter | Role::Approval => Tier::Fast,
+            Role::Tester => Tier::Balanced,
+            Role::Planner | Role::Implementer | Role::Reviewer => Tier::Strong,
         }
     }
 
@@ -82,6 +83,84 @@ impl Role {
             Role::Implementer | Role::Tester => "acceptEdits",
             _ => "manual",
         }
+    }
+}
+
+/// Nível de modelo. Cada serviço (Claude, ChatGPT, Gemini) tem os próprios modelos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    Fast,
+    Balanced,
+    Strong,
+}
+
+impl Tier {
+    /// Apelido do Claude Code para o nível: sempre a versão mais recente da família.
+    pub fn claude_default(self) -> &'static str {
+        match self {
+            Tier::Fast => "haiku",
+            Tier::Balanced => "sonnet",
+            Tier::Strong => "opus",
+        }
+    }
+}
+
+/// Modelo de cada nível em cada serviço. Sem escolha, o Claude usa os apelidos acima e o
+/// ChatGPT e o Gemini usam o modelo configurado no próprio CLI.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TierModels {
+    #[serde(default)]
+    pub claude: BTreeMap<Tier, String>,
+    #[serde(default)]
+    pub chatgpt: BTreeMap<Tier, String>,
+    #[serde(default)]
+    pub gemini: BTreeMap<Tier, String>,
+}
+
+impl TierModels {
+    fn of(&self, provider: Provider) -> &BTreeMap<Tier, String> {
+        match provider {
+            Provider::Claude => &self.claude,
+            Provider::ChatGpt => &self.chatgpt,
+            Provider::Gemini => &self.gemini,
+        }
+    }
+
+    /// Modelo do nível no serviço; `None` deixa o CLI do serviço escolher.
+    pub fn model(&self, provider: Provider, tier: Tier) -> Option<String> {
+        let chosen = self.of(provider).get(&tier).map(|m| m.trim()).filter(|m| !m.is_empty()).map(str::to_owned);
+        match provider {
+            Provider::Claude => Some(chosen.unwrap_or_else(|| tier.claude_default().to_owned())),
+            _ => chosen,
+        }
+    }
+
+    /// Sem espaços nas pontas nem níveis vazios; nome de modelo não tem espaço no meio.
+    pub fn normalized(self) -> Result<TierModels, String> {
+        let clean = |map: BTreeMap<Tier, String>| -> Result<BTreeMap<Tier, String>, String> {
+            let mut out = BTreeMap::new();
+            for (tier, model) in map {
+                let model = model.trim();
+                if model.chars().any(char::is_whitespace) {
+                    return Err(format!("Nome de modelo inválido: \"{model}\"."));
+                }
+                if !model.is_empty() {
+                    out.insert(tier, model.to_owned());
+                }
+            }
+            Ok(out)
+        };
+        Ok(TierModels { claude: clean(self.claude)?, chatgpt: clean(self.chatgpt)?, gemini: clean(self.gemini)? })
+    }
+
+    /// Modelos dos outros serviços para o nível, a gravar com a conversa da etapa:
+    /// se a conta trocar no meio, o turno segue com o modelo certo do serviço novo.
+    pub fn others(&self, tier: Tier) -> BTreeMap<String, String> {
+        [Provider::ChatGpt, Provider::Gemini]
+            .into_iter()
+            .filter_map(|p| self.model(p, tier).map(|m| (p.as_str().to_owned(), m)))
+            .collect()
     }
 }
 
@@ -680,6 +759,25 @@ mod tests {
         assert!(PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a".into())]), skipped: quick.to_vec() }.validate().is_ok());
         let json = serde_json::to_string(&PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Tester] }).unwrap();
         assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"]}"#);
+    }
+
+    #[test]
+    fn each_service_has_its_own_model_per_tier() {
+        let models = TierModels {
+            claude: BTreeMap::from([(Tier::Strong, " claude-opus-5-5 ".into())]),
+            chatgpt: BTreeMap::from([(Tier::Fast, "gpt-mini".into()), (Tier::Strong, " ".into())]),
+            gemini: BTreeMap::new(),
+        }
+        .normalized()
+        .unwrap();
+        assert_eq!(models.model(Provider::Claude, Role::Planner.tier()).as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(models.model(Provider::Claude, Role::Tester.tier()).as_deref(), Some("sonnet"), "padrão do Claude");
+        assert_eq!(models.model(Provider::ChatGpt, Role::Triage.tier()).as_deref(), Some("gpt-mini"));
+        assert_eq!(models.model(Provider::ChatGpt, Role::Planner.tier()), None, "vazio fica com o padrão do Codex");
+        assert_eq!(models.model(Provider::Gemini, Tier::Fast), None);
+        assert_eq!(models.others(Tier::Fast), BTreeMap::from([("chatgpt".to_owned(), "gpt-mini".to_owned())]));
+        let bad = TierModels { gemini: BTreeMap::from([(Tier::Fast, "gemini flash".into())]), ..Default::default() };
+        assert!(bad.normalized().is_err());
     }
 
     #[test]
