@@ -82,6 +82,8 @@ pub fn run() {
             commands::set_flag,
             commands::get_project_order,
             commands::set_project_order,
+            commands::get_pipeline_view,
+            commands::set_pipeline_view,
             commands::history_status,
             commands::history_list,
             commands::history_reindex,

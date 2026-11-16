@@ -75,6 +75,8 @@ export const api = {
   setFlag: (key: FlagKey, value: boolean) => invoke<void>("set_flag", { key, value }),
   getProjectOrder: () => invoke<string | null>("get_project_order"),
   setProjectOrder: (order: string) => invoke<void>("set_project_order", { order }),
+  getPipelineView: () => invoke<string | null>("get_pipeline_view"),
+  setPipelineView: (view: string) => invoke<void>("set_pipeline_view", { view }),
 
   historyStatus: () => invoke<HistoryStatus>("history_status"),
   historyList: (query: string) => invoke<HistSession[]>("history_list", { query }),

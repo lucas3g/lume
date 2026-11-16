@@ -13,6 +13,8 @@
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
+  import PipelineOffice from "./PipelineOffice.svelte";
+  import { ui } from "../../state/ui.svelte";
 
   interface Props {
     detail: PipelineDetail;
@@ -315,7 +317,11 @@
         <p class="foot">Caminhos de devolução: você devolve o plano ao Planejador; o Revisor e o Testador devolvem o trabalho ao Implementador, no máximo {detail.max_rounds} vezes. O losango é a parada em que a decisão é sua.</p>
       </div>
     {/if}
-    <PipelineTrack {detail} {now} selected={panelRole} onselect={(role) => select(role)} />
+    {#if ui.pipelineView === "office"}
+      <PipelineOffice {detail} {now} selected={panelRole} onselect={(role) => select(role)} />
+    {:else}
+      <PipelineTrack {detail} {now} selected={panelRole} onselect={(role) => select(role)} />
+    {/if}
   </section>
 
   <div class="bottom">

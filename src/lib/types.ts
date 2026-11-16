@@ -182,7 +182,7 @@ export const MODES: { id: string; label: string; description: string; isDefault?
 ];
 
 /** Telas principais do aplicativo. */
-export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts" | "tasks" | "pipelines";
+export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts" | "tasks" | "pipelines" | "settings";
 
 export type Repeat =
   | { kind: "every_minutes"; minutes: number }

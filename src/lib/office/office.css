@@ -1,0 +1,101 @@
+/* Escritório em pixel art da esteira (PipelineOffice). Vindo do protótipo no Claude Design:
+   grade lógica 360x136 px escalada por inteiro (--s), animações só em passos de 1 px lógico.
+   Global porque os sprites entram por {@html}; tudo fica sob .office-room e as animações têm o prefixo of-. */
+/* ---- sala ---- */
+.office-room{--s:3;--u:calc(var(--s)*1px);position:relative;width:calc(360px*var(--s));height:calc(136px*var(--s));overflow:hidden;isolation:isolate;margin:0 auto;background:#191b21}
+.office-room svg{display:block;shape-rendering:crispEdges;image-rendering:pixelated}
+.office-room .bg{position:absolute;inset:0;width:100%;height:100%}
+.office-room .row{list-style:none;margin:0;padding:0}
+.office-room .st{position:absolute;top:calc(36px*var(--s));left:calc(var(--x)*var(--s)*1px);width:calc(48px*var(--s));height:calc(100px*var(--s))}
+.office-room .desk{appearance:none;position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}
+.office-room .desk:focus-visible{outline:var(--u) dashed var(--accent-text);outline-offset:calc(var(--u)*-2)}
+.office-room .spr{position:absolute;left:0;top:0;width:100%;height:calc(60px*var(--s));overflow:visible}
+.office-room .desk:hover .spr{filter:brightness(1.1)}
+.office-room .v-skipped .spr,.office-room .v-skipped .desk:hover .spr{filter:brightness(.42) saturate(.35)}
+.office-room .tag{position:absolute;left:0;right:0;bottom:calc(3px*var(--s));display:flex;flex-direction:column;align-items:center;gap:1px;pointer-events:none}
+.office-room .name{font:500 calc(8px + var(--s)*1px)/1.25 var(--mono);color:var(--text-2);white-space:nowrap}
+.office-room .is-active .name{color:var(--text)}
+.office-room .is-selected .name{color:var(--accent-text)}
+.office-room .v-skipped .name{color:var(--muted);text-decoration:line-through}
+.office-room .pass{font:500 calc(7px + var(--s)*1px)/1.2 var(--mono);color:var(--warn-text);white-space:nowrap}
+.office-room .pass:empty{display:none}
+
+/* ---- balão de atividade ---- */
+.office-room .balloon{position:absolute;z-index:5;top:calc(12px*var(--s));left:calc(19.5px*var(--s));transform:translate(-50%,-100%);--tx:50%;display:flex;flex-direction:column;gap:1px;max-width:320px;padding:4px 8px 5px;background:var(--surface-2);box-shadow:0 calc(var(--u)*-1) 0 0 var(--border-strong),0 var(--u) 0 0 var(--border-strong),calc(var(--u)*-1) 0 0 0 var(--border-strong),var(--u) 0 0 0 var(--border-strong);pointer-events:none}
+.office-room .balloon[hidden]{display:none}
+.office-room .balloon.al-l{left:0;transform:translateY(-100%);--tx:calc(19.5px*var(--s))}
+.office-room .balloon.al-r{left:auto;right:0;transform:translateY(-100%);--tx:calc(100% - 28.5px*var(--s))}
+.office-room .balloon::before,.office-room .balloon::after{content:"";position:absolute;left:var(--tx);background:var(--border-strong)}
+.office-room .balloon::before{top:calc(100% + var(--u));width:calc(var(--u)*3);height:var(--u);margin-left:calc(var(--u)*-1.5)}
+.office-room .balloon::after{top:calc(100% + var(--u)*2);width:var(--u);height:var(--u);margin-left:calc(var(--u)*-.5)}
+.office-room .act{font:500 11px/1.35 var(--mono);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.office-room .meta{font:400 9.5px/1.3 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ---- viagem do pacote ---- */
+.office-room .trip{position:absolute;z-index:3;left:0;top:calc(93px*var(--s));width:calc(12px*var(--s));height:calc(23px*var(--s));visibility:hidden;pointer-events:none;transform:translateX(calc(var(--from)*var(--s)*1px));animation-duration:var(--td);animation-fill-mode:both}
+.office-room .trip.walk{animation-name:of-trip-walk,of-trip-vis}
+.office-room .trip.plane{top:calc(62px*var(--s));height:calc(6px*var(--s));animation-name:of-trip-fly,of-trip-vis}
+.office-room .trip-spr{width:100%;height:100%;overflow:visible}
+.office-room .trip.plane .trip-spr{animation:of-trip-arc var(--td) steps(12) both}
+.office-room .trip.plane.dir-l .trip-spr{scale:-1 1}
+.office-room .trip .carry{animation:of-walkbob .48s steps(1) infinite,of-trip-carry var(--td) steps(1) both}
+@keyframes of-trip-walk{0%{transform:translateX(calc(var(--from)*var(--s)*1px))}46%,54%{transform:translateX(calc(var(--to)*var(--s)*1px))}100%{transform:translateX(calc(var(--from)*var(--s)*1px))}}
+@keyframes of-trip-fly{0%{transform:translateX(calc(var(--from)*var(--s)*1px))}100%{transform:translateX(calc(var(--to)*var(--s)*1px))}}
+@keyframes of-trip-arc{0%{transform:translateY(0)}50%{transform:translateY(calc(var(--s)*-14px))}100%{transform:translateY(calc(var(--s)*6px))}}
+/* Opacidade, e não só visibility: os quadros das pernas animam visibility:visible e reapareceriam. */
+@keyframes of-trip-vis{0%,99.9%{visibility:visible;opacity:1}100%{visibility:hidden;opacity:0}}
+@keyframes of-trip-carry{0%{visibility:visible}50%,100%{visibility:hidden}}
+
+/* ---- animações dos sprites (sempre em passos, 1px lógico) ---- */
+.office-room .fr{visibility:hidden;animation-timing-function:steps(1);animation-iteration-count:infinite}
+.office-room .fr2{animation-name:of-fr2}.office-room .fr3{animation-name:of-fr3}.office-room .fr4{animation-name:of-fr4}
+@keyframes of-fr2{0%{visibility:visible}50%,100%{visibility:hidden}}
+@keyframes of-fr3{0%{visibility:visible}33.34%,100%{visibility:hidden}}
+@keyframes of-fr4{0%{visibility:visible}25%,100%{visibility:hidden}}
+.office-room .a-bob{animation:of-bob 2.4s steps(1) infinite}
+@keyframes of-bob{0%,100%{transform:none}50%{transform:translateY(1px)}}
+.office-room .a-droop{transform:translateY(1px)}
+.office-room .a-up{transform:translateY(-1px)}
+.office-room .a-blink{visibility:hidden;animation:of-blink 4.6s steps(1) infinite}
+@keyframes of-blink{0%{visibility:hidden}94%{visibility:visible}100%{visibility:hidden}}
+.office-room .a-tapL{animation:of-tap .26s steps(1) infinite}
+.office-room .a-tapR{animation:of-tap .26s steps(1) -.13s infinite}
+@keyframes of-tap{0%,100%{transform:none}50%{transform:translateY(-1px)}}
+.office-room .a-sipA{animation:of-sipA 7s steps(1) infinite}
+.office-room .a-sipB{visibility:hidden;animation:of-sipB 7s steps(1) infinite}
+@keyframes of-sipA{0%{visibility:visible}80%{visibility:hidden}92%,100%{visibility:visible}}
+@keyframes of-sipB{0%{visibility:hidden}80%{visibility:visible}92%,100%{visibility:hidden}}
+.office-room .a-bounce{animation:of-bounce .56s steps(1) infinite}
+@keyframes of-bounce{0%,100%{transform:none}25%,75%{transform:translateY(-2px)}50%{transform:translateY(-3px)}}
+.office-room .a-pop{animation:of-pop .36s steps(1) 1}
+@keyframes of-pop{0%{transform:translateY(3px)}50%{transform:translateY(-1px)}100%{transform:none}}
+.office-room .a-flick{animation:of-flick 1s steps(1) infinite}
+.office-room .a-led{animation:of-flick 2.4s steps(1) infinite}
+@keyframes of-flick{0%{visibility:visible}50%,100%{visibility:hidden}}
+.office-room .a-scan{animation:of-scan 1.2s steps(1) infinite}
+@keyframes of-scan{0%,100%{transform:none}25%,75%{transform:translateX(2px)}50%{transform:translateX(4px)}}
+.office-room .a-write{animation:of-write .9s steps(1) infinite}
+@keyframes of-write{0%,100%{transform:none}25%{transform:translate(1px,1px)}50%{transform:translate(2px,0)}75%{transform:translate(1px,-1px)}}
+.office-room .a-shake{animation:of-shake .18s steps(1) infinite}
+@keyframes of-shake{0%,100%{transform:translateX(-1px)}50%{transform:translateX(1px)}}
+.office-room .a-smoke{visibility:hidden;animation:of-smoke 1.8s steps(1) infinite}
+@keyframes of-smoke{0%{visibility:visible;transform:none}25%{visibility:visible;transform:translateY(-2px)}50%{visibility:visible;transform:translate(1px,-4px)}75%{visibility:visible;transform:translate(1px,-6px)}100%{visibility:hidden;transform:translate(1px,-6px)}}
+.office-room .a-sway{animation:of-sway 3.2s steps(1) infinite}
+@keyframes of-sway{0%,100%{transform:none}50%{transform:translateX(1px)}}
+.office-room .a-mote{opacity:0;animation:of-mote 6s steps(8) infinite}
+@keyframes of-mote{0%{opacity:0;transform:none}25%{opacity:.7}100%{opacity:0;transform:translate(-6px,-14px)}}
+.office-room .a-sel{animation:of-sel .9s steps(1) infinite}
+@keyframes of-sel{0%,100%{opacity:1}50%{opacity:.45}}
+.office-room .a-walkbob{animation:of-walkbob .48s steps(1) infinite}
+@keyframes of-walkbob{0%,50%,100%{transform:none}25%,75%{transform:translateY(-1px)}}
+.office-room .a-away{animation:of-away 2s steps(1) both}
+@keyframes of-away{0%{visibility:hidden}100%{visibility:visible}}
+.office-room .a-arrive{animation:of-arrive .02s steps(1) both}
+@keyframes of-arrive{0%{visibility:hidden}100%{visibility:visible}}
+
+@media (prefers-reduced-motion:reduce){
+  .office-room *,.office-room *::before,.office-room *::after{animation:none!important}
+  .office-room .fr,.office-room .a-blink,.office-room .a-sipB,.office-room .a-smoke,.office-room .trip{visibility:hidden}
+  .office-room .fr0{visibility:visible}
+  .office-room .a-mote{opacity:.5}
+}

@@ -18,6 +18,8 @@
   import HistoryView from "$lib/views/HistoryView.svelte";
   import TasksView from "$lib/views/TasksView.svelte";
   import PipelinesView from "$lib/views/PipelinesView.svelte";
+  import SettingsView from "$lib/views/SettingsView.svelte";
+  import { loadUiPrefs } from "$lib/state/ui.svelte";
   import { handlePipelineChanged, isStageConversation, loadPipelines, loadStageMessages } from "$lib/state/pipelines.svelte";
   import type { ChatEvent } from "$lib/types";
 
@@ -37,6 +39,7 @@
       view = "chat";
     };
     void loadPipelines();
+    void loadUiPrefs();
     // O que as etapas da esteira gravam aparece no log da tela de acompanhamento.
     const STAGE_REFRESH = new Set<ChatEvent["kind"]>(["step", "done", "waiting", "notice", "error", "exhausted", "cancelled"]);
     const onChat = (event: ChatEvent) => {
@@ -79,6 +82,8 @@
       <PipelinesView onnavigate={(v) => (view = v)} />
     {:else if view === "tasks"}
       <TasksView onnavigate={(v) => (view = v)} />
+    {:else if view === "settings"}
+      <SettingsView />
     {:else}
       <AccountsView />
     {/if}

@@ -342,6 +342,19 @@ pub fn set_project_order(app: App<'_>, order: String) -> AppResult<()> {
     app.settings.set_text(prefs::PROJECT_ORDER, &order)
 }
 
+#[tauri::command]
+pub fn get_pipeline_view(app: App<'_>) -> Option<String> {
+    app.settings.text(prefs::PIPELINE_VIEW).filter(|v| prefs::PIPELINE_VIEWS.contains(&v.as_str()))
+}
+
+#[tauri::command]
+pub fn set_pipeline_view(app: App<'_>, view: String) -> AppResult<()> {
+    if !prefs::PIPELINE_VIEWS.contains(&view.as_str()) {
+        return Err(AppError("Visualização desconhecida.".into()));
+    }
+    app.settings.set_text(prefs::PIPELINE_VIEW, &view)
+}
+
 // ---- histórico
 
 #[tauri::command]
