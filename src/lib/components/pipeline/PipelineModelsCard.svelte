@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, errorMessage } from "../../api";
   import { SERVICE, TIERS } from "../../pipeline";
+  import { setTierModels } from "../../pipeline-cards.svelte";
   import { accounts } from "../../state/accounts.svelte";
   import { MODELS, MORE_MODELS, type Provider, type Tier, type TierModels } from "../../types";
 
@@ -60,6 +61,7 @@
     models = next;
     try {
       models = await api.savePipelineModels(next);
+      setTierModels($state.snapshot(models));
     } catch (e) {
       models = previous;
       error = errorMessage(e);

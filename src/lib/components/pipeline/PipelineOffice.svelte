@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import "../../office/office.css";
-  import { layersSvg, OFFICE_H, OFFICE_W, officeTrip, officeView, type OfficeScene } from "../../office/scene";
+  import { backdropSvg, layersSvg, OFFICE_H, OFFICE_W, officeTrip, officeView, type OfficeScene } from "../../office/scene";
   import { passesByRole, passLabel, STATIONS } from "../../pipeline";
-  import { ensureTierModels, stationCards } from "../../pipeline-cards.svelte";
+  import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
   /** Mesma interface da trilha (PipelineTrack): a execução aberta vista como um escritório em pixel art. */
@@ -20,9 +20,11 @@
   const ORDER = STATIONS.map((s) => s.role);
   const indexOf = (role: PipelineRole | undefined) => (role ? ORDER.indexOf(role) : -1);
 
-  onMount(ensureTierModels);
-  const cards = $derived(stationCards(detail, now));
+  onMount(loadTierModels);
   const passes = $derived(passesByRole(detail));
+  // Sem o relógio: a cena (e os sprites) só se refaz quando o estado das mesas muda, não a cada segundo.
+  const cards = $derived(stationCards(detail, null, passes));
+  const times = $derived(Object.fromEntries(ORDER.map((role) => [role, stationTime(passes[role], now)])) as Record<string, string>);
 
   /** A pasta fica na mesa da etapa mais recente; o ajuste sozinho não é mesa. */
   const lastStation = $derived(detail.stages.filter((s) => s.role !== "feedback").at(-1));
@@ -56,15 +58,16 @@
       return;
     }
     if (!before || before.role === latest.role) return;
-    // Reaberta com o seu ajuste: o trabalho volta do fim do escritório (o Relator) ao Implementador.
-    const from = before.role === "feedback" ? ORDER.length - 1 : indexOf(before.role);
+    // Reaberta com o seu ajuste: a pasta sai da última mesa que trabalhou antes dele.
+    const source = before.role === "feedback" ? detail.stages.slice(0, count - 2).findLast((s) => s.role !== "feedback") : before;
+    const from = indexOf(source?.role);
     if (from < 0 || from === indexOf(latest.role)) return;
     previous = from;
     tripId += 1;
     if (reduce) return;
     traveling = true;
     clearTimeout(settle);
-    // A duração depende das mesas: calculada pela própria cena.
+    // A duração depende da distância entre as mesas: calculada pela própria cena.
     queueMicrotask(() => {
       const trip = officeTrip(scene);
       settle = setTimeout(() => (traveling = false), (trip?.td ?? 0) * 1000 + 120);
@@ -75,20 +78,18 @@
   // ---- cena
 
   const scene = $derived<OfficeScene>({
-    stations: cards.map((c) => {
-      const list = passes[c.station.role];
-      const working = c.visual === "working";
-      return {
-        role: c.station.role,
-        visual: c.visual,
-        label: c.station.name,
-        activity: working ? (c.activity ?? "Trabalhando") : null,
-        account: c.account && c.account !== "você" ? c.account : null,
-        model: c.model,
-        time: c.time,
-        pass: c.last ? passLabel(c.last, list.length - 1, detail.max_rounds) : null,
-      };
-    }),
+    stations: cards.map((c) => ({
+      role: c.station.role,
+      visual: c.visual,
+      label: c.station.name,
+      stateText: c.label,
+      activity: c.visual === "working" ? (c.activity ?? "Trabalhando") : null,
+      account: c.account && c.account !== "você" ? c.account : null,
+      model: c.model,
+      // O tempo fica fora da cena: entra só no texto do balão.
+      time: "",
+      pass: c.last ? passLabel(c.last, passes[c.station.role].length - 1, detail.max_rounds) : null,
+    })),
     active: lastStation ? indexOf(lastStation.role) : null,
     previous,
     selected: selected ? indexOf(selected) : null,
@@ -98,11 +99,13 @@
   let width = $state(0);
   const scale = $derived(Math.max(1, Math.min(4, Math.floor(width / OFFICE_W))));
   const view = $derived(officeView(scene, { scale, traveling }));
+  const backdrop = backdropSvg();
+  const meta = (text: string, role: string) => [text, times[role]].filter(Boolean).join(" · ");
 </script>
 
 <div class="office" bind:clientWidth={width}>
   <div class="office-room" style={view.roomStyle}>
-    <svg class="bg" viewBox="0 0 {OFFICE_W} {OFFICE_H}" aria-hidden="true">{@html layersSvg(view.backdrop)}</svg>
+    <svg class="bg" viewBox="0 0 {OFFICE_W} {OFFICE_H}" aria-hidden="true">{@html backdrop}</svg>
     <ol class="row">
       {#each view.stations as v (v.role)}
         <li class={v.cls} style={v.style}>
@@ -119,7 +122,7 @@
           {#if v.balloon}
             <div class={v.balloon.cls} style={v.balloon.style}>
               <span class="act">{v.balloon.activity}</span>
-              {#if v.balloon.meta}<span class="meta">{v.balloon.meta}</span>{/if}
+              {#if meta(v.balloon.meta, v.role)}<span class="meta">{meta(v.balloon.meta, v.role)}</span>{/if}
             </div>
           {/if}
         </li>

@@ -29,16 +29,29 @@ function rememberLocally(mode: PipelineViewMode) {
 /** Preferências de interface. */
 export const ui = $state<{ pipelineView: PipelineViewMode }>({ pipelineView: savedMode() });
 
+/** Muda a cada escolha do usuário: uma leitura atrasada do backend não desfaz a escolha feita depois dela. */
+let choice = 0;
+
+/** O backend é a fonte da verdade; a cópia local só evita piscar na abertura. */
 export async function loadUiPrefs() {
+  const asked = choice;
   const stored = await api.getPipelineView().catch(() => null);
-  if (isMode(stored)) {
-    ui.pipelineView = stored;
-    rememberLocally(stored);
-  }
+  if (asked !== choice || !isMode(stored)) return;
+  ui.pipelineView = stored;
+  rememberLocally(stored);
 }
 
-export function setPipelineView(mode: PipelineViewMode) {
+/** Grava a escolha; se o backend recusar, volta ao modo anterior para as duas cópias não divergirem. */
+export async function setPipelineView(mode: PipelineViewMode) {
+  const previous = ui.pipelineView;
+  const mine = ++choice;
   ui.pipelineView = mode;
   rememberLocally(mode);
-  api.setPipelineView(mode).catch(() => {});
+  try {
+    await api.setPipelineView(mode);
+  } catch {
+    if (mine !== choice) return;
+    ui.pipelineView = previous;
+    rememberLocally(previous);
+  }
 }

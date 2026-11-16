@@ -6,7 +6,7 @@ import {
   duration, isActive, passesByRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
   type Station, type Visual,
 } from "./pipeline";
-import { EFFORTS, type PipelineDetail, type Provider, type StageRun, type TierModels } from "./types";
+import { EFFORTS, type PipelineDetail, type PipelineRole, type Provider, type StageRun, type TierModels } from "./types";
 
 /** Estado de uma estação na execução aberta, lido igual pela trilha e pelo escritório. */
 export interface StationCard {
@@ -25,13 +25,15 @@ export interface StationCard {
   activity: string | null;
 }
 
-/** Modelos de cada nível, para as estações que ainda não rodaram. Carregados uma vez. */
+/** Modelos de cada nível, para as estações que ainda não rodaram. */
 const tiers = $state<{ models: TierModels | null }>({ models: null });
-let tiersLoading = false;
-export function ensureTierModels() {
-  if (tiers.models || tiersLoading) return;
-  tiersLoading = true;
-  api.pipelineModels().then((m) => (tiers.models = m), () => (tiersLoading = false));
+/** Recarrega os modelos ao abrir a trilha ou o escritório, como a trilha fazia. */
+export function loadTierModels() {
+  api.pipelineModels().then((m) => (tiers.models = m), () => {});
+}
+/** Modelos recém-salvos no cartão de modelos. */
+export function setTierModels(models: TierModels) {
+  tiers.models = models;
 }
 
 /** Serviço da conta (pelo id ou pelo nome); sem conta ainda, o da conta que atende agora. */
@@ -40,9 +42,13 @@ const providerOf = (account: { id?: string | null; name?: string | null }): Prov
   activeAccount()?.provider ??
   "claude";
 
-/** Estado de cada estação: o da passagem mais recente dela. Reativo quando lido dentro de `$derived`. */
-export function stationCards(detail: PipelineDetail, now: number): StationCard[] {
-  const passes = passesByRole(detail);
+/** Estado de cada estação: o da passagem mais recente dela. Reativo quando lido dentro de `$derived`.
+ *  `now` nulo deixa `time` vazio e não depende do relógio (use `stationTime` à parte). */
+export function stationCards(
+  detail: PipelineDetail,
+  now: number | null,
+  passes: Record<PipelineRole, StageRun[]> = passesByRole(detail),
+): StationCard[] {
   const finished = !isActive(detail.status);
   return STATIONS.map((station) => {
     const list = passes[station.role];
@@ -76,10 +82,15 @@ export function stationCards(detail: PipelineDetail, now: number): StationCard[]
       }
       model ??= plannedModelText(station.role, providerOf({}), tiers.models, agentInfo?.model ?? null);
     }
-    const spent = list.reduce((sum, s) => sum + ((s.finished_at ?? now) - s.started_at), 0);
     const agent = agentInfo?.name ?? null;
     const effortId = detail.efforts[station.role];
     const effort = effortId ? (EFFORTS.find((e) => e.id === effortId)?.label.toLowerCase() ?? effortId) : null;
-    return { station, visual, label, account, agent, model, effort, off, time: list.length ? duration(spent) : "", last, activity };
+    return { station, visual, label, account, agent, model, effort, off, time: now === null ? "" : stationTime(list, now), last, activity };
   });
+}
+
+/** Tempo somado das passagens de uma estação; vazio se ela ainda não rodou. */
+export function stationTime(list: StageRun[], now: number): string {
+  if (!list.length) return "";
+  return duration(list.reduce((sum, s) => sum + ((s.finished_at ?? now) - s.started_at), 0));
 }

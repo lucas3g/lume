@@ -27,7 +27,7 @@
             aria-checked={ui.pipelineView === option.id}
             class="choice"
             class:on={ui.pipelineView === option.id}
-            onclick={() => setPipelineView(option.id)}
+            onclick={() => void setPipelineView(option.id)}
           >
             <span class="preview {option.id}" aria-hidden="true">
               {#if option.id === "track"}

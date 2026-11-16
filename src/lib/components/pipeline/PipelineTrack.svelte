@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { icon, passesByRole, STATIONS, VISUAL, type Visual } from "../../pipeline";
-  import { ensureTierModels, stationCards } from "../../pipeline-cards.svelte";
+  import { loadTierModels, stationCards } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
   interface Props {
@@ -22,8 +22,8 @@
 
   const passes = $derived(passesByRole(detail));
 
-  onMount(ensureTierModels);
-  const cards = $derived(stationCards(detail, now));
+  onMount(loadTierModels);
+  const cards = $derived(stationCards(detail, now, passes));
 
   const returnedBy = (role: PipelineRole) => passes[role].filter((s) => s.status === "returned").length;
   const arcs = $derived({

@@ -4,9 +4,6 @@
    em um <path> de retângulos por cor; a animação fica toda no CSS (steps()) do PipelineOffice.
    Funções puras: estado da cena -> modelo de desenho. Os tipos públicos ficam no fim do arquivo. */
 const LW = 360, LH = 136, SLOT = 48, X0 = 12;
-const ORDER = ['triage', 'planner', 'approval', 'implementer', 'reviewer', 'tester', 'reporter'];
-const NAMES = { triage: 'Triagem', planner: 'Planejador', approval: 'Sua aprovação', implementer: 'Implementador', reviewer: 'Revisor', tester: 'Testador', reporter: 'Relator' };
-const VISUAL_TEXT = { waiting: 'aguardando', working: 'trabalhando', you: 'esperando você', done: 'concluída', returned: 'devolvida', failed: 'falhou', skipped: 'desligada' };
 
 /* Paleta: uma letra por cor nos mapas de pixels. M, L e D vêm do bot (BOT). */
 const PAL = { K: '#101114', G: '#8b909a', g: '#5a5f69', W: '#ecedef', w: '#b4b8c0', F: '#161a24', E: '#eaf6ff', A: '#d9a441', a: '#e3ba6a', q: '#9c7226', N: '#58b88a', n: '#86d3a6', R: '#d9645a', r: '#efa49b', B: '#5b6ad9', b: '#a6b0f7', P: '#d8dbe2', S: '#12151d', T: '#7d6247', t: '#94765a', H: '#5e4735', h: '#473629' };
@@ -363,15 +360,14 @@ function buildView(scene, opt) {
     const layers = stationLayers(st, c);
     const meta = [st.account, st.model, st.time].filter(Boolean).join(' · ');
     const working = st.visual === 'working' && st.role !== 'approval';
-    const label = st.label || NAMES[st.role];
-    let aria = label + ': ' + (VISUAL_TEXT[st.visual] || st.visual);
+    const label = st.label;
+    let aria = label + ': ' + st.stateText.toLowerCase();
     if (st.pass) aria += ', ' + st.pass;
     if (working && st.activity) aria += '. ' + st.activity;
     if (working && meta) aria += '. ' + meta;
     return {
       role: st.role, index: i, cls: 'st v-' + st.visual + (active ? ' is-active' : '') + (selected ? ' is-selected' : ''),
       style: '--x:' + (X0 + SLOT * i), aria: aria, pressed: selected, layers: layers,
-      sprKey: layers.map(l => l.k + '/' + l.cls + '/' + l.style).join(';'),
       label: label, passText: st.pass || '',
       balloon: working && st.activity ? {
         cls: 'balloon ' + (i === 0 ? 'al-l' : i === n - 1 ? 'al-r' : 'al-c') + (to ? ' a-arrive' : ''),
@@ -379,9 +375,7 @@ function buildView(scene, opt) {
       } : null
     };
   });
-  const slots = [null, null];
-  if (trip) slots[trip.id % 2] = trip;
-  return { roomStyle: '--s:' + (opt.scale || 3), backdrop: backdrop(), stations: stations, trip: trip, tripSlots: slots };
+  return { roomStyle: '--s:' + (opt.scale || 3), stations: stations, trip: trip };
 }
 
 // ---- interface pública
@@ -392,6 +386,8 @@ export interface OfficeStation {
   role: string;
   visual: OfficeVisual;
   label: string;
+  /** Situação em texto ("Trabalhando", "Devolveu"...), para leitores de tela. */
+  stateText: string;
   activity: string | null;
   account: string | null;
   model: string | null;
@@ -416,7 +412,6 @@ export interface OfficeTrip { id: number; kind: "walk" | "plane"; td: number; cl
 
 export interface OfficeView {
   roomStyle: string;
-  backdrop: OfficeLayer[];
   stations: {
     role: string;
     index: number;
@@ -425,7 +420,6 @@ export interface OfficeView {
     aria: string;
     pressed: boolean;
     layers: OfficeLayer[];
-    sprKey: string;
     label: string;
     passText: string;
     balloon: { cls: string; style: string; activity: string; meta: string } | null;
@@ -438,6 +432,12 @@ export const OFFICE_W: number = LW;
 export const OFFICE_H: number = LH;
 export const officeView: (scene: OfficeScene, opt: { scale: number; traveling: boolean }) => OfficeView = buildView;
 export const officeTrip: (scene: OfficeScene) => OfficeTrip | null = tripOf;
+
+/** Cenário fixo da sala como SVG: gerado uma vez só. */
+let backdropCache: string | null = null;
+export function backdropSvg(): string {
+  return (backdropCache ??= layersSvg(backdrop()));
+}
 
 /** Camadas como SVG, para {@html} dentro de um <svg>. */
 export function layersSvg(layers: OfficeLayer[]): string {
