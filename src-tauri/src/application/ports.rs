@@ -144,6 +144,8 @@ pub trait VersionControl: Send + Sync {
     fn add_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()>;
     /// Caminhos das cópias de trabalho que o repositório já tem (inclusive a principal).
     fn worktrees(&self, root: &str) -> AppResult<Vec<String>>;
+    /// Diz se o repositório já tem o ramo local `branch` (ele fica depois que a cópia é removida).
+    fn has_branch(&self, root: &str, branch: &str) -> bool;
 }
 
 /// Lê um arquivo escolhido pelo usuário para uso como anexo.

@@ -4,7 +4,7 @@
   import { accounts } from "../../state/accounts.svelte";
   import { pipelines } from "../../state/pipelines.svelte";
   import {
-    duration, icon, isActive, MAX_ROUNDS, passesByRole, stageAccountId, stageVisual, STATIONS, VISUAL,
+    duration, icon, isActive, passesByRole, stageAccountId, stageVisual, STATIONS, VISUAL,
     type Visual,
   } from "../../pipeline";
   import type { PipelineDetail, PipelineRole } from "../../types";
@@ -212,7 +212,7 @@
       <path bind:this={movePath} class="hidden-path" d="M0 0" />
     </svg>
     {#if geo.w}
-      {#each [["plan", arcs.plan ? `ajustes ${arcs.plan}` : "ajustes"], ["review", `voltas ${Math.min(arcs.review + arcs.test, MAX_ROUNDS)}/${MAX_ROUNDS}`], ["test", "reprova"]] as const as [k, text] (k)}
+      {#each [["plan", arcs.plan ? `ajustes ${arcs.plan}` : "ajustes"], ["review", `voltas ${Math.min(arcs.review + arcs.test, detail.max_rounds)}/${detail.max_rounds}`], ["test", "reprova"]] as const as [k, text] (k)}
         {@const p = arcMid(k)}
         <span class="arc-label" class:used={arcs[k] > 0} style:transform={`translate(calc(${f(p.x)}px - 50%), calc(${f(p.y)}px - 50%))`}>{text}</span>
       {/each}

@@ -411,4 +411,6 @@ export interface PipelineDetail extends PipelineRun {
   stages: StageRun[];
   spent_seconds: number;
   commit_message: string | null;
+  /** Voltas máximas do Implementador antes de a esteira parar. */
+  max_rounds: number;
 }

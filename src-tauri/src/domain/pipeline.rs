@@ -413,9 +413,14 @@ fn effective(stages: &[StageRun]) -> impl Iterator<Item = &StageRun> {
     stages.iter().filter(|s| !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled))
 }
 
+/// Passagens do Implementador que contam (as que falharam ou foram canceladas são refeitas).
+pub fn implementer_passes(stages: &[StageRun]) -> i64 {
+    effective(stages).filter(|s| s.role == Role::Implementer).count() as i64
+}
+
 /// Voltas já feitas: passagens do Implementador além da primeira.
 pub fn rounds(stages: &[StageRun]) -> i64 {
-    (effective(stages).filter(|s| s.role == Role::Implementer).count() as i64 - 1).max(0)
+    (implementer_passes(stages) - 1).max(0)
 }
 
 /// Próximo passo da sequência fixa: Triagem → Planejador → aprovação → Implementador

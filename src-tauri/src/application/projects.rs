@@ -52,6 +52,32 @@ pub fn sync_knowledge(projects: &dyn ProjectRepository, knowledge: &dyn Knowledg
     Ok(ProjectKnowledge::OnDisk { dir, listing, key })
 }
 
+/// Cria uma cópia isolada (git worktree) ao lado da pasta do projeto, com o primeiro nome
+/// livre: nem pasta em uso (por outra cópia, por uma sessão em `taken` ou em disco) nem
+/// ramo que já exista (o ramo fica quando a cópia é removida). `candidate(n)` dá o nome
+/// da pasta e o ramo da n-ésima tentativa. Devolve (caminho, ramo).
+pub fn add_free_worktree(
+    vcs: &dyn VersionControl,
+    folder: &str,
+    taken: &[String],
+    candidate: impl Fn(u32) -> (String, String),
+) -> AppResult<(String, String)> {
+    let mut used: Vec<String> = taken.iter().map(|t| normalize_folder(t)).collect();
+    used.extend(vcs.worktrees(folder)?.iter().map(|w| normalize_folder(w)));
+    let parent = normalize_folder(folder).rsplit_once(['/', '\\']).map(|(p, _)| p.to_owned()).unwrap_or_default();
+    let mut n = 1;
+    let (path, branch) = loop {
+        let (name, branch) = candidate(n);
+        let path = format!("{parent}/{name}");
+        if !used.contains(&path) && !std::path::Path::new(&path).exists() && !vcs.has_branch(folder, &branch) {
+            break (path, branch);
+        }
+        n += 1;
+    };
+    vcs.add_worktree(folder, &path, &branch)?;
+    Ok((path, branch))
+}
+
 pub struct ManageProjects {
     pub projects: Arc<dyn ProjectRepository>,
     pub conversations: Arc<dyn ConversationRepository>,
@@ -68,22 +94,15 @@ impl ManageProjects {
     pub fn start_isolated_session(&self, project_id: &str, model: &str) -> AppResult<Conversation> {
         let project = self.projects.get(project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
         let folder = project.folder.ok_or_else(|| AppError("Só projetos com pasta têm sessões isoladas.".into()))?;
-        // Nomes já usados: pastas de outras sessões e cópias que ainda existem em disco
-        // (a conversa pode ter sido apagada sem a cópia ter sido removida).
-        let mut taken: Vec<String> = self.conversations.list()?.iter().map(|c| normalize_folder(&c.cwd)).collect();
-        taken.extend(self.vcs.worktrees(&folder)?.iter().map(|w| normalize_folder(w)));
-        let parent = normalize_folder(&folder).rsplit_once(['/', '\\']).map(|(p, _)| p.to_owned()).unwrap_or_default();
+        // Pastas de outras sessões também contam como usadas (a cópia pode ter sido removida
+        // do git sem a conversa ter sido apagada).
+        let sessions: Vec<String> = self.conversations.list()?.iter().map(|c| normalize_folder(&c.cwd)).collect();
         let base = folder_name(&folder);
-        let mut n = 1;
-        let (name, path) = loop {
+        let (path, _) = add_free_worktree(&*self.vcs, &folder, &sessions, |n| {
             let name = format!("{base}-ramo-{n}");
-            let path = format!("{parent}/{name}");
-            if !taken.contains(&path) {
-                break (name, path);
-            }
-            n += 1;
-        };
-        self.vcs.add_worktree(&folder, &path, &format!("lume/{name}"))?;
+            (name.clone(), format!("lume/{name}"))
+        })?;
+        let name = folder_name(&path);
         let id = self.ids.new_id();
         self.conversations.insert(&id, &format!("Sessão isolada · {name}"), model, &path, KIND_AGENT, None)?;
         self.conversations.set_project(&id, Some(project_id))?;

@@ -138,6 +138,10 @@ impl VersionControl for GitCli {
         let listing = git(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
         Ok(listing.lines().filter_map(|l| l.strip_prefix("worktree ")).map(str::to_owned).collect())
     }
+
+    fn has_branch(&self, root: &str, branch: &str) -> bool {
+        git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_some()
+    }
 }
 
 #[cfg(test)]

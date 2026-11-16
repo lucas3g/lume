@@ -7,7 +7,7 @@
   import { projectName } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
-    clock, duration, icon, inputSummary, isActive, MAX_ROUNDS, outputSummary, passesByRole, passLabel, RUN_STATUS,
+    clock, duration, icon, inputSummary, isActive, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageVisual, STATION, switchedAccount, VISUAL,
   } from "../../pipeline";
   import type { PipelineDetail, PipelineRole, StageRun, View } from "../../types";
@@ -63,9 +63,13 @@
     }
   });
 
-  // Mensagem de commit sugerida pelo Relator.
+  // Mensagem de commit sugerida pelo Relator, uma vez só: o usuário pode apagá-la e reescrever.
+  let suggested = false;
   $effect(() => {
-    if (detail.commit_message && !commitMessage) commitMessage = detail.commit_message;
+    if (detail.commit_message && !suggested) {
+      suggested = true;
+      commitMessage = detail.commit_message;
+    }
   });
 
   function select(role: PipelineRole, stageId?: string) {
@@ -193,7 +197,7 @@
         <span class="value">{clock(spent)} <small>de {detail.budget_minutes} min</small></span>
         <span class="meter" aria-hidden="true"><span style:width={`${budgetPercent.toFixed(1)}%`}></span></span>
       </div>
-      <div class="num"><span class="label">Voltas</span><span class="value">{detail.rounds}<small>/{MAX_ROUNDS}</small></span></div>
+      <div class="num"><span class="label">Voltas</span><span class="value">{detail.rounds}<small>/{detail.max_rounds}</small></span></div>
       {#if active}
         <div class="cancel">
           <button type="button" class="btn danger" aria-haspopup="dialog" aria-expanded={confirmCancel} onclick={() => (confirmCancel = !confirmCancel)}>Cancelar</button>
@@ -235,7 +239,7 @@
             <li><span class="node mini s-{key}">{@html icon(v.glyph, 9, 2.8)}</span><span><b>{v.label}</b> · {v.desc}</span></li>
           {/each}
         </ul>
-        <p class="foot">Caminhos de devolução: você devolve o plano ao Planejador; o Revisor e o Testador devolvem o trabalho ao Implementador, no máximo {MAX_ROUNDS} vezes. O losango é a parada em que a decisão é sua.</p>
+        <p class="foot">Caminhos de devolução: você devolve o plano ao Planejador; o Revisor e o Testador devolvem o trabalho ao Implementador, no máximo {detail.max_rounds} vezes. O losango é a parada em que a decisão é sua.</p>
       </div>
     {/if}
     <PipelineTrack {detail} {now} selected={panelRole} onselect={(role) => select(role)} />
@@ -313,7 +317,7 @@
         <ol class="reg">
           {#each detail.stages as s (s.id)}
             {@const v = stageVisual(s, s.status === "running" && !!chat.permissions[s.conversation_id])}
-            {@const tag = passLabel(s, indexOf(s))}
+            {@const tag = passLabel(s, indexOf(s), detail.max_rounds)}
             <li>
               <button type="button" class="reg-item" class:sel={panelStageId === s.id} onclick={() => select(s.role, s.id)}>
                 <span class="r-time">{clock(s.started_at - detail.created_at)}</span>
@@ -351,7 +355,7 @@
               {#if passes[panelStation.role].length > 1}
                 <span class="seg" role="group" aria-label="Passagens desta estação">
                   {#each passes[panelStation.role] as s, i (s.id)}
-                    <button type="button" aria-pressed={s.id === panelStageId} onclick={() => select(s.role, s.id)}>{passLabel(s, i) ?? "1ª passagem"}</button>
+                    <button type="button" aria-pressed={s.id === panelStageId} onclick={() => select(s.role, s.id)}>{passLabel(s, i, detail.max_rounds) ?? "1ª passagem"}</button>
                   {/each}
                 </span>
               {/if}

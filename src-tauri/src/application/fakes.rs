@@ -333,6 +333,11 @@ impl VersionControl for FakeVcs {
             .chain(asked.iter().filter_map(|(_, m)| m.strip_prefix("worktree ")).filter_map(|m| m.split(' ').next()).map(str::to_owned))
             .collect())
     }
+    /// Os ramos das cópias pedidas continuam existindo.
+    fn has_branch(&self, _root: &str, branch: &str) -> bool {
+        let suffix = format!(" {branch}");
+        self.commits.lock().unwrap().iter().any(|(_, m)| m.starts_with("worktree ") && m.ends_with(&suffix))
+    }
 }
 
 /// Catálogo de plugins em memória; instalar e remover só mudam o estado e ficam no registro.

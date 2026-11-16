@@ -2,14 +2,16 @@
 //! numa sessão própria e decide a próxima pelo registro das anteriores.
 
 use super::{
+    projects::add_free_worktree,
     ports::{Clock, ConversationRepository, EventSink, IdGenerator, PipelineRepository, ProjectRepository, StageRunner, VersionControl},
+    send_message::make_title,
     AppError, AppResult,
 };
 use crate::domain::{
     chat::{Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, context_for, finished_status, next_step, normalize_jira_key, rounds, spent_seconds, stage_prompt,
-        suggested_commit, Next, PipelineRun, Role, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        branch_slug, clip_diff, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
+        suggested_commit, Next, PipelineRun, Role, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -55,6 +57,8 @@ pub struct RunDetail {
     pub spent_seconds: i64,
     /// Mensagem de commit sugerida pelo Relator.
     pub commit_message: Option<String>,
+    /// Voltas máximas do Implementador antes de a esteira parar.
+    pub max_rounds: i64,
 }
 
 /// Resposta final de um bot: a última mensagem do assistente depois do pedido.
@@ -86,7 +90,7 @@ impl ManagePipelines {
             .rev()
             .find(|s| s.role == Role::Reporter && s.status == StageStatus::Done)
             .and_then(|s| s.output.as_deref().and_then(suggested_commit));
-        Ok(RunDetail { spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+        Ok(RunDetail { max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
     }
 
     /// Cria a execução e prepara a pasta de trabalho. A condução começa com `advance`.
@@ -100,12 +104,15 @@ impl ManagePipelines {
             Some(key) => Some(normalize_jira_key(key).ok_or_else(|| AppError("Chave do Jira inválida (ex.: LUME-142).".into()))?),
             None => None,
         };
+        let request = input.request.trim();
         let title = match (input.title.trim(), &jira_key) {
             ("", Some(key)) => key.clone(),
+            // Só o pedido escrito: o título vem da primeira linha dele.
+            ("", None) if !request.is_empty() => make_title(request),
             ("", None) => return Err(AppError("Informe a chave da task do Jira ou descreva o que fazer.".into())),
             (title, _) => title.to_owned(),
         };
-        if jira_key.is_none() && input.request.trim().is_empty() && title.chars().count() < 12 {
+        if jira_key.is_none() && request.is_empty() && title.chars().count() < 12 {
             return Err(AppError("Descreva o que os bots devem fazer.".into()));
         }
         let id = self.ids.new_id();
@@ -121,7 +128,7 @@ impl ManagePipelines {
             project_id: project.id,
             jira_key,
             title,
-            request: input.request.trim().to_owned(),
+            request: request.to_owned(),
             status: RunStatus::Running,
             mode,
             workdir,
@@ -137,38 +144,47 @@ impl ManagePipelines {
         Ok(run)
     }
 
-    /// Cópia isolada ao lado da pasta do projeto, com um nome ainda livre.
+    /// Cópia isolada ao lado da pasta do projeto: pasta "<projeto>-<slug>", ramo "lume/<slug>".
     fn create_worktree(&self, folder: &str, slug: &str) -> AppResult<(String, String)> {
-        let taken: Vec<String> = self.vcs.worktrees(folder)?.iter().map(|w| normalize_folder(w)).collect();
-        let parent = normalize_folder(folder).rsplit_once(['/', '\\']).map(|(p, _)| p.to_owned()).unwrap_or_default();
-        let base = format!("{}-{slug}", folder_name(folder));
-        let mut n = 1;
-        let (name, path) = loop {
-            let name = if n == 1 { base.clone() } else { format!("{base}-{n}") };
-            let path = format!("{parent}/{name}");
-            if !taken.contains(&path) && !std::path::Path::new(&path).exists() {
-                break (name, path);
-            }
-            n += 1;
-        };
-        let branch = format!("lume/{}", name.trim_start_matches(&format!("{}-", folder_name(folder))));
-        self.vcs.add_worktree(folder, &path, &branch)?;
-        Ok((path, branch))
+        let base = folder_name(folder);
+        add_free_worktree(&*self.vcs, folder, &[], |n| {
+            let suffix = if n == 1 { slug.to_owned() } else { format!("{slug}-{n}") };
+            (format!("{base}-{suffix}"), format!("lume/{suffix}"))
+        })
     }
 
     /// Conduz a execução até uma parada: aprovação, fim, falha ou cancelamento.
     pub async fn advance(&self, run_id: &str, runner: &dyn StageRunner) -> AppResult<()> {
-        if !lock(&self.active).insert(run_id.to_owned()) {
-            return Ok(());
+        loop {
+            if !lock(&self.active).insert(run_id.to_owned()) {
+                return Ok(());
+            }
+            let result = self.drive(run_id, runner).await;
+            // Sair da condução e ver se chegou um cancelamento é um passo só para `cancel`.
+            let cancel_pending = {
+                let mut active = lock(&self.active);
+                active.remove(run_id);
+                lock(&self.cancelled).contains(run_id)
+            };
+            if let (Err(e), Ok(mut run)) = (&result, self.get(run_id))
+                && !run.status.is_finished()
+            {
+                self.finish(&mut run, RunStatus::Failed, Some(e.0.clone()))?;
+            }
+            if cancel_pending {
+                // O pedido chegou enquanto a condução saía: cancela como uma execução parada.
+                self.cancel(run_id, runner)?;
+                return result;
+            }
+            // Retomada ou aprovação enquanto a condução saía: a chamada delas achou esta
+            // ainda ativa e desistiu, então esta continua.
+            let resumed = result.is_ok()
+                && self.get(run_id).is_ok_and(|r| r.status == RunStatus::Running)
+                && self.pipelines.stages(run_id).is_ok_and(|s| next_step(&s) != Next::Wait);
+            if !resumed {
+                return result;
+            }
         }
-        let result = self.drive(run_id, runner).await;
-        lock(&self.active).remove(run_id);
-        if let (Err(e), Ok(mut run)) = (&result, self.get(run_id))
-            && !run.status.is_finished()
-        {
-            self.finish(&mut run, RunStatus::Failed, Some(e.0.clone()))?;
-        }
-        result
     }
 
     async fn drive(&self, run_id: &str, runner: &dyn StageRunner) -> AppResult<()> {
@@ -207,8 +223,7 @@ impl ManagePipelines {
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
         // A volta do Implementador é o número de passagens dele antes desta.
-        let previous = stages.iter().filter(|s| s.role == Role::Implementer && !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled)).count() as i64;
-        let round = if role == Role::Implementer { previous } else { rounds(stages) };
+        let round = if role == Role::Implementer { implementer_passes(stages) } else { rounds(stages) };
         let mut stage = StageRun {
             id: self.ids.new_id(),
             run_id: run.id.clone(),
@@ -225,7 +240,12 @@ impl ManagePipelines {
         run.rounds = round;
         self.touch(run)?;
 
-        let result = runner.run(&conversation_id, &prompt).await;
+        // Um cancelamento que chegou antes de o turno existir não teria turno para interromper.
+        let result = if lock(&self.cancelled).contains(&run.id) {
+            Err(AppError("Cancelada por você.".into()))
+        } else {
+            runner.run(&conversation_id, &prompt).await
+        };
         let cancelled = lock(&self.cancelled).contains(&run.id);
         (stage.status, stage.output) = match result {
             _ if cancelled => (StageStatus::Cancelled, Some("Cancelada por você.".into())),
@@ -247,14 +267,15 @@ impl ManagePipelines {
         if !status.is_repo || status.files.is_empty() {
             return None;
         }
-        let mut out = String::new();
-        for file in &status.files {
+        // Tudo que é versionado sai num diff só; arquivos novos (ainda fora do git), um a um.
+        let mut out = self.vcs.diff(workdir, ".").unwrap_or_default();
+        for file in status.files.iter().filter(|f| f.status == "?") {
             if let Ok(diff) = self.vcs.diff(workdir, &file.path) {
-                out.push_str(&diff);
                 out.push('\n');
+                out.push_str(&diff);
             }
         }
-        Some(clip_diff(&out))
+        (!out.trim().is_empty()).then(|| clip_diff(&out))
     }
 
     fn ask_approval(&self, run: &mut PipelineRun, stages: &[StageRun]) -> AppResult<()> {
@@ -309,14 +330,22 @@ impl ManagePipelines {
         }
         let stages = self.pipelines.stages(run_id)?;
         let running = stages.into_iter().filter(|s| s.status == StageStatus::Running);
-        let conducted = lock(&self.active).contains(run_id);
+        // Com quem conduz, o pedido fica marcado no mesmo passo em que se vê a condução:
+        // se ela sair logo depois, `advance` encontra o pedido e cancela.
+        let conducted = {
+            let active = lock(&self.active);
+            let conducted = active.contains(run_id);
+            if conducted {
+                lock(&self.cancelled).insert(run_id.to_owned());
+            }
+            conducted
+        };
         for mut stage in running {
             if stage.role == Role::Approval || !conducted {
                 stage.status = StageStatus::Cancelled;
                 stage.finished_at = Some(self.clock.now());
                 self.pipelines.save_stage(&stage)?;
             } else {
-                lock(&self.cancelled).insert(run_id.to_owned());
                 runner.cancel(&stage.conversation_id);
             }
         }
@@ -338,8 +367,10 @@ impl ManagePipelines {
         if matches!(next_step(&stages), Next::Finish(..)) {
             return Err(AppError("Esta execução já chegou ao fim da sequência; comece uma nova.".into()));
         }
-        if spent_seconds(&stages, self.clock.now()) >= run.budget_minutes * 60 {
-            run.budget_minutes += EXTRA_BUDGET_MINUTES;
+        let spent = spent_seconds(&stages, self.clock.now());
+        if spent >= run.budget_minutes * 60 {
+            // Uma etapa pode passar bem do limite: a folga conta a partir do que já foi gasto.
+            run.budget_minutes = (spent + 59) / 60 + EXTRA_BUDGET_MINUTES;
         }
         lock(&self.cancelled).remove(run_id);
         run.status = RunStatus::Running;
@@ -379,7 +410,9 @@ impl ManagePipelines {
             for mut stage in self.pipelines.stages(&run.id)?.into_iter().filter(|s| s.status == StageStatus::Running) {
                 stage.status = StageStatus::Failed;
                 stage.output = Some("O app foi fechado durante a etapa.".into());
-                stage.finished_at = Some(self.clock.now());
+                // O tempo com o app fechado não é trabalho dos bots: a etapa acaba na última mensagem gravada.
+                let last_activity = self.conversations.messages(&stage.conversation_id).ok().and_then(|m| m.last().map(|m| m.created_at));
+                stage.finished_at = Some(last_activity.unwrap_or(stage.started_at).max(stage.started_at));
                 self.pipelines.save_stage(&stage)?;
             }
             self.finish(&mut run, RunStatus::Failed, Some("O app foi fechado durante a execução; retome quando quiser.".into()))?;
@@ -534,6 +567,9 @@ mod tests {
         assert!(uc.commit(&run.id, "x").is_err());
         uc.delete(&run.id).unwrap();
         assert!(uc.list().unwrap().is_empty());
+
+        let only_request = uc.start(StartInput { request: "Corrigir o frete\ncom CEP vazio".into(), ..input(None) }).unwrap();
+        assert_eq!(only_request.title, "Corrigir o frete", "sem título, vale a primeira linha do pedido");
     }
 
     #[tokio::test]

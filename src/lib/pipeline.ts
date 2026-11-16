@@ -41,8 +41,6 @@ export const STATIONS: Station[] = [
 
 export const STATION = Object.fromEntries(STATIONS.map((s) => [s.role, s])) as Record<PipelineRole, Station>;
 
-export const MAX_ROUNDS = 3;
-
 /** Estado visual de uma estação. */
 export type Visual = "waiting" | "working" | "done" | "returned" | "failed" | "skipped" | "you";
 
@@ -127,8 +125,8 @@ export function passesByRole(detail: PipelineDetail): Record<PipelineRole, Stage
 }
 
 /** Nome da passagem para abas e registro: "volta 1/3", "plano v2"… */
-export function passLabel(stage: StageRun, index: number): string | null {
-  if (stage.role === "implementer" && stage.round > 0) return `volta ${stage.round}/${MAX_ROUNDS}`;
+export function passLabel(stage: StageRun, index: number, maxRounds: number): string | null {
+  if (stage.role === "implementer" && stage.round > 0) return `volta ${stage.round}/${maxRounds}`;
   if ((stage.role === "planner" || stage.role === "approval") && index > 0) return `plano v${index + 1}`;
   if (stage.role === "reviewer" && index > 0) return `${index + 1}ª revisão`;
   if (index > 0) return `${index + 1}ª passagem`;

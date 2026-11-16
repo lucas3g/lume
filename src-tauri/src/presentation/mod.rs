@@ -275,6 +275,10 @@ impl StageRunner for Bots {
         let c = &self.0;
         let control = c.running.start(conversation_id).ok_or_else(|| AppError("A conversa da etapa já está em uso.".into()))?;
         let result = c.send_message.execute(conversation_id, prompt, &[], vec![], control).await;
+        // Como em `spawn_turn`: o erro encerra o turno também na tela da conversa.
+        if let Err(e) = &result {
+            c.events.chat(conversation_id, crate::application::ChatEvent::Error { message: e.0.clone() });
+        }
         c.running.finish(conversation_id);
         result?;
         final_answer(&c.pipelines.conversations.messages(conversation_id)?)
