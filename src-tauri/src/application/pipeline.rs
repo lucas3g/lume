@@ -69,6 +69,16 @@ pub struct RunDetail {
     pub commit_message: Option<String>,
     /// Voltas máximas do Implementador antes de a esteira parar.
     pub max_rounds: i64,
+    /// Modelo de cada etapa (por id) em cada serviço.
+    pub stage_models: BTreeMap<String, StageModels>,
+}
+
+/// Modelo com que a etapa roda em cada serviço: no Claude, o do agente (se tiver) ou o do
+/// nível; nos outros, o escolhido para o nível (sem entrada, o padrão do CLI).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StageModels {
+    pub claude: String,
+    pub others: BTreeMap<String, String>,
 }
 
 /// Resposta final de um bot: a última mensagem do assistente depois do pedido.
@@ -100,7 +110,18 @@ impl ManagePipelines {
             .rev()
             .find(|s| s.role == Role::Reporter && s.status == StageStatus::Done)
             .and_then(|s| s.output.as_deref().and_then(suggested_commit));
-        Ok(RunDetail { max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+        let mut stage_models = BTreeMap::new();
+        for stage in stages.iter().filter(|s| !s.conversation_id.is_empty()) {
+            let Some(conversation) = self.conversations.get(&stage.conversation_id)? else { continue };
+            let claude = run.agents.get(&stage.role).and_then(|a| a.model.clone()).unwrap_or(conversation.model);
+            let others = self
+                .settings
+                .text(&format!("{}{}", super::prefs::PROVIDER_MODELS_PREFIX, stage.conversation_id))
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default();
+            stage_models.insert(stage.id.clone(), StageModels { claude, others });
+        }
+        Ok(RunDetail { stage_models, max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
     }
 
     /// Como a esteira roda no projeto; sem configuração, todos os papéis com as regras padrão.
@@ -628,6 +649,8 @@ mod tests {
         let triage_conv = world.conversation(&detail.stages[0].conversation_id);
         let planner_models = uc.settings.text(&format!("{}{}", crate::application::prefs::PROVIDER_MODELS_PREFIX, detail.stages[1].conversation_id));
         assert_eq!(planner_models.as_deref(), Some(r#"{"chatgpt":"gpt-forte"}"#), "o Planejador usa o modelo forte do ChatGPT");
+        let planner = &detail.stage_models[&detail.stages[1].id];
+        assert_eq!((planner.claude.as_str(), planner.others.get("chatgpt").map(String::as_str)), ("opus", Some("gpt-forte")));
         assert_eq!((triage_conv.cwd.as_str(), triage_conv.model.as_str(), triage_conv.permission_mode.as_str()), ("/dev/loja-esteira-loja-7", "haiku", "manual"));
 
         uc.decide_plan(&run.id, Some("use CSV")).unwrap();
@@ -684,6 +707,8 @@ mod tests {
         assert_eq!(detail.run.status, RunStatus::Done);
         assert_eq!(roles(&uc, &run.id), [("planner", "done"), ("approval", "done"), ("implementer", "done"), ("reviewer", "done")]);
         assert_eq!(detail.run.agents.get(&Role::Reviewer).map(|a| a.name.as_str()), Some("Revisor rigoroso"));
+        let reviewer_models = &detail.stage_models[&detail.stages.iter().find(|s| s.role == Role::Reviewer).unwrap().id];
+        assert_eq!(reviewer_models.claude, "opus", "agente sem modelo próprio usa o do nível");
         let reviewer = detail.stages.iter().find(|s| s.role == Role::Reviewer).unwrap();
         assert_eq!(world.conversation(&reviewer.conversation_id).agent_id.as_deref(), Some("a1"));
         let implementer = detail.stages.iter().find(|s| s.role == Role::Implementer).unwrap();

@@ -4,11 +4,11 @@
   import { renderMarkdown } from "../../format";
   import { accounts } from "../../state/accounts.svelte";
   import { chat, openConversation } from "../../state/chat.svelte";
-  import { projectName } from "../../state/projects.svelte";
+  import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
     clock, duration, icon, inputSummary, isActive, outputSummary, passesByRole, passLabel, RUN_STATUS,
-    stageAccountId, stageLog, stageVisual, STATION, switchedAccount, VISUAL,
+    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, VISUAL,
   } from "../../pipeline";
   import type { PipelineDetail, PipelineRole, StageRun, View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
@@ -102,6 +102,20 @@
     void liveStatus;
     if (logEl && logStuck) logEl.scrollTop = logEl.scrollHeight;
   });
+
+  /** Modelo da etapa aberta no serviço da conta que a atende. */
+  const panelModel = $derived.by(() => {
+    if (!panelStage?.conversation_id) return null;
+    const live = panelStage.status === "running" ? chat.turns[panelStage.conversation_id]?.account : null;
+    const id = stageAccountId(pipelines.messages[panelStage.conversation_id] ?? []);
+    const account = accounts.list.find((a) => (live ? a.name === live : a.id === id));
+    return stageModelText(detail, panelStage, account?.provider ?? "claude");
+  });
+
+  function configureAgents() {
+    projects.selectedId = detail.project_id;
+    onnavigate("project");
+  }
 
   const liveStatus = $derived(panelStage?.status === "running" && panelStage.conversation_id ? chat.turns[panelStage.conversation_id]?.status : null);
 
@@ -248,6 +262,7 @@
         {#if nowLine.who}<b>{nowLine.who}</b>{/if}
         <span class="what">{nowLine.text}</span>
       </div>
+      <button type="button" class="btn small" title="Agente de cada papel e etapas ligadas, na página do projeto" onclick={configureAgents}>Configurar agentes</button>
       <button type="button" class="btn small" aria-expanded={legendOpen} onclick={() => (legendOpen = !legendOpen)}>Legenda</button>
     </div>
     {#if legendOpen}
@@ -365,7 +380,7 @@
             {#if panelVisual}<span class="chip c-{panelVisual.visual}"><i></i>{panelVisual.label}</span>{/if}
           </div>
           <div class="p-meta">
-            {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelStation.model}{panelAgent?.model ? `${panelAgent.model} no Claude` : panelStation.model} · {panelStation.perm}{:else}{panelStation.perm}{/if}
+            {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelModel}modelo <b>{panelModel}</b> · {:else if panelStation.model}{panelStation.model.toLowerCase()} · {/if}{panelStation.perm}
             {#if panelStage && panelStage.role !== "approval"} · conta <b>{stageAccount(panelStage)}</b>{/if}
             {#if panelStage} · <span class="mono">{duration(stageSeconds(panelStage))}</span>{/if}
           </div>

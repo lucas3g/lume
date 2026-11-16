@@ -417,6 +417,8 @@ export interface PipelineDetail extends PipelineRun {
   commit_message: string | null;
   /** Voltas máximas do Implementador antes de a esteira parar. */
   max_rounds: number;
+  /** Modelo de cada etapa (por id) em cada serviço: o do Claude e o dos outros (ausente = padrão do CLI). */
+  stage_models: Record<string, { claude: string; others: Partial<Record<Provider, string>> }>;
 }
 
 /** Nível de modelo de um papel da esteira. */

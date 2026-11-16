@@ -1,7 +1,8 @@
 // Como apresentar a esteira de bots: estações, estados, rótulos e o log de cada etapa.
 
 import { parseToolUse, summarize } from "./tools";
-import type { Message, PipelineDetail, Tier, PipelineRole, PipelineStatus, StageRun } from "./types";
+import { modelLabel } from "./types";
+import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, StageRun } from "./types";
 
 export interface Station {
   role: PipelineRole;
@@ -243,4 +244,34 @@ export function clock(seconds: number): string {
 export function duration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Nome do serviço e do CLI que o atende. */
+export const SERVICE: Record<Provider, { label: string; cli: string }> = {
+  claude: { label: "Claude", cli: "Claude Code" },
+  chatgpt: { label: "ChatGPT", cli: "Codex" },
+  gemini: { label: "Gemini", cli: "Antigravity" },
+};
+
+const CLAUDE_TIER: Record<Tier, string> = { fast: "haiku", balanced: "sonnet", strong: "opus" };
+
+/** "Opus 5.5 · Claude", "gpt-5.5 · ChatGPT" ou "padrão do Codex · ChatGPT". */
+function modelText(provider: Provider, model: string | null | undefined): string {
+  const name = provider === "claude" ? modelLabel(model || "opus") : (model || `padrão do ${SERVICE[provider].cli}`);
+  return `${name} · ${SERVICE[provider].label}`;
+}
+
+/** Modelo com que uma etapa rodou (ou roda) no serviço da conta que a atende. */
+export function stageModelText(detail: PipelineDetail, stage: StageRun, provider: Provider): string | null {
+  const models = detail.stage_models[stage.id];
+  if (!models) return null;
+  return modelText(provider, provider === "claude" ? models.claude : models.others[provider]);
+}
+
+/** Modelo que a etapa vai usar no serviço: o do agente (só no Claude) ou o do nível do papel. */
+export function plannedModelText(role: PipelineRole, provider: Provider, models: TierModels | null, agentModel: string | null): string | null {
+  const tier = STATION[role].tier;
+  if (!tier) return null;
+  if (provider === "claude") return modelText("claude", agentModel || models?.claude[tier] || CLAUDE_TIER[tier]);
+  return modelText(provider, models?.[provider][tier]);
 }

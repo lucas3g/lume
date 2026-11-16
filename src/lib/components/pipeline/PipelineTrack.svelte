@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { chat } from "../../state/chat.svelte";
-  import { accounts } from "../../state/accounts.svelte";
+  import { accounts, activeAccount } from "../../state/accounts.svelte";
+  import { api } from "../../api";
   import { pipelines } from "../../state/pipelines.svelte";
   import {
-    duration, icon, isActive, passesByRole, stageAccountId, stageVisual, STATIONS, VISUAL,
+    duration, icon, isActive, passesByRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
     type Visual,
   } from "../../pipeline";
-  import type { PipelineDetail, PipelineRole } from "../../types";
+  import type { PipelineDetail, PipelineRole, Provider, TierModels } from "../../types";
 
   interface Props {
     detail: PipelineDetail;
@@ -26,6 +27,17 @@
   };
 
   const passes = $derived(passesByRole(detail));
+
+  /** Modelos de cada nível, para as estações que ainda não rodaram. */
+  let tierModels = $state<TierModels | null>(null);
+  onMount(() => {
+    api.pipelineModels().then((m) => (tierModels = m), () => {});
+  });
+  /** Serviço da conta (pelo id ou pelo nome); sem conta ainda, o da conta que atende agora. */
+  const providerOf = (account: { id?: string | null; name?: string | null }): Provider =>
+    accounts.list.find((a) => (account.id && a.id === account.id) || (account.name && a.name === account.name))?.provider ??
+    activeAccount()?.provider ??
+    "claude";
   const finished = $derived(!isActive(detail.status));
 
   /** Estado de cada estação: o da passagem mais recente dela. */
@@ -47,9 +59,19 @@
         }
         if (station.gate) account = "você";
       }
+      const agentInfo = detail.agents[station.role] ?? null;
+      let model: string | null = null;
+      if (!station.gate) {
+        if (last?.conversation_id) {
+          const id = stageAccountId(pipelines.messages[last.conversation_id] ?? []);
+          const live = last.status === "running" ? chat.turns[last.conversation_id]?.account : null;
+          model = stageModelText(detail, last, providerOf(live ? { name: live } : { id }));
+        }
+        model ??= plannedModelText(station.role, providerOf({}), tierModels, agentInfo?.model ?? null);
+      }
       const spent = list.reduce((sum, s) => sum + ((s.finished_at ?? now) - s.started_at), 0);
-      const agent = detail.agents[station.role]?.name ?? null;
-      return { station, visual, label, account, agent, off, time: list.length ? duration(spent) : "" };
+      const agent = agentInfo?.name ?? null;
+      return { station, visual, label, account, agent, model, off, time: list.length ? duration(spent) : "" };
     }),
   );
 
@@ -242,10 +264,11 @@
           <span class="card-s">
             <span class="name">{c.station.name}</span>
             {#if c.agent}
-              <span class="role agent" title={`Agente ${c.agent}`}>{c.agent}</span>
+              <span class="role agent" title={`Agente ${c.agent} · ${c.station.perm}`}>Agente {c.agent}</span>
             {:else}
-              <span class="role">{c.station.model ? `${c.station.model} · ${c.station.perm}` : c.station.perm}</span>
+              <span class="role" title={c.station.model ? `${c.station.model} · ${c.station.perm}` : c.station.perm}>{c.station.perm.charAt(0).toUpperCase() + c.station.perm.slice(1)}</span>
             {/if}
+            <span class="model" title={c.model ? `Modelo: ${c.model}` : undefined}>{c.model ?? "\u00a0"}</span>
             <span class="chip c-{c.visual}"><i></i><span class="ctx">{c.label}</span></span>
             <span class="foot">
               <span class="acct">{#if c.account}{#if c.account !== "você"}<span class="dot ok"></span>{/if}<span class="ellipsis">{c.account}</span>{/if}</span>
@@ -314,6 +337,7 @@
   .name { max-width: 100%; font-family: var(--display); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .s-waiting .name { color: var(--text-2); }
   .role.agent { color: var(--accent-text); }
+  .model { max-width: 100%; margin: -4px 0 6px; font-family: var(--mono); font-size: 10.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .role { max-width: 100%; margin-bottom: 6px; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 7px 1px 6px; border: 1px solid transparent; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; overflow: hidden; }
   .chip i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
