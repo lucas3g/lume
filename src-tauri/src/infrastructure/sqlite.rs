@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS projects(
 CREATE TABLE IF NOT EXISTS pipeline_runs(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, jira_key TEXT, title TEXT NOT NULL, request TEXT NOT NULL,
   status TEXT NOT NULL, mode TEXT NOT NULL, workdir TEXT NOT NULL, branch TEXT, rounds INTEGER NOT NULL DEFAULT 0,
-  skipped TEXT NOT NULL DEFAULT '',
+  skipped TEXT NOT NULL DEFAULT '', agents TEXT NOT NULL DEFAULT '{}',
   budget_minutes INTEGER NOT NULL, note TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pipeline_stages(
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL, role TEXT NOT NULL, round INTEGER NOT NULL, status TEXT NOT NULL,
@@ -79,7 +79,7 @@ const ACCOUNT_COLUMNS: &str =
 const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 14] = [
+const MIGRATIONS: [&str; 15] = [
     "ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE conversations ADD COLUMN session_provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
@@ -95,6 +95,7 @@ const MIGRATIONS: [&str; 14] = [
     "ALTER TABLE conversations ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN versioned INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pipeline_runs ADD COLUMN skipped TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pipeline_runs ADD COLUMN agents TEXT NOT NULL DEFAULT '{}'",
 ];
 
 impl From<rusqlite::Error> for AppError {
@@ -643,7 +644,7 @@ impl TaskRepository for SqliteStore {
     }
 }
 
-const RUN_COLUMNS: &str = "id,project_id,jira_key,title,request,status,mode,workdir,branch,rounds,budget_minutes,note,created_at,updated_at,skipped";
+const RUN_COLUMNS: &str = "id,project_id,jira_key,title,request,status,mode,workdir,branch,rounds,budget_minutes,note,created_at,updated_at,skipped,agents";
 const STAGE_COLUMNS: &str = "id,run_id,role,round,status,conversation_id,input,output,started_at,finished_at";
 
 fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
@@ -663,6 +664,7 @@ fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
         created_at: r.get(12)?,
         updated_at: r.get(13)?,
         skipped: r.get::<_, String>(14)?.split(',').filter_map(Role::parse).collect(),
+        agents: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
     })
 }
 
@@ -696,10 +698,11 @@ impl PipelineRepository for SqliteStore {
 
     fn save_run(&self, run: &PipelineRun) -> AppResult<()> {
         self.conn().execute(
-            &format!("INSERT OR REPLACE INTO pipeline_runs({RUN_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+            &format!("INSERT OR REPLACE INTO pipeline_runs({RUN_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
             params![run.id, run.project_id, run.jira_key, run.title, run.request, run.status.key(), run.mode.key(),
                 run.workdir, run.branch, run.rounds, run.budget_minutes, run.note, run.created_at, run.updated_at,
-                run.skipped.iter().map(|r| r.key()).collect::<Vec<_>>().join(",")],
+                run.skipped.iter().map(|r| r.key()).collect::<Vec<_>>().join(","),
+                serde_json::to_string(&run.agents).unwrap_or_else(|_| "{}".into())],
         )?;
         Ok(())
     }

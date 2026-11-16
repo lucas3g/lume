@@ -48,7 +48,7 @@
         if (station.gate) account = "você";
       }
       const spent = list.reduce((sum, s) => sum + ((s.finished_at ?? now) - s.started_at), 0);
-      const agent = detail.agents[station.role] ?? null;
+      const agent = detail.agents[station.role]?.name ?? null;
       return { station, visual, label, account, agent, off, time: list.length ? duration(spent) : "" };
     }),
   );
@@ -64,7 +64,7 @@
     if (passes[role].length > 0) return true;
     // Estação desligada: o trilho conta como percorrido quando o trabalho já passou adiante.
     const i = ORDER.indexOf(role);
-    return detail.skipped.includes(role) && ORDER.slice(i + 1).some((r) => passes[r].length > 0 || (detail.status === "done" && r === ORDER.at(-1)));
+    return detail.skipped.includes(role) && (detail.status === "done" || ORDER.slice(i + 1).some((r) => passes[r].length > 0));
   };
 
   // ---- geometria

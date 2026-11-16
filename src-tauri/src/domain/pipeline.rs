@@ -109,6 +109,15 @@ impl PipelineConfig {
     }
 }
 
+/// Agente escolhido para um papel quando a execução começou.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunAgent {
+    pub id: String,
+    pub name: String,
+    /// Modelo do agente; sem ele, vale o modelo padrão do papel.
+    pub model: Option<String>,
+}
+
 /// Situação da execução inteira.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -221,6 +230,8 @@ pub struct PipelineRun {
     pub rounds: i64,
     /// Etapas desligadas no projeto quando a execução começou.
     pub skipped: Vec<Role>,
+    /// Agentes de cada papel quando a execução começou: mudar o projeto não muda uma execução já iniciada.
+    pub agents: BTreeMap<Role, RunAgent>,
     pub budget_minutes: i64,
     /// Motivo do fim, quando falhou ou parou.
     pub note: Option<String>,
@@ -463,13 +474,10 @@ pub fn rounds(stages: &[StageRun]) -> i64 {
     (implementer_passes(stages) - 1).max(0)
 }
 
-/// Ordem das estações na esteira.
-const CHAIN: [Role; 7] = [Role::Triage, Role::Planner, Role::Approval, Role::Implementer, Role::Reviewer, Role::Tester, Role::Reporter];
-
-/// A estação seguinte a `from` (o começo, sem `from`) que não foi desligada.
+/// A estação seguinte a `from` (o começo, sem `from`) que não foi desligada, na ordem de `Role::ALL`.
 fn forward(from: Option<Role>, skipped: &[Role]) -> Next {
-    let start = from.and_then(|r| CHAIN.iter().position(|c| *c == r)).map_or(0, |i| i + 1);
-    match CHAIN[start..].iter().find(|r| !skipped.contains(r)) {
+    let start = from.and_then(|r| Role::ALL.iter().position(|c| *c == r)).map_or(0, |i| i + 1);
+    match Role::ALL[start..].iter().find(|r| !skipped.contains(r)) {
         Some(Role::Approval) => Next::AskApproval,
         Some(role) => Next::Run(*role),
         None => Next::Finish(RunStatus::Done, None),
@@ -559,6 +567,7 @@ mod tests {
             branch: Some("lume/esteira-loja-1".into()),
             rounds: 0,
             skipped: vec![],
+            agents: BTreeMap::new(),
             budget_minutes: 60,
             note: None,
             created_at: 0,

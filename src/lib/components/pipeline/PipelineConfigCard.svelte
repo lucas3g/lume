@@ -11,7 +11,10 @@
   }
   let { projectId, onnavigate }: Props = $props();
 
-  let config = $state<PipelineConfig>({ agents: {}, skipped: [] });
+  const EMPTY: PipelineConfig = { agents: {}, skipped: [] };
+  let config = $state<PipelineConfig>(EMPTY);
+  /** Projeto cuja configuração está carregada; até chegar a nova, nada é salvo. */
+  let loadedFor = $state<string | null>(null);
   let error = $state<string | null>(null);
 
   const bots = STATIONS.filter((s) => !s.gate);
@@ -19,16 +22,37 @@
   $effect(() => {
     const id = projectId;
     error = null;
-    void api.pipelineConfig(id).then((c) => {
-      if (id === projectId) config = c;
-    });
+    loadedFor = null;
+    config = EMPTY;
+    api.pipelineConfig(id).then(
+      (c) => {
+        if (id !== projectId) return;
+        config = c;
+        loadedFor = id;
+      },
+      (e) => {
+        if (id === projectId) error = errorMessage(e);
+      },
+    );
   });
 
+  /** Conta os salvamentos: só a resposta do mais recente substitui o que está na tela. */
+  let saves = 0;
+
   async function save(next: PipelineConfig) {
+    const id = projectId;
+    if (loadedFor !== id) return;
     error = null;
+    // Mostra a mudança na hora, para que a próxima mudança parta dela e não a desfaça.
+    const previous = $state.snapshot(config);
+    const mine = ++saves;
+    config = next;
     try {
-      config = await api.savePipelineConfig(projectId, next);
+      const saved = await api.savePipelineConfig(id, next);
+      if (id === projectId && mine === saves) config = saved;
     } catch (e) {
+      if (id !== projectId) return;
+      if (mine === saves) config = previous;
       error = errorMessage(e);
     }
   }

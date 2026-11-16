@@ -41,7 +41,8 @@
   $effect(() => {
     const id = projectId;
     config = null;
-    if (id) void api.pipelineConfig(id).then((c) => id === projectId && (config = c));
+    // Sem a configuração o formulário só deixa de mostrar o resumo; a execução lê a dela no servidor.
+    if (id) api.pipelineConfig(id).then((c) => id === projectId && (config = c), () => {});
   });
   const assigned = $derived(
     config ? (Object.entries(config.agents) as [PipelineRole, string][]).map(([role, id]) => `${STATION[role].name}: ${agentName(id) ?? "?"}`) : [],

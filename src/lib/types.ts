@@ -389,6 +389,8 @@ export interface PipelineRun {
   rounds: number;
   /** Etapas desligadas no projeto quando a execução começou. */
   skipped: PipelineRole[];
+  /** Agente de cada papel quando a execução começou; `model` nulo usa o modelo padrão do papel. */
+  agents: Partial<Record<PipelineRole, { id: string; name: string; model: string | null }>>;
   budget_minutes: number;
   note: string | null;
   created_at: number;
@@ -415,8 +417,6 @@ export interface PipelineDetail extends PipelineRun {
   commit_message: string | null;
   /** Voltas máximas do Implementador antes de a esteira parar. */
   max_rounds: number;
-  /** Nome do agente de cada papel no projeto. */
-  agents: Partial<Record<PipelineRole, string>>;
 }
 
 /** Como a esteira roda num projeto: agente (id) de cada papel e etapas desligadas. */

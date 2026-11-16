@@ -14,7 +14,7 @@ use crate::domain::{
     chat::{Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
-        suggested_commit, Next, PipelineConfig, PipelineRun, Role, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -67,8 +67,6 @@ pub struct RunDetail {
     pub commit_message: Option<String>,
     /// Voltas máximas do Implementador antes de a esteira parar.
     pub max_rounds: i64,
-    /// Nome do agente de cada papel no projeto.
-    pub agents: BTreeMap<Role, String>,
 }
 
 /// Resposta final de um bot: a última mensagem do assistente depois do pedido.
@@ -100,17 +98,22 @@ impl ManagePipelines {
             .rev()
             .find(|s| s.role == Role::Reporter && s.status == StageStatus::Done)
             .and_then(|s| s.output.as_deref().and_then(suggested_commit));
-        let agents = self.role_agents(&run.project_id)?.into_iter().map(|(role, agent)| (role, agent.name)).collect();
-        Ok(RunDetail { agents, max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+        Ok(RunDetail { max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
     }
 
     /// Como a esteira roda no projeto; sem configuração, todos os papéis com as regras padrão.
+    /// Agentes apagados saem da resposta, para que salvar de novo não esbarre neles.
     pub fn config(&self, project_id: &str) -> AppResult<PipelineConfig> {
-        Ok(self
-            .settings
+        let agents = self.role_agents(project_id)?.into_iter().map(|(role, agent)| (role, agent.id)).collect();
+        Ok(PipelineConfig { agents, ..self.stored_config(project_id) })
+    }
+
+    /// A configuração como foi gravada, sem conferir se os agentes ainda existem.
+    fn stored_config(&self, project_id: &str) -> PipelineConfig {
+        self.settings
             .text(&format!("{CONFIG_PREFIX}{project_id}"))
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default())
+            .unwrap_or_default()
     }
 
     pub fn save_config(&self, project_id: &str, mut config: PipelineConfig) -> AppResult<PipelineConfig> {
@@ -129,7 +132,7 @@ impl ManagePipelines {
     /// Agentes da configuração que ainda existem (um agente apagado volta às regras padrão).
     fn role_agents(&self, project_id: &str) -> AppResult<BTreeMap<Role, crate::domain::extension::Agent>> {
         let mut out = BTreeMap::new();
-        for (role, id) in self.config(project_id)?.agents {
+        for (role, id) in self.stored_config(project_id).agents {
             if let Some(agent) = self.agents.get(&id)? {
                 out.insert(role, agent);
             }
@@ -159,7 +162,12 @@ impl ManagePipelines {
         if jira_key.is_none() && request.is_empty() && title.chars().count() < 12 {
             return Err(AppError("Descreva o que os bots devem fazer.".into()));
         }
-        let skipped = self.config(&project.id)?.skipped;
+        let skipped = self.stored_config(&project.id).skipped;
+        let agents = self
+            .role_agents(&project.id)?
+            .into_iter()
+            .map(|(role, a)| (role, RunAgent { id: a.id, name: a.name, model: a.model }))
+            .collect();
         let id = self.ids.new_id();
         let (mode, workdir, branch) = if project.versioned {
             let (path, branch) = self.create_worktree(&folder, &branch_slug(jira_key.as_deref(), &id))?;
@@ -180,6 +188,7 @@ impl ManagePipelines {
             branch,
             rounds: 0,
             skipped,
+            agents,
             budget_minutes: input.budget_minutes.filter(|m| *m > 0).unwrap_or(DEFAULT_BUDGET_MINUTES),
             note: None,
             created_at: now,
@@ -270,7 +279,10 @@ impl ManagePipelines {
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
         // O agente do papel soma as instruções, o modelo e as skills dele às regras fixas do papel.
-        if let Some(agent) = self.role_agents(&run.project_id)?.get(&role) {
+        // O agente é o escolhido quando a execução começou; se foi apagado depois, vale a regra padrão.
+        if let Some(agent) = run.agents.get(&role)
+            && self.agents.get(&agent.id)?.is_some()
+        {
             self.conversations.set_agent(&conversation_id, Some(&agent.id))?;
         }
         // A volta do Implementador é o número de passagens dele antes desta.
@@ -622,6 +634,8 @@ mod tests {
 
         let run = uc.start(StartInput { title: "Corrigir o cálculo do frete".into(), ..input(Some("loja-9")) }).unwrap();
         assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::Reporter]);
+        // Mudar o projeto depois de começar não muda a execução.
+        uc.save_config("p1", PipelineConfig::default()).unwrap();
         let bots = Bots::new(vec![Ok("plano")]);
         uc.advance(&run.id, &bots).await.unwrap();
         assert!(bots.prompts.lock().unwrap()[0].contains("Não houve triagem"), "o Planejador lê o Jira sozinho");
@@ -631,11 +645,17 @@ mod tests {
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!(detail.run.status, RunStatus::Done);
         assert_eq!(roles(&uc, &run.id), [("planner", "done"), ("approval", "done"), ("implementer", "done"), ("reviewer", "done")]);
-        assert_eq!(detail.agents.get(&Role::Reviewer).map(String::as_str), Some("Revisor rigoroso"));
+        assert_eq!(detail.run.agents.get(&Role::Reviewer).map(|a| a.name.as_str()), Some("Revisor rigoroso"));
         let reviewer = detail.stages.iter().find(|s| s.role == Role::Reviewer).unwrap();
         assert_eq!(world.conversation(&reviewer.conversation_id).agent_id.as_deref(), Some("a1"));
         let implementer = detail.stages.iter().find(|s| s.role == Role::Implementer).unwrap();
         assert_eq!(world.conversation(&implementer.conversation_id).agent_id, None);
+
+        // Agente apagado: sai da configuração e salvar de novo não esbarra nele.
+        AgentRepository::delete(&*world.store, "a1").unwrap();
+        let config = uc.config("p1").unwrap();
+        assert!(config.agents.is_empty());
+        uc.save_config("p1", PipelineConfig { skipped: vec![Role::Triage], ..config }).unwrap();
     }
 
     #[tokio::test]
