@@ -164,7 +164,12 @@
     let d: string;
     let back = false;
     let label = fromIdx < 0 ? "task" : (FORWARD_LABEL[latest.role] ?? "");
-    if (fromIdx > toIdx && before) {
+    if (before?.role === "feedback") {
+      // Reaberta com o seu ajuste: o trabalho volta do fim da esteira ao Implementador.
+      back = true;
+      d = line(geo.w - 6, geo.x[latest.role]);
+      label = "seu ajuste";
+    } else if (fromIdx > toIdx && before) {
       back = true;
       const key = before.role === "approval" ? "plan" : before.role === "tester" ? "test" : "review";
       d = arcD(key);

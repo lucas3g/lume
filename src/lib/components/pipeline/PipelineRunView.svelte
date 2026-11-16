@@ -29,6 +29,9 @@
   let feedback = $state("");
   let commitMessage = $state("");
   let committed = $state(false);
+  /** Reabrir uma execução concluída com um ajuste. */
+  let reopening = $state(false);
+  let adjustment = $state("");
   /** Estação aberta no painel; `follow` acompanha a etapa ativa. */
   let panelRole = $state<PipelineRole | null>(null);
   let panelStageId = $state<string | null>(null);
@@ -122,7 +125,7 @@
 
   const accountName = (id: string | null) => accounts.list.find((a) => a.id === id)?.name ?? null;
   function stageAccount(stage: StageRun): string {
-    if (stage.role === "approval") return "você";
+    if (stage.role === "approval" || stage.role === "feedback") return "você";
     const live = stage.status === "running" ? chat.turns[stage.conversation_id]?.account : null;
     const name = live ?? accountName(stageAccountId(pipelines.messages[stage.conversation_id] ?? []));
     const swapped = switchedAccount(pipelines.messages[stage.conversation_id] ?? []);
@@ -171,6 +174,14 @@
   const cancelRun = () => act(async () => {
     confirmCancel = false;
     await api.cancelPipeline(detail.id);
+  });
+  const reopen = () => act(async () => {
+    if (!adjustment.trim()) return;
+    await api.reopenPipeline(detail.id, adjustment.trim());
+    adjustment = "";
+    reopening = false;
+    committed = false;
+    follow = true;
   });
   const retry = () => act(async () => {
     await api.retryPipeline(detail.id);
@@ -357,7 +368,24 @@
             <div class="row-w acts">
               <button type="button" class="btn" onclick={() => select("implementer")}>Ver alterações</button>
               <button type="button" class="btn" onclick={() => select("reporter")}>Ver relatório</button>
+              <button type="button" class="btn" aria-expanded={reopening} onclick={() => (reopening = !reopening)}>Reabrir com um ajuste</button>
             </div>
+            {#if reopening}
+              <div class="adjust">
+                <label class="label" for="pl-adjust">O que não funcionou ao testar</label>
+                <textarea id="pl-adjust" class="input area" rows="3" bind:value={adjustment}
+                  placeholder="Ex.: o botão Exportar gera o arquivo vazio quando a conversa tem imagens."
+                  onkeydown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && reopen()}></textarea>
+                <div class="row-w">
+                  <button type="button" class="btn primary small" disabled={busy || !adjustment.trim()} onclick={reopen}>Enviar aos bots</button>
+                  <button type="button" class="btn small" onclick={() => (reopening = false)}>Voltar</button>
+                </div>
+                <p class="muted small">
+                  O Implementador corrige a partir do seu texto, o Revisor e o Testador conferem de novo e o Relator comenta na
+                  {detail.jira_key ? ` mesma task ${detail.jira_key}` : " task do Jira (sem criar outra, se ela já existir)"}.
+                </p>
+              </div>
+            {/if}
           {:else if detail.status === "needs_info"}
             <div class="o-top"><span class="pill bad">Precisa de informação</span><h2>A Triagem achou a task vaga demais para seguir</h2></div>
             <div class="o-body md">{@html renderMarkdown(passes.triage.at(-1)?.output ?? "")}</div>
@@ -406,7 +434,7 @@
           </div>
           <div class="p-meta">
             {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelModel}modelo <b>{panelModel}</b> · {:else if panelStation.model}{panelStation.model.toLowerCase()} · {/if}{panelStation.perm}
-            {#if panelStage && panelStage.role !== "approval"} · conta <b>{stageAccount(panelStage)}</b>{/if}
+            {#if panelStage && panelStage.role !== "approval" && panelStage.role !== "feedback"} · conta <b>{stageAccount(panelStage)}</b>{/if}
             {#if panelStage} · <span class="mono">{duration(stageSeconds(panelStage))}</span>{/if}
           </div>
           {#if passes[panelStation.role].length > 1 || (!follow && latest)}
@@ -435,6 +463,7 @@
               <p class="ask">{@html icon("you", 13)}<span>A etapa pede sua autorização para usar uma ferramenta.</span>
                 <button type="button" class="btn small" onclick={() => openStageConversation(panelStage.conversation_id)}>Abrir para autorizar</button></p>
             {/if}
+            {#if panelStage.role !== "feedback"}
             <details class="entry" bind:open={entryOpen}>
               <summary><h3 class="label">Entrada</h3><span class="res">{inputSummary(panelStage, detail)}</span>{@html icon("chev", 13, 2.2)}</summary>
               {#if images.length && ["triage", "planner", "implementer"].includes(panelStage.role)}
@@ -450,7 +479,8 @@
                 <pre class="prompt">{panelStage.input}</pre>
               {/if}
             </details>
-            {#if panelStage.role !== "approval"}
+            {/if}
+            {#if panelStage.role !== "approval" && panelStage.role !== "feedback"}
               <section>
                 <h3 class="label">{panelStage.status === "running" ? "Agora" : "O que fez"}</h3>
                 <ol class="tlog" bind:this={logEl} onscroll={onLogScroll}>
@@ -466,7 +496,7 @@
               </section>
             {/if}
             <section>
-              <h3 class="label">Saída</h3>
+              <h3 class="label">{panelStage.role === "feedback" ? "O que você pediu" : "Saída"}</h3>
               {#if panelStage.output}
                 {#if panelStage.status === "failed"}<p class="failed">{panelStage.output}</p>{:else}<div class="md">{@html renderMarkdown(panelStage.output)}</div>{/if}
               {:else}

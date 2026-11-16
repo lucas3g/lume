@@ -371,7 +371,7 @@ export const SCOPE_ALL = "all";
 
 // ---- esteira de bots
 
-export type PipelineRole = "triage" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "reporter";
+export type PipelineRole = "triage" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "reporter" | "feedback";
 export type PipelineStatus = "running" | "awaiting_approval" | "needs_info" | "done" | "failed" | "cancelled";
 export type StageStatus = "running" | "done" | "returned" | "failed" | "cancelled";
 

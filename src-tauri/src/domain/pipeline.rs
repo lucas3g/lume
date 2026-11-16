@@ -27,9 +27,12 @@ pub enum Role {
     Reporter,
     /// Parada em que o usuário aprova o plano ou pede ajustes; não é um bot.
     Approval,
+    /// Ajuste que o usuário pediu ao reabrir uma execução concluída; não é uma estação.
+    Feedback,
 }
 
 impl Role {
+    /// Estações, na ordem da esteira.
     pub const ALL: [Role; 7] =
         [Role::Triage, Role::Planner, Role::Approval, Role::Implementer, Role::Reviewer, Role::Tester, Role::Reporter];
 
@@ -39,7 +42,7 @@ impl Role {
 
     /// Papéis feitos por bots (que podem ter um agente).
     pub fn is_bot(self) -> bool {
-        self != Role::Approval
+        !matches!(self, Role::Approval | Role::Feedback)
     }
 
     pub fn key(self) -> &'static str {
@@ -51,11 +54,12 @@ impl Role {
             Role::Tester => "tester",
             Role::Reporter => "reporter",
             Role::Approval => "approval",
+            Role::Feedback => "feedback",
         }
     }
 
     pub fn parse(key: &str) -> Option<Role> {
-        Role::ALL.into_iter().find(|r| r.key() == key)
+        Role::ALL.into_iter().chain([Role::Feedback]).find(|r| r.key() == key)
     }
 
     pub fn label(self) -> &'static str {
@@ -67,13 +71,14 @@ impl Role {
             Role::Tester => "Testador",
             Role::Reporter => "Relator",
             Role::Approval => "Sua aprovação",
+            Role::Feedback => "Seu ajuste",
         }
     }
 
     /// Nível de modelo do papel: leitura rápida no rápido, raciocínio e código no forte.
     pub fn tier(self) -> Tier {
         match self {
-            Role::Triage | Role::Reporter | Role::Approval => Tier::Fast,
+            Role::Triage | Role::Reporter | Role::Approval | Role::Feedback => Tier::Fast,
             Role::Tester => Tier::Balanced,
             Role::Planner | Role::Implementer | Role::Reviewer => Tier::Strong,
         }
@@ -448,6 +453,13 @@ pub struct StageContext {
     pub diff: Option<String>,
     pub review: Option<String>,
     pub tests: Option<String>,
+    /// Ajuste mais recente que o usuário pediu ao reabrir a execução concluída.
+    pub user_feedback: Option<String>,
+}
+
+/// O ajuste que o usuário pediu, como parte do objetivo (para Revisor e Testador).
+fn adjustment(ctx: &StageContext) -> String {
+    ctx.user_feedback.as_deref().map(|f| format!("Ajuste pedido pelo usuário depois de testar: {f}\n")).unwrap_or_default()
 }
 
 /// Prompt de uma etapa. Cada papel recebe só o que precisa.
@@ -500,8 +512,16 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 .as_deref()
                 .map(|r| format!("\nO trabalho foi devolvido. Corrija estes problemas, sem refazer o que já está certo:\n<problemas>\n{r}\n</problemas>\n"))
                 .unwrap_or_default();
+            let adjust = ctx
+                .user_feedback
+                .as_deref()
+                .map(|f| format!(
+                    "\nO plano já foi executado e entregue. Depois, o usuário testou manualmente e pediu este ajuste; ele é a \
+                     prioridade agora. Mude só o necessário para atendê-lo, sem refazer o que já funciona:\n<ajuste_do_usuario>\n{f}\n</ajuste_do_usuario>\n"
+                ))
+                .unwrap_or_default();
             format!(
-                "{task}\n<plano_aprovado>\n{}\n</plano_aprovado>\n{returned}\nExecute o plano aprovado. Siga o estilo do código existente. \
+                "{task}\n<plano_aprovado>\n{}\n</plano_aprovado>\n{adjust}{returned}\nExecute o plano aprovado. Siga o estilo do código existente. \
                  Termine com um resumo do que mudou, arquivo por arquivo.",
                 ctx.plan.as_deref().unwrap_or("")
             )
@@ -515,21 +535,27 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 ),
             };
             format!(
-                "Objetivo da task: {}\n\n{diff}\n\nRevise a alteração sem ver o raciocínio de quem a fez. Procure bugs, casos não \
+                "Objetivo da task: {}\n{}\n{diff}\n\nRevise a alteração sem ver o raciocínio de quem a fez. Procure bugs, casos não \
                  tratados, segurança e desvios do estilo do projeto. Não altere nada.\n\
                  Liste os problemas que precisam de correção (ignore gosto pessoal). Termine com `VEREDITO: APROVADO` \
                  ou `VEREDITO: DEVOLVIDO`.",
-                run.title
+                run.title,
+                adjustment(ctx)
             )
         }
         Role::Tester => format!(
-            "Objetivo da task: {}\n\nRode as verificações do projeto (tipos, testes, lint; ex.: as do README, package.json, \
+            "Objetivo da task: {}\n{}\nRode as verificações do projeto (tipos, testes, lint; ex.: as do README, package.json, \
              Cargo.toml) na pasta de trabalho. Não corrija código: só relate.\nResponda com cada comando, o resultado e os erros \
              relevantes. Termine com `VEREDITO: APROVADO` se tudo passou ou `VEREDITO: DEVOLVIDO` se algo falhou por causa da alteração.",
-            run.title
+            run.title,
+            adjustment(ctx)
         ),
-        Role::Approval => String::new(),
+        Role::Approval | Role::Feedback => String::new(),
         Role::Reporter => {
+            let round = match &ctx.user_feedback {
+                Some(f) => format!("Esta é uma rodada de ajuste pedida pelo usuário depois da entrega ({f}). O relatório e o comentário falam do que foi ajustado.\n"),
+                None => String::new(),
+            };
             let jira = match &run.jira_key {
                 Some(key) => format!(
                     "Comente na task {key} do Jira (conector do Atlassian) um relatório curto do que foi feito e, se existir \
@@ -551,7 +577,7 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 },
             };
             format!(
-                "{task}\n<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n\n\
+                "{task}\n{round}<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n\n\
                  {jira}\nNão faça commit nem push. Responda com o relatório final e uma sugestão de mensagem de commit em uma linha \
                  na última linha, no formato `COMMIT: <mensagem>`.",
                 ctx.plan.as_deref().unwrap_or(""),
@@ -632,9 +658,16 @@ fn effective(stages: &[StageRun]) -> impl Iterator<Item = &StageRun> {
     stages.iter().filter(|s| !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled))
 }
 
+/// Etapas desde o último ajuste pedido pelo usuário (todas, se ele não reabriu a execução):
+/// cada reabertura começa uma contagem de voltas nova.
+fn current_cycle(stages: &[StageRun]) -> &[StageRun] {
+    let start = stages.iter().rposition(|s| s.role == Role::Feedback).map_or(0, |i| i + 1);
+    &stages[start..]
+}
+
 /// Passagens do Implementador que contam (as que falharam ou foram canceladas são refeitas).
 pub fn implementer_passes(stages: &[StageRun]) -> i64 {
-    effective(stages).filter(|s| s.role == Role::Implementer).count() as i64
+    effective(current_cycle(stages)).filter(|s| s.role == Role::Implementer).count() as i64
 }
 
 /// Voltas já feitas: passagens do Implementador além da primeira.
@@ -669,6 +702,8 @@ pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
         ),
         Role::Reviewer | Role::Tester if returned => Next::Run(Role::Implementer),
         Role::Reporter => Next::Finish(RunStatus::Done, None),
+        // Reaberta com um ajuste: volta ao Implementador, sem replanejar.
+        Role::Feedback => Next::Run(Role::Implementer),
         role => forward(Some(role), skipped),
     }
 }
@@ -687,6 +722,7 @@ pub fn context_for(stages: &[StageRun]) -> StageContext {
         diff: None,
         review: latest(Role::Reviewer),
         tests: latest(Role::Tester),
+        user_feedback: latest(Role::Feedback),
     }
 }
 
@@ -705,7 +741,7 @@ pub fn finished_status(role: Role, output: &str) -> StageStatus {
 pub fn spent_seconds(stages: &[StageRun], now: i64) -> i64 {
     stages
         .iter()
-        .filter(|s| s.role != Role::Approval)
+        .filter(|s| !matches!(s.role, Role::Approval | Role::Feedback))
         .map(|s| s.finished_at.unwrap_or(now) - s.started_at)
         .sum()
 }

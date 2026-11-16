@@ -737,6 +737,14 @@ pub fn decide_pipeline_plan(app: App<'_>, id: String, feedback: Option<String>) 
     Ok(())
 }
 
+/// Reabre uma execução concluída com o ajuste que o usuário encontrou ao testar.
+#[tauri::command]
+pub fn reopen_pipeline(app: App<'_>, id: String, feedback: String) -> AppResult<()> {
+    app.pipelines.reopen(&id, &feedback)?;
+    app.spawn_pipeline(id);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn cancel_pipeline(app: App<'_>, id: String) -> AppResult<()> {
     app.pipelines.cancel(&id, &Bots(Arc::clone(&app)))

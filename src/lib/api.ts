@@ -107,6 +107,7 @@ export const api = {
     invoke<PipelineRun>("start_pipeline", input),
   pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),
   decidePipelinePlan: (id: string, feedback: string | null) => invoke<void>("decide_pipeline_plan", { id, feedback }),
+  reopenPipeline: (id: string, feedback: string) => invoke<void>("reopen_pipeline", { id, feedback }),
   cancelPipeline: (id: string) => invoke<void>("cancel_pipeline", { id }),
   retryPipeline: (id: string) => invoke<void>("retry_pipeline", { id }),
   commitPipeline: (id: string, message: string) => invoke<void>("commit_pipeline", { id, message }),

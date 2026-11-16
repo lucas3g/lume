@@ -50,7 +50,14 @@ export const TIERS: { tier: Tier; label: string }[] = [
 /** Etapas que o projeto pode desligar; as demais garantem plano aprovado e código revisado. */
 export const OPTIONAL_ROLES: PipelineRole[] = ["triage", "tester", "reporter"];
 
-export const STATION = Object.fromEntries(STATIONS.map((s) => [s.role, s])) as Record<PipelineRole, Station>;
+/** Ajuste que você pede ao reabrir uma execução concluída; aparece no registro, não na esteira. */
+export const FEEDBACK_STEP: Station = {
+  role: "feedback", name: "Seu ajuste", model: null, tier: null, perm: "você pediu", gate: true,
+  does: "Depois de testar o que foi entregue, você descreve o que não funcionou e a esteira volta ao Implementador.",
+  receives: "A execução concluída.", delivers: "O que precisa mudar.",
+};
+
+export const STATION = Object.fromEntries([...STATIONS, FEEDBACK_STEP].map((s) => [s.role, s])) as Record<PipelineRole, Station>;
 
 /** Estado visual de uma estação. */
 export type Visual = "waiting" | "working" | "done" | "returned" | "failed" | "skipped" | "you";
@@ -114,6 +121,7 @@ export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual;
       if (role === "approval") return { visual: "you", label: "Esperando você" };
       return asking ? { visual: "you", label: "Pede autorização" } : { visual: "working", label: "Trabalhando" };
     case "done":
+      if (role === "feedback") return { visual: "you", label: "Ajuste pedido" };
       if (role === "approval") return { visual: "done", label: "Aprovado" };
       if (role === "reviewer" || role === "tester") return { visual: "done", label: "Aprovou" };
       return { visual: "done", label: "Concluída" };
@@ -130,7 +138,7 @@ export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual;
 
 /** Etapas de cada papel, na ordem em que rodaram. */
 export function passesByRole(detail: PipelineDetail): Record<PipelineRole, StageRun[]> {
-  const out = Object.fromEntries(STATIONS.map((s) => [s.role, [] as StageRun[]])) as Record<PipelineRole, StageRun[]>;
+  const out = Object.fromEntries([...STATIONS, FEEDBACK_STEP].map((s) => [s.role, [] as StageRun[]])) as Record<PipelineRole, StageRun[]>;
   for (const stage of detail.stages) out[stage.role].push(stage);
   return out;
 }
@@ -152,10 +160,13 @@ export function inputSummary(stage: StageRun, detail: PipelineDetail): string {
       if (stage.input.includes("<ajustes>")) return "Plano + seus ajustes";
       return stage.input.includes("<triagem>") ? "Task + triagem" : "Task (sem triagem)";
     case "approval": return "Plano";
-    case "implementer": return stage.input.includes("<problemas>") ? "Problemas apontados" : "Plano aprovado";
+    case "implementer":
+      if (stage.input.includes("<problemas>")) return "Problemas apontados";
+      return stage.input.includes("<ajuste_do_usuario>") ? "Seu ajuste" : "Plano aprovado";
     case "reviewer": return stage.input.includes("<diff>") ? "Só o diff" : "Resumo do Implementador";
     case "tester": return "Alterações aprovadas";
     case "reporter": return "Plano, implementação, revisão e testes";
+    case "feedback": return "Seu teste";
   }
 }
 
@@ -166,6 +177,7 @@ export function outputSummary(stage: StageRun): string {
   if (stage.status === "running") return stage.role === "approval" ? "esperando você" : "trabalhando…";
   if (stage.status === "cancelled") return "Cancelada por você";
   if (stage.role === "approval") return stage.status === "done" ? "Aprovado por você" : "Ajustes pedidos";
+  if (stage.role === "feedback") return firstLine(stage.output ?? "") || "Ajuste pedido";
   const text = stage.output ?? "";
   if (stage.status === "failed") return firstLine(text) || "Falhou";
   const verdict = text.match(VERDICT_LINE)?.[0].replace(/[*`_]/g, "").trim();

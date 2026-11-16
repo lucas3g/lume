@@ -531,6 +531,45 @@ impl ManagePipelines {
         self.touch(&mut run)
     }
 
+    /// Reabre uma execução concluída com um ajuste do usuário (algo que não funcionou ao
+    /// testar): o Implementador corrige, o Revisor e o Testador conferem e o Relator comenta
+    /// na mesma task do Jira, sem criar outra. A condução recomeça com `advance`.
+    pub fn reopen(&self, run_id: &str, feedback: &str) -> AppResult<()> {
+        let mut run = self.get(run_id)?;
+        if run.status != RunStatus::Done {
+            return Err(AppError("Só dá para reabrir uma execução concluída.".into()));
+        }
+        let feedback = feedback.trim();
+        if feedback.is_empty() {
+            return Err(AppError("Descreva o que precisa mudar.".into()));
+        }
+        let stages = self.pipelines.stages(run_id)?;
+        let now = self.clock.now();
+        let stage = StageRun {
+            id: self.ids.new_id(),
+            run_id: run.id.clone(),
+            role: Role::Feedback,
+            round: 0,
+            status: StageStatus::Done,
+            conversation_id: String::new(),
+            input: String::new(),
+            output: Some(feedback.to_owned()),
+            started_at: now,
+            finished_at: Some(now),
+        };
+        self.pipelines.save_stage(&stage)?;
+        // O ajuste ganha tempo próprio: o orçamento não pode acabar antes de ele começar.
+        let spent = spent_seconds(&stages, now);
+        if spent >= run.budget_minutes * 60 {
+            run.budget_minutes = (spent + 59) / 60 + EXTRA_BUDGET_MINUTES;
+        }
+        lock(&self.cancelled).remove(run_id);
+        run.status = RunStatus::Running;
+        run.rounds = 0;
+        run.note = None;
+        self.touch(&mut run)
+    }
+
     /// Registra o resultado num commit (só na cópia isolada; a decisão é do usuário).
     pub fn commit(&self, run_id: &str, message: &str) -> AppResult<()> {
         let run = self.get(run_id)?;
@@ -784,6 +823,44 @@ mod tests {
         let done = uc.detail(&run.id).unwrap().run;
         assert_eq!(done.status, RunStatus::Done);
         assert_eq!((done.jira_key.as_deref(), done.jira_url.as_deref()), (Some("EI-6001"), Some("https://elinfo.atlassian.net/browse/EI-6001")));
+    }
+
+    #[tokio::test]
+    async fn finished_run_reopens_with_the_user_adjustment_without_a_new_jira_task() {
+        let (_world, uc, _vcs) = setup(false);
+        uc.save_config("p1", PipelineConfig {
+            jira_template: Some("https://elinfo.atlassian.net/browse/EI-5198".into()),
+            skipped: vec![Role::Triage],
+            ..Default::default()
+        })
+        .unwrap();
+        let run = uc.start(StartInput { request: "Exportar pedidos em CSV".into(), ..input(None) }).unwrap();
+        assert!(uc.reopen(&run.id, "x").is_err(), "só concluída");
+        uc.advance(&run.id, &Bots::new(vec![Ok("plano")])).await.unwrap();
+        uc.decide_plan(&run.id, None).unwrap();
+        let first = Bots::new(vec![
+            Ok("fiz"),
+            Ok("falta X\nVEREDITO: DEVOLVIDO"),
+            Ok("corrigi"),
+            Ok("VEREDITO: APROVADO"),
+            Ok("VEREDITO: APROVADO"),
+            Ok("TASK_CRIADA: https://elinfo.atlassian.net/browse/EI-6001\nCOMMIT: x"),
+        ]);
+        uc.advance(&run.id, &first).await.unwrap();
+        assert_eq!(uc.detail(&run.id).unwrap().run.rounds, 1);
+
+        assert!(uc.reopen(&run.id, "  ").is_err());
+        uc.reopen(&run.id, "O botão exporta o arquivo vazio").unwrap();
+        let again = Bots::new(vec![Ok("ajustei"), Ok("VEREDITO: APROVADO"), Ok("VEREDITO: APROVADO"), Ok("Comentei na EI-6001\nCOMMIT: y")]);
+        uc.advance(&run.id, &again).await.unwrap();
+        let prompts = again.prompts.lock().unwrap().clone();
+        assert!(prompts[0].contains("<ajuste_do_usuario>\nO botão exporta o arquivo vazio") && !prompts[0].contains("falta X"), "o Implementador recebe o ajuste, não a devolução antiga");
+        assert!(prompts[1].contains("Ajuste pedido pelo usuário depois de testar: O botão exporta o arquivo vazio"));
+        assert!(prompts[3].contains("Comente na task EI-6001") && !prompts[3].contains("crie uma no Jira"), "não cria outra task");
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!((detail.run.status, detail.run.rounds, detail.run.jira_key.as_deref()), (RunStatus::Done, 0, Some("EI-6001")));
+        let implementer_rounds: Vec<i64> = detail.stages.iter().filter(|s| s.role == Role::Implementer).map(|s| s.round).collect();
+        assert_eq!(implementer_rounds, [0, 1, 0], "a reabertura recomeça a contagem de voltas");
     }
 
     #[tokio::test]
