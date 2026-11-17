@@ -14,7 +14,7 @@ use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, created_task, found_task, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, created_task, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
         suggested_commit, fix_request, fixing_review, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -52,6 +52,8 @@ pub struct ManagePipelines {
 pub struct StartInput {
     pub project_id: String,
     pub jira_key: Option<String>,
+    /// Site do Jira de onde a task foi escolhida, para o link quando o projeto não tem modelo de task.
+    pub jira_site: Option<String>,
     pub title: String,
     pub request: String,
     pub budget_minutes: Option<i64>,
@@ -221,7 +223,13 @@ impl ManagePipelines {
         }
         let stored = self.stored_config(&project.id);
         let (skipped, jira_template, efforts) = (stored.skipped, stored.jira_template, stored.efforts);
-        let jira_url = jira_key.as_deref().and_then(|key| self.link_for(jira_template.as_deref(), key));
+        let jira_url = jira_key.as_deref().and_then(|key| {
+            self.link_for(jira_template.as_deref(), key).or_else(|| {
+                let site = input.jira_site.as_deref()?.trim_end_matches('/');
+                let (_, site) = task_ref(&format!("{site}/browse/{key}"))?;
+                Some(task_url(&site?, key))
+            })
+        });
         let agents = self
             .role_agents(&project.id)?
             .into_iter()
@@ -395,12 +403,6 @@ impl ManagePipelines {
         };
         stage.finished_at = Some(self.clock.now());
         self.pipelines.save_stage(&stage)?;
-        // O pedido veio sem task: a que a Triagem achou no Jira passa a ser a da execução,
-        // e o Relator comenta nela no fim.
-        if role == Role::Triage && run.jira_key.is_none() {
-            run.jira_key = stage.output.as_deref().and_then(found_task);
-            run.jira_url = run.jira_key.as_deref().and_then(|key| self.link_for(run.jira_template.as_deref(), key));
-        }
         // Sem task para o pedido, o Relator cria uma pelo modelo do projeto: ela passa a ser a da execução.
         if role == Role::Reporter && run.jira_key.is_none() && stage.status == StageStatus::Done
             && let Some((key, url)) = stage.output.as_deref().and_then(created_task)
@@ -749,7 +751,7 @@ mod tests {
     }
 
     fn input(jira: Option<&str>) -> StartInput {
-        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), title: String::new(), request: String::new(), budget_minutes: None, images: vec![] }
+        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), jira_site: None, title: String::new(), request: String::new(), budget_minutes: None, images: vec![] }
     }
 
     fn roles(uc: &ManagePipelines, id: &str) -> Vec<(&'static str, &'static str)> {
@@ -857,6 +859,9 @@ mod tests {
         // Mudar o projeto depois de começar não muda a execução.
         uc.save_config("p1", PipelineConfig::default()).unwrap();
         assert_eq!(run.jira_url, None, "sem modelo, o site do Jira não é conhecido");
+        let picked = uc.start(StartInput { jira_site: Some("https://loja.atlassian.net/".into()), ..input(Some("LOJA-10")) }).unwrap();
+        assert_eq!(picked.jira_url.as_deref(), Some("https://loja.atlassian.net/browse/LOJA-10"), "o site vem da lista de onde a task foi escolhida");
+        assert!(uc.start(StartInput { jira_site: Some("javascript:x".into()), ..input(Some("LOJA-11")) }).unwrap().jira_url.is_none());
         let bots = Bots::new(vec![Ok("plano")]);
         uc.advance(&run.id, &bots).await.unwrap();
         assert!(bots.prompts.lock().unwrap()[0].contains("Não houve triagem"), "o Planejador lê o Jira sozinho");
@@ -975,10 +980,10 @@ mod tests {
         assert!(detail.run.note.unwrap().contains("todas as contas no limite"));
 
         uc.retry(&run.id).unwrap();
-        let bots = Bots::new(vec![Ok("achei\nTASK: LOJA-12\nVEREDITO: CLARO"), Ok("plano")]);
+        let bots = Bots::new(vec![Ok("citou\nTASK: LOJA-12\nVEREDITO: CLARO"), Ok("plano")]);
         uc.advance(&run.id, &bots).await.unwrap();
-        assert_eq!(uc.detail(&run.id).unwrap().run.jira_key.as_deref(), Some("LOJA-12"), "a Triagem achou a task no Jira");
-        assert!(bots.prompts.lock().unwrap()[1].contains("Task do Jira: LOJA-12"));
+        assert_eq!(uc.detail(&run.id).unwrap().run.jira_key, None, "só vale a task que o usuário escolheu");
+        assert!(!bots.prompts.lock().unwrap()[1].contains("Task do Jira"));
         assert_eq!(roles(&uc, &run.id), [("triage", "failed"), ("triage", "done"), ("planner", "done"), ("approval", "running")]);
 
         // Cancelar na parada de aprovação encerra na hora.

@@ -4,6 +4,8 @@
   import { api, errorMessage } from "../api";
   import PipelineRunView from "../components/pipeline/PipelineRunView.svelte";
   import PipelineModelsCard from "../components/pipeline/PipelineModelsCard.svelte";
+  import JiraTaskPicker, { ago, typeTone, type PickedTask } from "../components/pipeline/JiraTaskPicker.svelte";
+  import { jira } from "../state/jira.svelte";
   import { formatWhen } from "../format";
   import { RUN_STATUS } from "../pipeline";
   import { dayClock } from "../state/clock.svelte";
@@ -22,6 +24,16 @@
   let title = $state("");
   let request = $state("");
   let budget = $state(90);
+  /** Task do Jira escolhida; sem ela a esteira segue só com a descrição e não consulta o Jira. */
+  let task = $state<PickedTask | null>(null);
+  let picking = $state(false);
+  /** Dados da task escolhida: os da escolha ou, para uma chave digitada, os da lista se ela aparecer depois. */
+  const taskIssue = $derived(task ? (task.issue ?? jira.issues.find((i) => i.key === task!.key) ?? null) : null);
+
+  function pick(picked: PickedTask) {
+    task = picked;
+    picking = false;
+  }
   let error = $state<string | null>(null);
   let busy = $state(false);
   let config = $state<PipelineConfig | null>(null);
@@ -53,6 +65,8 @@
 
   onMount(() => {
     void loadPipelines();
+    // A lista do Jira leva alguns segundos: já vai sendo carregada para estar pronta ao abrir o seletor.
+    void jira.ensure();
   });
 
   // Projeto padrão: o primeiro com pasta.
@@ -78,6 +92,7 @@
     projectId = draft.projectId;
     title = draft.title;
     request = draft.request;
+    task = draft.task;
     images = draft.images.map((i) => ({ ...i, preview: `data:${i.media_type};base64,${i.data}` }));
     pipelines.draft = null;
   });
@@ -89,8 +104,9 @@
     try {
       const run = await api.startPipeline({
         projectId,
-        // A Triagem procura a task no Jira a partir da descrição.
-        jiraKey: null,
+        // Só a task escolhida: sem ela, a Triagem não consulta o Jira.
+        jiraKey: task?.key ?? null,
+        jiraSite: task?.site ?? null,
         title: title.trim(),
         request: request.trim(),
         budgetMinutes: Number(budget) || null,
@@ -98,6 +114,7 @@
       });
       title = request = "";
       images = [];
+      task = null;
       await loadPipelines();
       await openPipeline(run.id);
     } catch (e) {
@@ -140,12 +157,56 @@
               <input class="input" type="number" min="10" step="10" bind:value={budget} />
             </label>
           </div>
-          <label><span>Título <span class="opt">(opcional: sem ele, vale a primeira linha da descrição)</span></span>
-            <input class="input" bind:value={title} placeholder="Ex.: Exportar conversa em Markdown" />
+          <div class="field">
+            <span class="field-label">Task do Jira <span class="opt">(opcional)</span></span>
+            {#if task}
+              {@const issue = taskIssue}
+              <div class="task-card">
+                <span class="ttype {typeTone(issue?.issue_type ?? null)}" aria-hidden="true"></span>
+                <div class="ttext">
+                  <div class="tline">
+                    <span class="key">{task.key}</span>
+                    {#if issue}<span class="tstatus {issue.category}">{issue.status}</span>{/if}
+                  </div>
+                  <strong class="tsummary">{issue?.summary ?? "Task digitada: a Triagem lê os detalhes no Jira."}</strong>
+                  {#if issue}
+                    <span class="muted small">
+                      {issue.assignee ? `Responsável: ${issue.assignee}` : "Sem responsável"}{issue.project ? ` · ${issue.project}` : ""}{issue.updated ? ` · atualizada ${ago(issue.updated)}` : ""}
+                    </span>
+                  {/if}
+                </div>
+                <div class="tactions">
+                  <button type="button" class="btn small" onclick={() => (picking = true)}>Trocar</button>
+                  <button type="button" class="btn small icon" aria-label="Seguir sem task" title="Seguir sem task" onclick={() => (task = null)}>
+                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                  </button>
+                </div>
+              </div>
+            {:else}
+              <button type="button" class="task-empty" onclick={() => (picking = true)}>
+                <span class="plus" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                </span>
+                <span class="ttext">
+                  <strong>Escolher uma task do Jira</strong>
+                  <span class="muted small">
+                    {#if jira.loading && !jira.issues.length}Carregando as tasks do conector…
+                    {:else if jira.issues.length}{jira.issues.length} tasks disponíveis{jira.issues.some((i) => i.mine) ? `, ${jira.issues.filter((i) => i.mine).length} suas` : ""}. Sem task, a esteira segue só com a descrição.
+                    {:else}Sem task, a esteira segue só com a descrição e não consulta o Jira.{/if}
+                  </span>
+                </span>
+                <svg class="chev" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+              </button>
+            {/if}
+          </div>
+          <label><span>Título <span class="opt">{task ? "(opcional: sem ele, vale a chave da task)" : "(opcional: sem ele, vale a primeira linha da descrição)"}</span></span>
+            <input class="input" bind:value={title} placeholder={taskIssue?.summary ?? "Ex.: Exportar conversa em Markdown"} />
           </label>
-          <label><span>O que fazer</span>
+          <label><span>{task ? "Observações para os bots" : "O que fazer"}{#if task}<span class="opt"> (opcional)</span>{/if}</span>
             <textarea class="input" rows="4" bind:value={request} onpaste={onPaste}
-              placeholder="Descreva o problema ou a funcionalidade, com o que conta como pronto. Cole imagens aqui (prints de tela, layouts)."></textarea>
+              placeholder={task
+                ? "Algo além do que está na task: restrições, por onde começar, o que não mexer. Cole imagens aqui."
+                : "Descreva o problema ou a funcionalidade, com o que conta como pronto. Cole imagens aqui (prints de tela, layouts)."}></textarea>
           </label>
           {#if images.length}
             <div class="thumbs" role="list" aria-label="Imagens coladas">
@@ -159,9 +220,13 @@
             <p class="muted small">Triagem, Planejador e Implementador recebem as imagens; o Revisor vê só o diff.</p>
           {/if}
           <p class="muted small">
-            {config?.skipped.includes("triage")
-              ? "A Triagem está desligada neste projeto: a esteira segue só com a descrição, sem procurar a task no Jira."
-              : "A Triagem procura no Jira a task que corresponde à descrição e a assume; o Relator comenta nela no fim. Sem task correspondente, segue só com a descrição."}
+            {#if task}
+              {config?.skipped.includes("triage")
+                ? `A Triagem está desligada neste projeto: o Planejador lê a ${task.key} no Jira; o Relator comenta nela no fim.`
+                : `A Triagem lê a ${task.key} no Jira (descrição, critérios de aceite e comentários); o Relator comenta nela no fim.`}
+            {:else}
+              Sem task escolhida, nenhum bot procura task no Jira: a esteira segue só com a descrição.
+            {/if}
           </p>
           {#if project}
             <p class="mode" class:warn={!project.versioned}>
@@ -181,10 +246,19 @@
           {/if}
           <p class="muted small">O texto da task é tratado como dado, não como instrução. Nenhum bot faz commit nem push: o commit fica com você no fim.</p>
           <div class="row">
-            <button type="submit" class="btn primary" disabled={busy || !projectId || !request.trim()}>Iniciar a esteira</button>
+            <button type="submit" class="btn primary" disabled={busy || !projectId || (!task && !request.trim())}>Iniciar a esteira</button>
           </div>
         {/if}
       </form>
+
+      <JiraTaskPicker
+        open={picking}
+        selected={task?.key ?? null}
+        onpick={pick}
+        onclear={() => { task = null; picking = false; }}
+        onclose={() => (picking = false)}
+        onconnectors={() => { picking = false; onnavigate("connectors"); }}
+      />
 
       <PipelineModelsCard />
 
@@ -216,7 +290,26 @@
   .panel .input { font-weight: 400; }
   .panel textarea { padding: 8px 12px; resize: vertical; }
   .opt { font-weight: 400; color: var(--muted); }
-  .mono-in { font-family: var(--mono); font-size: 12.5px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 13px; font-weight: 500; }
+  .task-empty { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 1px dashed var(--border-strong); border-radius: 10px; background: none; color: inherit; text-align: left; transition: border-color 0.15s, background 0.15s; }
+  .task-empty:hover { border-color: var(--accent); background: rgba(91, 106, 217, 0.06); }
+  .task-empty .plus { flex: none; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; background: rgba(91, 106, 217, 0.16); color: var(--accent-text); }
+  .task-empty strong { font-weight: 500; font-size: 13.5px; }
+  .ttext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .chev { flex: none; color: var(--muted); }
+  .task-card { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid rgba(91, 106, 217, 0.4); border-radius: 10px; background: rgba(91, 106, 217, 0.07); }
+  .ttype { flex: none; width: 4px; align-self: stretch; border-radius: 4px; background: #4b8fe0; }
+  .ttype.bug { background: #d9584f; }
+  .ttype.story { background: #5aa86b; }
+  .ttype.epic { background: #8e6ad6; }
+  .ttype.sub { background: #4aa3b8; }
+  .tline { display: flex; align-items: center; gap: 8px; }
+  .tsummary { font-weight: 500; font-size: 13.5px; line-height: 1.35; }
+  .tstatus { padding: 0 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; background: var(--surface-2); color: var(--text-2); }
+  .tstatus.doing { background: rgba(91, 106, 217, 0.18); color: var(--accent-text); }
+  .tstatus.done { background: var(--ok-bg); color: var(--ok-text); }
+  .tactions { flex: none; display: flex; gap: 6px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
   .mode { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 12.5px; color: var(--text-2); }
   .mode.warn { border-color: rgba(217, 164, 65, 0.4); background: var(--warn-bg); color: var(--warn-text); }

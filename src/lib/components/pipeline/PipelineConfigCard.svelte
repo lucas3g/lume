@@ -126,7 +126,7 @@
     <label class="grow" for={`tpl-${projectId}`}>
       <span class="name">Modelo de task do Jira</span>
       <span class="muted small">
-        Quando a Triagem não acha task para o pedido, o Relator cria uma no fim, copiando o projeto, o tipo, os campos e a
+        Quando a execução começa sem task escolhida, o Relator cria uma no fim, copiando o projeto, o tipo, os campos e a
         estrutura da descrição deste modelo, e mostra o link no relatório. Precisa do conector do Atlassian (Jira) na conta.
         Vazio: não cria.
       </span>

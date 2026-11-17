@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
-  Account, AccountConnector, Agent, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
+  Account, AccountConnector, Agent, JiraIssueList, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
   MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
@@ -106,7 +106,8 @@ export const api = {
   savePipelineModels: (models: TierModels) => invoke<TierModels>("save_pipeline_models", { models }),
   listPipelines: () => invoke<PipelineRun[]>("list_pipelines"),
   pipelineDetail: (id: string) => invoke<PipelineDetail>("pipeline_detail", { id }),
-  startPipeline: (input: { projectId: string; jiraKey: string | null; title: string; request: string; budgetMinutes: number | null; images: PastedImage[] }) =>
+  listJiraIssues: (query: string | null = null) => invoke<JiraIssueList>("list_jira_issues", { query }),
+  startPipeline: (input: { projectId: string; jiraKey: string | null; jiraSite: string | null; title: string; request: string; budgetMinutes: number | null; images: PastedImage[] }) =>
     invoke<PipelineRun>("start_pipeline", input),
   pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),
   decidePipelinePlan: (id: string, feedback: string | null) => invoke<void>("decide_pipeline_plan", { id, feedback }),

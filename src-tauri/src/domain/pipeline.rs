@@ -514,15 +514,11 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
     let task = task_block(run);
     let body = match role {
         Role::Triage => {
+            // Só a task que o usuário escolheu: sem ela, a Triagem nem consulta o Jira.
             let read = if run.jira_key.is_some() {
                 "Leia a task no Jira com o conector do Atlassian (descrição, critérios de aceite e comentários). "
             } else {
-                "Procure no Jira, com o conector do Atlassian, a task que corresponde ao pedido: busque por palavras-chave \
-                 dele (JQL com `text ~`), dando preferência às não concluídas e atribuídas ao usuário. Achando uma que \
-                 corresponde com segurança, leia-a (descrição, critérios de aceite e comentários) e use-a junto com o pedido. \
-                 Se houver várias candidatas sem uma clara, liste-as (chave e título) e termine com `VEREDITO: VAGO` para o \
-                 usuário dizer qual é. Sem task correspondente, ou sem acesso ao Jira, siga só com o pedido.\n\
-                 Antes do veredito, escreva uma linha `TASK: CHAVE-123` com a task escolhida, ou `TASK: nenhuma`.\n"
+                "Não há task do Jira para esta execução: não consulte o Jira, trabalhe só com o pedido. "
             };
             format!(
                 "{task}\n{read}Dê uma olhada rápida no código para entender onde a task se encaixa. Não altere nada.\n\
@@ -708,15 +704,6 @@ pub fn created_task(report: &str) -> Option<(String, Option<String>)> {
         let (key, site) = reply_task_ref(rest)?;
         let url = site.map(|s| task_url(&s, &key));
         Some((key, url))
-    })
-}
-
-/// Task do Jira que a Triagem achou para o pedido (linha `TASK: CHAVE-123`).
-pub fn found_task(triage: &str) -> Option<String> {
-    triage.lines().rev().find_map(|l| {
-        let l = l.trim().trim_matches(['*', '`', '_', ' ']);
-        let rest = l.get(..5).filter(|p| p.eq_ignore_ascii_case("TASK:")).map(|_| &l[5..])?;
-        reply_task_ref(rest).map(|(key, _)| key)
     })
 }
 
@@ -1242,15 +1229,11 @@ mod tests {
     }
 
     #[test]
-    fn triage_searches_jira_and_names_the_task_it_found() {
-        let prompt = stage_prompt(Role::Triage, &run(WorkMode::Direct, None), &StageContext::default());
-        assert!(prompt.contains("Procure no Jira") && prompt.contains("TASK: nenhuma"));
-        assert!(!stage_prompt(Role::Triage, &run(WorkMode::Direct, Some("LUME-1")), &StageContext::default()).contains("Procure no Jira"));
-        assert_eq!(found_task("objetivo\n**TASK: lume-142**\nVEREDITO: CLARO"), Some("LUME-142".into()));
-        assert_eq!(found_task("TASK: nenhuma\nVEREDITO: CLARO"), None);
-        assert_eq!(found_task("sem linha"), None);
-        assert_eq!(found_task("TASK: LOJA-12 — Exportar pedidos em CSV\nVEREDITO: CLARO"), Some("LOJA-12".into()), "a chave seguida do título");
-        assert_eq!(found_task("TASK: nenhuma (achei LOJA-3, mas não corresponde)"), None);
+    fn triage_reads_only_the_task_the_user_chose() {
+        let without = stage_prompt(Role::Triage, &run(WorkMode::Direct, None), &StageContext::default());
+        assert!(without.contains("não consulte o Jira") && !without.contains("JQL") && !without.contains("TASK:"));
+        let with = stage_prompt(Role::Triage, &run(WorkMode::Direct, Some("LUME-1")), &StageContext::default());
+        assert!(with.contains("Leia a task no Jira") && with.contains("Task do Jira: LUME-1"));
     }
 
     #[test]

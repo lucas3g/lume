@@ -427,6 +427,29 @@ export interface PipelineRun {
   updated_at: number;
 }
 
+/** Task do Jira listada pelo conector do Atlassian, para escolher a da esteira. */
+export interface JiraIssue {
+  key: string;
+  summary: string;
+  status: string;
+  /** Categoria do status no Jira. */
+  category: "todo" | "doing" | "done";
+  issue_type: string | null;
+  priority: string | null;
+  assignee: string | null;
+  /** Atribuída ao usuário do conector. */
+  mine: boolean;
+  project: string | null;
+  /** ISO 8601. */
+  updated: string | null;
+}
+
+export interface JiraIssueList {
+  /** Ex.: https://empresa.atlassian.net */
+  site: string | null;
+  issues: JiraIssue[];
+}
+
 export interface StageRun {
   id: string;
   run_id: string;

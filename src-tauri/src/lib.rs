@@ -95,6 +95,7 @@ pub fn run() {
             commands::save_agent,
             commands::delete_agent,
             commands::draft_agent,
+            commands::list_jira_issues,
             commands::set_conversation_agent,
             commands::list_projects,
             commands::save_project,

@@ -14,6 +14,7 @@ use crate::domain::{
     account::{Account, Provider, ProviderInfo, UsageLimit},
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
+    jira::JiraIssueList,
     history::{HistSession, HistoryStatus},
     pipeline::{PipelineConfig, PipelineRun, ReviewPick, TierModels},
     project::{MemoryFile, Project, ProjectFile},
@@ -716,12 +717,20 @@ pub fn pipeline_detail(app: App<'_>, id: String) -> AppResult<RunDetail> {
     app.pipelines.detail(&id)
 }
 
+/// Tasks do Jira pelo conector do Atlassian, para escolher a da esteira; `query` busca em todo o Jira.
+#[tauri::command]
+pub async fn list_jira_issues(app: App<'_>, query: Option<String>) -> AppResult<JiraIssueList> {
+    app.jira_issues.list(query.as_deref()).await
+}
+
 /// Cria a execução (e a cópia isolada, se o projeto tem versionamento) e põe os bots para trabalhar.
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub fn start_pipeline(
     app: App<'_>,
     project_id: String,
     jira_key: Option<String>,
+    jira_site: Option<String>,
     title: String,
     request: String,
     budget_minutes: Option<i64>,
@@ -732,7 +741,7 @@ pub fn start_pipeline(
         .into_iter()
         .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
         .collect();
-    let run = app.pipelines.start(StartInput { project_id, jira_key, title, request, budget_minutes, images })?;
+    let run = app.pipelines.start(StartInput { project_id, jira_key, jira_site, title, request, budget_minutes, images })?;
     app.spawn_pipeline(run.id.clone());
     Ok(run)
 }

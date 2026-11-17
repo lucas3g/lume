@@ -5,6 +5,7 @@ pub mod conversations;
 pub mod draft_agent;
 pub mod extensions;
 pub mod history;
+pub mod jira_issues;
 pub mod pipeline;
 pub mod ports;
 pub mod projects;

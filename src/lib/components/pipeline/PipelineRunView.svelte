@@ -230,17 +230,19 @@
   let zoomed = $state<PastedImage | null>(null);
   const imageSrc = (i: PastedImage) => `data:${i.media_type};base64,${i.data}`;
 
-  /** A task foi criada pelo Relator (a Triagem não tinha achado nenhuma). */
+  /** A task foi criada pelo Relator (a execução começou sem task). */
   const createdTask = $derived(!!detail.jira_key && /TASK_CRIADA:/i.test(passes.reporter.at(-1)?.output ?? ""));
 
   function complete() {
     // O pedido volta ao formulário com espaço para responder ao que a Triagem achou vago.
-    const task = detail.jira_key ? `Task do Jira: ${detail.jira_key}\n\n` : "";
+    // A task escolhida segue escolhida; o título igual à chave é o padrão e não precisa voltar.
+    const key = detail.jira_key;
     pipelines.draft = {
       projectId: detail.project_id,
-      title: detail.title,
-      request: `${task}${detail.request}\n\nRespostas às dúvidas da Triagem:\n- `.trimStart(),
+      title: key && detail.title === key ? "" : detail.title,
+      request: `${detail.request}\n\nRespostas às dúvidas da Triagem:\n- `.trimStart(),
       images: $state.snapshot(images),
+      task: key ? { key, site: detail.jira_url?.split("/browse/")[0] ?? null, issue: null } : null,
     };
     void openPipeline(null);
   }
