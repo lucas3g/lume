@@ -1,10 +1,8 @@
 name: Build Windows
 
-# Compila o instalador do Lume para Windows a cada push na main,
-# ou manualmente pela aba Actions.
+# Compila um instalador de teste do Lume para Windows, sem publicar versão.
+# Só roda manualmente, pela aba Actions; a publicação fica com release.yml.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

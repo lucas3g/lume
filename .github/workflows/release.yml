@@ -77,6 +77,13 @@ jobs:
       - name: Instalar dependências do frontend
         run: pnpm install --frozen-lockfile
 
+      - name: Checar tipos do frontend
+        run: pnpm check
+
+      - name: Testes do núcleo
+        working-directory: src-tauri
+        run: cargo test
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
