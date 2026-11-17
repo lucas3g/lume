@@ -15,7 +15,7 @@ use crate::domain::{
     account::{Account, Provider, ProviderInfo, UsageLimit},
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
-    jira::JiraIssueList,
+    jira::{JiraBoards, JiraIssueList},
     history::{HistSession, HistoryStatus},
     pipeline::{PipelineConfig, PipelineRun, ReviewPick, TierModels},
     project::{MemoryFile, Project, ProjectFile},
@@ -738,8 +738,14 @@ pub fn pipeline_detail(app: App<'_>, id: String) -> AppResult<RunDetail> {
 
 /// Tasks do Jira pelo conector do Atlassian, para escolher a da esteira; `query` busca em todo o Jira.
 #[tauri::command]
-pub async fn list_jira_issues(app: App<'_>, query: Option<String>) -> AppResult<JiraIssueList> {
-    app.jira_issues.list(query.as_deref()).await
+pub async fn list_jira_issues(app: App<'_>, query: Option<String>, statuses: Option<Vec<String>>) -> AppResult<JiraIssueList> {
+    app.jira_issues.list(query.as_deref(), &statuses.unwrap_or_default()).await
+}
+
+/// Quadros do Jira e as colunas de cada um, para listar as tasks de uma coluna.
+#[tauri::command]
+pub async fn list_jira_boards(app: App<'_>) -> AppResult<JiraBoards> {
+    app.jira_issues.boards().await
 }
 
 /// Cria a execução (e a cópia isolada, se o projeto tem versionamento) e põe os bots para trabalhar.

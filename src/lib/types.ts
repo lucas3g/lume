@@ -469,6 +469,27 @@ export interface JiraIssue {
   updated: string | null;
 }
 
+/** Coluna de um quadro do Jira: os status (por id) que ela junta. */
+export interface JiraColumn {
+  name: string;
+  statuses: string[];
+  category: "todo" | "doing" | "done";
+}
+
+export interface JiraBoard {
+  id: number;
+  name: string;
+  /** Chave do projeto (ex.: EI). */
+  project: string | null;
+  columns: JiraColumn[];
+}
+
+export interface JiraBoards {
+  account_id: string | null;
+  site: string | null;
+  boards: JiraBoard[];
+}
+
 export interface JiraIssueList {
   /** Conta do Claude cujo conector respondeu. */
   account_id: string | null;

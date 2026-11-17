@@ -193,7 +193,7 @@
                   <strong>Escolher uma task do Jira</strong>
                   <span class="muted small">
                     {#if jira.loading && !jira.issues.length}Carregando as tasks do conector…
-                    {:else if jira.issues.length}{jira.issues.length} tasks disponíveis{jira.issues.some((i) => i.mine) ? `, ${jira.issues.filter((i) => i.mine).length} suas` : ""}. Sem task, a esteira segue só com a descrição.
+                    {:else if jira.issues.length}{jira.issues.length} tasks {jira.currentColumn ? `em ${jira.currentColumn.name}` : "disponíveis"}. Sem task, a esteira segue só com a descrição.
                     {:else}Sem task, a esteira segue só com a descrição e não consulta o Jira.{/if}
                   </span>
                 </span>

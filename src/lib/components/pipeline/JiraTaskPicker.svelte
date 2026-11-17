@@ -60,7 +60,7 @@
 
 <script lang="ts">
   import { tick } from "svelte";
-  import { jira } from "../../state/jira.svelte";
+  import { jira, columnKey } from "../../state/jira.svelte";
   import { activeAccount } from "../../state/accounts.svelte";
 
   interface Props {
@@ -76,26 +76,10 @@
   }
   let { open: isOpen, selected, onpick, onclear, onclose, onconnectors }: Props = $props();
 
-  type Filter = "mine" | "doing" | "todo" | "done" | "all";
-  const FILTERS: { id: Filter; label: string }[] = [
-    { id: "mine", label: "Minhas" },
-    { id: "doing", label: "Em andamento" },
-    { id: "todo", label: "A fazer" },
-    { id: "done", label: "Concluídas" },
-    { id: "all", label: "Todas" },
-  ];
-  const GROUPS: { id: JiraIssue["category"]; label: string }[] = [
-    { id: "doing", label: "Em andamento" },
-    { id: "todo", label: "A fazer" },
-    { id: "done", label: "Concluídas" },
-  ];
-
   let dialog = $state<HTMLDialogElement>();
   let input = $state<HTMLInputElement>();
   let listEl = $state<HTMLDivElement>();
   let query = $state("");
-  let filter = $state<Filter>("all");
-  let project = $state("");
   let active = $state(0);
   let now = $state(Date.now());
 
@@ -103,10 +87,8 @@
     if (isOpen && !dialog?.open) {
       dialog?.showModal();
       query = "";
-      project = "";
       jira.clearSearch();
       jira.useAccount(activeAccount()?.id ?? null);
-      filter = jira.issues.some((i) => i.mine) ? "mine" : "all";
       now = Date.now();
       void jira.ensure(activeAccount()?.id ?? null);
       void tick().then(() => input?.focus());
@@ -118,32 +100,31 @@
     if (event.target === dialog) onclose();
   }
 
-  // "Minhas" vazio não serve de filtro: sem tasks do usuário, mostra todas.
-  $effect(() => {
-    if (filter === "mine" && jira.issues.length && !jira.issues.some((i) => i.mine)) filter = "all";
-  });
-
   const inSearch = $derived(jira.searchQuery !== null);
   const source = $derived(inSearch ? jira.searchResults : jira.issues);
-  const projects = $derived([...new Set(jira.issues.map((i) => i.project).filter((p): p is string => !!p))].sort());
+  const columns = $derived(jira.board?.columns ?? []);
 
   const needle = $derived(query.trim().toLowerCase());
   function matches(i: JiraIssue): boolean {
-    if (project && i.project !== project) return false;
     if (!needle) return true;
     return [i.key, i.summary, i.assignee ?? "", i.project ?? "", i.status].some((f) => f.toLowerCase().includes(needle));
-  }
-  function passes(i: JiraIssue, f: Filter): boolean {
-    if (f === "mine") return i.mine;
-    if (f === "all") return true;
-    return i.category === f;
   }
   // A busca em todo o Jira já filtrou pelo texto (inclusive descrição e comentários): o filtro local
   // por título, chave e projeto esconderia resultados certos.
   const searched = $derived(inSearch ? source : source.filter(matches));
-  const counts = $derived(Object.fromEntries(FILTERS.map((f) => [f.id, searched.filter((i) => passes(i, f.id)).length])) as Record<Filter, number>);
-  const visible = $derived(inSearch ? searched : searched.filter((i) => passes(i, filter)));
-  const groups = $derived(GROUPS.map((g) => ({ ...g, items: visible.filter((i) => i.category === g.id) })).filter((g) => g.items.length));
+  // Agrupadas pelo status, na ordem em que aparecem (uma coluna pode juntar mais de um status).
+  const groups = $derived.by(() => {
+    const byStatus = new Map<string, { id: string; label: string; category: JiraIssue["category"]; items: JiraIssue[] }>();
+    for (const issue of searched) {
+      const group = byStatus.get(issue.status) ?? { id: issue.status, label: issue.status, category: issue.category, items: [] };
+      group.items.push(issue);
+      byStatus.set(issue.status, group);
+    }
+    const list = [...byStatus.values()];
+    // Uma coluna de um status só: o grupo leva o nome da coluna, como no quadro.
+    if (!inSearch && list.length === 1 && jira.currentColumn?.statuses.length === 1) list[0].label = jira.currentColumn.name;
+    return list;
+  });
   /** Ordem da navegação pelo teclado: a mesma dos grupos. */
   const ordered = $derived(groups.flatMap((g) => g.items));
 
@@ -154,8 +135,7 @@
   // Filtro novo: volta para o topo.
   $effect(() => {
     void needle;
-    void filter;
-    void project;
+    void jira.column;
     void inSearch;
     active = 0;
   });
@@ -201,8 +181,22 @@
 
   const host = $derived(jira.site?.replace(/^https?:\/\//, "") ?? null);
   const updatedLabel = $derived(jira.fetchedAt ? ago(new Date(jira.fetchedAt).toISOString(), now) : "");
-  const loadingFirst = $derived(inSearch ? jira.searching : jira.loading && !jira.issues.length);
-  const failure = $derived(inSearch ? jira.searchError : jira.issues.length ? null : jira.error);
+  const loadingFirst = $derived(inSearch ? jira.searching : (jira.loading || (jira.boardsLoading && !jira.boards.length)) && !jira.issues.length);
+  const failure = $derived(inSearch ? jira.searchError : jira.issues.length ? null : (jira.error ?? (jira.boards.length ? null : jira.boardsError)));
+  const columnName = $derived(jira.currentColumn?.name ?? null);
+
+  function retry() {
+    if (inSearch) void jira.search(jira.searchQuery ?? "");
+    else if (!jira.boards.length && jira.boardsError) void jira.loadBoards().then(() => jira.refresh());
+    else void jira.refresh();
+  }
+
+  /** O botão de atualizar relê a coluna; sem quadros ainda, lê os quadros antes. */
+  function reload() {
+    now = Date.now();
+    if (!jira.boards.length) void jira.loadBoards().then(() => jira.refresh());
+    else void jira.refresh();
+  }
   const priorityLabel = ["Baixa", "Média", "Alta", "Crítica"];
 </script>
 
@@ -217,8 +211,8 @@
           {#if jira.loading}Atualizando…{:else if updatedLabel}Atualizada {updatedLabel}{:else}Pelo conector do Atlassian{/if}
         </p>
       </div>
-      <button type="button" class="btn icon" aria-label="Atualizar a lista" title="Atualizar a lista" disabled={jira.loading} onclick={() => { now = Date.now(); void jira.refresh(); }}>
-        <svg class:spin={jira.loading} aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>
+      <button type="button" class="btn icon" aria-label="Atualizar a lista" title="Atualizar a lista" disabled={jira.loading || jira.boardsLoading} onclick={reload}>
+        <svg class:spin={jira.loading || jira.boardsLoading} aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>
       </button>
       <button type="button" class="btn icon" aria-label="Fechar" title="Fechar" onclick={onclose}>
         <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -249,22 +243,27 @@
           <button type="button" class="link" onclick={backToList}>Voltar à lista</button>
         </div>
       {:else}
-        <div class="filters">
-          <div class="chips" role="tablist" aria-label="Filtrar por situação">
-            {#each FILTERS as f (f.id)}
-              <button type="button" role="tab" class="chip" class:on={filter === f.id} aria-selected={filter === f.id} onclick={() => (filter = f.id)}>
-                {#if f.id !== "mine" && f.id !== "all"}<span class="dot {f.id}" aria-hidden="true"></span>{/if}
-                {f.label} <span class="n">{counts[f.id]}</span>
-              </button>
-            {/each}
+        {#if columns.length || jira.boards.length > 1}
+          <div class="filters">
+            {#if jira.boards.length > 1}
+              <label class="board muted small">
+                Quadro
+                <select class="input proj" aria-label="Quadro do Jira" value={jira.boardId} onchange={(e) => jira.selectBoard(Number(e.currentTarget.value))}>
+                  {#each jira.boards as b (b.id)}<option value={b.id}>{b.name}{b.project ? ` · ${b.project}` : ""}</option>{/each}
+                </select>
+              </label>
+            {/if}
+            <div class="chips" role="tablist" aria-label="Coluna do quadro">
+              {#each columns as c (columnKey(c))}
+                {@const on = jira.column === columnKey(c)}
+                <button type="button" role="tab" class="chip" class:on aria-selected={on} title={`Tasks em ${c.name}`} onclick={() => jira.selectColumn(columnKey(c))}>
+                  <span class="dot {c.category}" aria-hidden="true"></span>
+                  {c.name}{#if on && jira.fetchedAt} <span class="n">{searched.length}</span>{/if}
+                </button>
+              {/each}
+            </div>
           </div>
-          {#if projects.length > 1}
-            <select class="input proj" aria-label="Projeto do Jira" bind:value={project}>
-              <option value="">Todos os projetos</option>
-              {#each projects as p (p)}<option value={p}>{p}</option>{/each}
-            </select>
-          {/if}
-        </div>
+        {/if}
       {/if}
     </div>
 
@@ -279,20 +278,20 @@
       {/if}
 
       {#if loadingFirst}
-        <p class="state muted small">{inSearch ? "Procurando em todo o Jira…" : "Consultando o Jira pelo conector… leva alguns segundos."}</p>
+        <p class="state muted small">{inSearch ? "Procurando em todo o Jira…" : columnName ? `Consultando as tasks em ${columnName}… leva alguns segundos.` : jira.boardsLoading ? "Lendo as colunas do seu quadro… leva alguns segundos." : "Consultando o Jira pelo conector… leva alguns segundos."}</p>
         {#each { length: 6 } as _, i (i)}<div class="row skeleton" aria-hidden="true"></div>{/each}
       {:else if failure}
         <div class="state error">
           <p>{failure}</p>
           <div class="actions">
-            <button type="button" class="btn small" onclick={() => (inSearch ? jira.search(jira.searchQuery ?? "") : jira.refresh())}>Tentar de novo</button>
+            <button type="button" class="btn small" onclick={retry}>Tentar de novo</button>
             <button type="button" class="btn small" onclick={onconnectors}>Abrir Conectores</button>
           </div>
         </div>
       {:else}
         {#each groups as group (group.id)}
           <div class="group" role="presentation">
-            <div class="ghead" role="presentation"><span class="dot {group.id}" aria-hidden="true"></span>{group.label}<span class="n">{group.items.length}</span></div>
+            <div class="ghead" role="presentation"><span class="dot {group.category}" aria-hidden="true"></span>{group.label}<span class="n">{group.items.length}</span></div>
             {#each group.items as issue (issue.key)}
               {@const index = ordered.indexOf(issue) + (typedKey ? 1 : 0)}
               {@const level = priorityLevel(issue.priority)}
@@ -320,12 +319,12 @@
                   <span class="line1">
                     <span class="key">{issue.key}</span>
                     {#if selected === issue.key}<span class="tag chosen-tag">Escolhida</span>{/if}
-                    {#if issue.project && projects.length > 1}<span class="muted small proj-name">{issue.project}</span>{/if}
+                    {#if issue.project}<span class="muted small proj-name">{issue.project}</span>{/if}
                   </span>
                   <span class="summary" title={issue.summary}>{issue.summary}</span>
                 </span>
                 <span class="meta">
-                  <span class="status {issue.category}">{issue.status}</span>
+                  {#if inSearch}<span class="status {issue.category}" title={issue.status}>{issue.status}</span>{/if}
                   <span class="sub">
                     {#if level !== null}
                       <span class="prio p{level + 1}" title={`Prioridade: ${issue.priority}`} aria-label={`Prioridade ${priorityLabel[level + 1]}`}>
@@ -352,7 +351,9 @@
                 <p>Nada no Jira com “{jira.searchQuery}”.</p>
               {:else if source.length}
                 <p>Nenhuma task com esse filtro.</p>
-                <button type="button" class="btn small" onclick={() => { query = ""; filter = "all"; project = ""; input?.focus(); }}>Limpar filtros</button>
+                <button type="button" class="btn small" onclick={() => { query = ""; input?.focus(); }}>Limpar filtro</button>
+              {:else if columnName}
+                <p>Nenhuma task em {columnName}.</p>
               {:else}
                 <p>Nenhuma task em aberto ou sua nos últimos 90 dias.</p>
               {/if}
@@ -393,13 +394,15 @@
   .search { position: relative; display: flex; align-items: center; }
   .search svg { position: absolute; left: 11px; color: var(--muted); pointer-events: none; }
   .search .input { width: 100%; padding-left: 34px; height: 38px; font-size: 14px; }
-  .filters { display: flex; align-items: center; gap: 10px; }
-  .chips { flex: 1; min-width: 0; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .filters { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+  .board { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; }
+  /* Quebram linha: todas as colunas do quadro ficam à vista, sem rolagem escondida. */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text-2); font-size: 12.5px; }
   .chip:hover { background: var(--hover); }
   .chip.on { background: var(--hover); border-color: var(--accent); color: var(--text); }
   .chip .n, .ghead .n { color: var(--muted); font-variant-numeric: tabular-nums; }
-  .proj { flex: none; width: auto; max-width: 200px; height: 28px; font-size: 12.5px; }
+  .proj { flex: none; width: auto; max-width: 260px; height: 28px; min-height: 0; padding-top: 0; padding-bottom: 0; font-size: 12.5px; }
   .searchbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; }
   .link { border: 0; background: none; padding: 0; color: var(--accent-text); font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; }
 
