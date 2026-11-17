@@ -227,6 +227,89 @@ function frames(n, dur, make) {
   return out;
 }
 
+/* Você: retrato em pixel art desenhado à mão, um caractere por pixel fino (sem Scale2x); '.' é vazio.
+   Cabeça em 3/4 olhando para a esquerda, como as outras: cabelo castanho curto com as laterais baixas (degradê),
+   barba curta acobreada cobrindo bochechas, bigode e queixo, sorriso aberto com os dentes e orelhas rosadas.
+   Camisa do Grêmio: xadrez de blocos grandes azul-celeste e branco, gola careca azul, escudo e três estrelas. */
+const YOU = {
+  pal: {
+    /* cabelo: sombra, base, luz, brilho; degradê das laterais, do escuro ao claro perto da orelha */
+    d: '#30231d', H: '#4a372d', h: '#68503f', y: '#8a6f5b', F: '#6a5244', f: '#94776a', g: '#bb9b88',
+    /* pele: luz, base, sombra, sombra funda, rubor */
+    L: '#fcdcc4', S: '#f2c6a6', s: '#dca383', z: '#c3866a', r: '#eda48e',
+    /* barba: luz, base, sombra, fios sobre a pele */
+    b: '#c98652', B: '#a9663b', D: '#844a2b', t: '#dba07a',
+    /* sobrancelha, olho fechado, dentes, boca; q é a sombra da franja na testa */
+    e: '#5e3d2c', E: '#3a2620', W: '#fbf8f1', m: '#6a2723', q: '#e9b393',
+    /* olhos abertos */
+    o: '#1a1b20', i: '#f4f5f7',
+    /* camisa: branco e sombra, celeste e sombra, gola; escudo (anel, faixa, azul) e estrelas (bronze, prata, ouro) */
+    w: '#f3f6f9', v: '#d0dae5', C: '#a9d3f2', c: '#80b0d9', K: '#2f7fc4',
+    N: '#2c3a5c', X: '#15171d', x: '#3f95e0', '1': '#d08c50', '2': '#e8ebf0', '3': '#f2c44c'
+  },
+  /* Cabeça, linhas cy-9 (topo do cabelo) a cy+10 (pescoço, até a gola), colunas cx-9 a cx+7. A luz vem do alto à
+     esquerda: franja com sombra na testa, lado do rosto e nuca mais escuros, orelha em (cx+3..cx+5, cy-1..cy+3).
+     Nos olhos fica a linha do olho fechado (E): é o que aparece quando a camada dos olhos some, na piscada. */
+  head: [
+    '.....hyyhH.......',
+    '...hhyhHhhHd.....',
+    '.hhyhHHhyhHHdd...',
+    '.hHHhHHhHHdHHdd..',
+    'HHdHHHdHHHdHHddd.',
+    'dHHdHHHdHHdFFFFFF',
+    '.qqqqqqqqqFfffFFF',
+    '.SLLLSSSSsgffffFF',
+    'SeeeSSeeeesggrrgF',
+    'SSSSSSSSSstgrzrfF',
+    'SSSSSsSSSStBrzrfF',
+    'SSEESsSEESBtSrsgF',
+    'SrrSLzSrrtBBzsgF.',
+    'ttbbBBBBttBBDDgf.',
+    'bmWWWWWmBBBDDzg..',
+    'bBBmmmBBBBDDzz...',
+    '.bbBBBBBBDDzzs...',
+    '..DBBBBDDDzzs....',
+    '.......zzzzss....',
+    '.......zssss.....'
+  ],
+  /* Camadas do rosto, com a mesma origem da cabeça: olhos abertos com brilho (linhas cy+1 e cy+2), olhos fechados
+     sorrindo (^ ^ sobre a linha do olho fechado) e, na falha, dentes cerrados por cima do sorriso. */
+  eyes: ['', '', '', '', '', '', '', '', '', '', '..io....io', '..oo....oo'],
+  happy: ['', '', '', '', '', '', '', '', '', '', '..E....EE', '.ESE..ESSE'],
+  grimace: ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '.mWWWWWm', 'BmWWWWWmB'],
+  /* Camisa, de top para baixo, colunas cx-9 a cx+8 (a mesa cobre a parte de baixo). Blocos: em cima branco, celeste,
+     branco (com as três estrelas e o escudo) e celeste; embaixo invertido. Lado direito na sombra. */
+  shirt: [
+    '...wCKsssssKwwC...',
+    '.wwwCCKsssKwwwCcc.',
+    'wwwwCCCKKKwwwwCccc',
+    'wwwwCCC1w2w3wwCccc',
+    'wwwwCCCwwwwwwwCccc',
+    'wwwwCCCwNNNwwwCccc',
+    'wwwwCCCNxWxNwwCccc',
+    'wwwwCCCNXXXNwwCccc',
+    'wwwwCCCNxWxNwwCccc',
+    'wwwwCCCwNNNwwwCccc',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv',
+    'CCCCwwwCCCCCCCwvvv'
+  ]
+};
+/* Copia um mapa desenhado à mão para a tela fina a partir de (x0, y0). */
+function blit(cv, x0, y0, rows, pal) {
+  rows.forEach((ln, j) => { for (let i = 0; i < ln.length; i++) { const c = pal[ln[i]]; if (c) cv.set(x0 + i, y0 + j, c); } });
+}
+
 /* Pessoas: uma por papel, com a roupa na cor do papel, desenhadas direto na grade fina (2x2 por px lógico) a partir
    de formas: cabeça em 3/4 virada para a esquerda (olha para sudoeste; o espelho dá sudeste), tronco com gola e um
    detalhe do papel, e braços como membros de verdade (ombro -> cotovelo -> mão), sempre presos ao ombro.
@@ -238,9 +321,8 @@ const PEOPLE = {
   reviewer: { pal: { S: '#f7dcc4', s: '#e0bea2', H: '#c9ccd4', h: '#eef0f3', C: '#dd6a83', c: '#9c4257', P: '#5d6270' }, hair: 'bun', extra: 'glasses', shirt: 'pearls' },
   tester: { pal: { S: '#e0ac7e', s: '#c48f62', H: '#15161a', h: '#34363e', C: '#8fc45a', c: '#5c8a35', P: '#4a5578' }, hair: 'short', extra: 'goggles', shirt: 'coat' },
   reporter: { pal: { S: '#a9714b', s: '#8a5a3a', H: '#3a2a20', h: '#5a4232', C: '#b377d9', c: '#7d4a9e', P: '#6b5a4a' }, hair: 'beanie', shirt: 'scarf' },
-  /* Você, na mesa de aprovação: cabelo castanho curto com as laterais baixas, barba curta acobreada, sorriso
-     aberto e a camisa do Grêmio em xadrez azul-celeste e branco, com gola azul e o escudo no peito. */
-  approval: { pal: { S: '#f2c6a6', s: '#dca383', H: '#5e4030', h: '#82604a', C: '#a9d3f2', c: '#7fb0d8', P: '#2f3646' }, hair: 'fade', extra: 'beard', shirt: 'gremio' },
+  /* Você, na mesa de aprovação: retrato desenhado à mão (YOU), no lugar das formas. hair fica para a vista de costas. */
+  approval: { pal: { S: '#f2c6a6', s: '#dca383', H: '#5e4030', h: '#82604a', C: '#a9d3f2', c: '#7fb0d8', P: '#2f3646' }, hair: 'fade', shirt: 'gremio', art: YOU },
   /* Code review: coque no alto, óculos de leitura e camisa âmbar com gravata. */
   code_review: { pal: { S: '#d29a6e', s: '#b27d53', H: '#4a2c22', h: '#7a4c3a', C: '#d9a441', c: '#9c7226', P: '#3f4a63' }, hair: 'topknot', extra: 'readers', shirt: 'tie' }
 };
@@ -272,6 +354,7 @@ function canvas() {
 /* Cabeça em 3/4 (olhando para a esquerda) com centro do crânio em (cx, cy). back: vista de costas (só cabelo,
    orelha e nuca). Os olhos ficam fora: são uma camada própria, para piscar. */
 function drawHead(cv, p, cx, cy, back) {
+  if (p.art && !back) { blit(cv, cx - 9, cy - 9, p.art.head, p.art.pal); return; }
   const S = p.pal.S, s = p.pal.s, H = p.pal.H, h = p.pal.h, Hd = shade(H, 0.35);
   /* Pescoço e crânio: calota larga em cima e queixo mais estreito, puxado para a frente. */
   /* O pescoço só preenche o vão até o tronco (não cobre a gola). */
@@ -322,16 +405,7 @@ function drawHead(cv, p, cx, cy, back) {
     /* Sobrancelhas, nariz, boca e bochechas. Os olhos ficam em (cx-6, cy+1) e (cx-1, cy+1). */
     cv.rect(cx - 7, cy - 1, cx - 5, cy - 1, Hd); cv.rect(cx - 2, cy - 1, cx, cy - 1, Hd);
     cv.set(cx - 4, cy + 3, s); cv.set(cx - 5, cy + 4, s);
-    if (p.extra === 'beard') {
-      /* Barba curta cobrindo o queixo e subindo pela costeleta; sorriso aberto com os dentes. */
-      const B = '#a8693f', Bd = '#8a5232';
-      for (let y = cy + 3; y <= cy + 8; y++) for (let x = cx - 9; x <= cx + 4; x++) {
-        const c = cv.get(x, y); if (c !== S && c !== s) continue;
-        if (y >= cy + 5 || x >= cx + 2) cv.set(x, y, (x + y) % 3 ? B : Bd);
-      }
-      cv.rect(cx - 7, cy + 4, cx - 3, cy + 4, B);
-      cv.rect(cx - 7, cy + 5, cx - 3, cy + 5, WHITE); cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, '#5a1f1f');
-    } else cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, mix(S, '#6a2420', 0.55));
+    cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, mix(S, '#6a2420', 0.55));
     cv.set(cx - 8, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 1, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 2, cy + 4, mix(S, '#ff7a7a', 0.3));
   }
   /* Acessórios. */
@@ -350,7 +424,8 @@ function drawHead(cv, p, cx, cy, back) {
   }
 }
 /* Olhos (camada própria): abertos com brilho, ou fechados e sorrindo. */
-function drawEyes(cv, cx, cy, happy) {
+function drawEyes(cv, p, cx, cy, happy) {
+  if (p.art) { blit(cv, cx - 9, cy - 9, happy ? p.art.happy : p.art.eyes, p.art.pal); return; }
   [cx - 6, cx - 1].forEach(x => {
     if (happy) { cv.set(x - 1, cy + 2, EYE); cv.set(x, cy + 1, EYE); cv.set(x + 1, cy + 2, EYE); return; }
     cv.rect(x - 1, cy + 1, x, cy + 2, EYE); cv.set(x - 1, cy + 1, WHITE);
@@ -358,6 +433,7 @@ function drawEyes(cv, cx, cy, happy) {
 }
 /* Tronco: ombros arredondados, sombra do lado de trás, gola em V e o detalhe da roupa do papel. */
 function drawTorso(cv, p, cx, top, bottom) {
+  if (p.art && p.shirt) { blit(cv, cx - 9, top, p.art.shirt.slice(0, bottom - top + 1), p.art.pal); return; }
   const C = p.pal.C, c = p.pal.c, S = p.pal.S;
   for (let y = top; y <= bottom; y++) {
     const r = y === top ? 5 : y === top + 1 ? 7 : 8;
@@ -372,29 +448,51 @@ function drawTorso(cv, p, cx, top, bottom) {
   else if (sh === 'pearls') { [[-4, 1], [-3, 2], [-1, 3], [1, 2], [2, 1]].forEach(d => cv.set(cx + d[0], top + d[1], WHITE)); }
   else if (sh === 'coat') { for (let y = top; y <= bottom; y++) { cv.set(cx - 5, y, WHITE); cv.set(cx - 4, y, '#d8dbe2'); cv.set(cx + 3, y, '#d8dbe2'); cv.set(cx + 4, y, WHITE); } cv.rect(cx + 5, top + 5, cx + 6, top + 6, '#5b6ad9'); }
   else if (sh === 'scarf') { cv.rect(cx - 5, top, cx + 4, top + 2, '#e3ba6a'); cv.rect(cx - 4, top + 3, cx - 2, top + 8, '#e3ba6a'); for (let y = top; y <= top + 8; y += 2) cv.set(cx - 3, y, '#d9645a'); }
-  else if (sh === 'gremio') {
-    /* Xadrez de blocos grandes azul-celeste e branco, mais escuro do lado de trás; gola azul e escudo. */
-    const BL = '#a9d3f2', WH = '#f3f6f9';
-    for (let y = top; y <= bottom; y++) for (let x = cx - 10; x <= cx + 9; x++) {
-      const c = cv.get(x, y); if (!c || c === S) continue;
-      const col = Math.floor((x - cx + 10) / 6), row = Math.floor((y - top) / 8), base = (col + row) % 2 ? BL : WH;
-      cv.set(x, y, x >= cx + 6 ? shade(base, 0.16) : base);
-    }
-    cv.rect(cx - 4, top, cx - 4, top + 1, '#2f7fc4'); cv.rect(cx + 2, top, cx + 2, top + 1, '#2f7fc4');
-    cv.rect(cx - 3, top + 2, cx - 3, top + 2, '#2f7fc4'); cv.rect(cx + 1, top + 2, cx + 1, top + 2, '#2f7fc4'); cv.rect(cx - 2, top + 3, cx, top + 3, '#2f7fc4');
-    cv.ell(cx + 4, top + 7, 1.9, 1.9, '#1d2a44'); cv.set(cx + 4, top + 7, '#4aa3e0'); cv.set(cx + 3, top + 6, WHITE);
-    cv.set(cx + 3, top + 4, '#e3ba6a'); cv.set(cx + 5, top + 4, '#e3ba6a');
-  }
   else if (sh === 'tie') { cv.rect(cx - 2, top + 2, cx - 1, top + 9, '#3f4a63'); cv.set(cx - 2, top + 10, '#3f4a63'); cv.rect(cx - 4, top, cx - 3, top + 1, WHITE); cv.rect(cx, top, cx + 1, top + 1, WHITE); }
 }
 /* Braço: manga do ombro ao cotovelo e até o pulso, mão na ponta; opcionalmente algo na mão (caneca). */
 function drawArm(cv, p, pts) {
+  if (p.art) { armYou(cv, p.art.pal, pts); return; }
   const C = p.pal.C, c = p.pal.c, S = p.pal.S, s = p.pal.s, end = pts[pts.length - 1];
   cv.limb(pts, 2.1, C);
   /* Sombra da manga: o lado de baixo de cada trecho. */
   cv.limb(pts.map(q => [q[0] + 0.6, q[1] + 0.9]), 1.1, (x, y) => (cv.get(x, y) === C && !(cv.get(x, y + 2) === C) ? c : cv.get(x, y)));
   cv.ell(end[0], end[1], 1.9, 1.8, S); cv.set(Math.round(end[0]), Math.round(end[1]) + 1, s);
 }
+
+/* Braço do usuário, pixel a pixel: antebraço de pele (cápsula por trecho) e manga curta do ombro até perto do
+   cotovelo, em três faixas como na camisa (celeste, branco, barra celeste). A luz vem do alto à esquerda: o lado
+   oposto de cada trecho fica na sombra, em qualquer direção. Braço levantado termina em mão aberta. */
+function armYou(cv, A, pts) {
+  const sh = pts[0], el = pts[1], end = pts[pts.length - 1], LX = -0.6, LY = -0.8;
+  /* Ponto mais próximo de (px, py) no trecho a-b: distância, deslocamento (ox, oy) e t ao longo do trecho. */
+  const near = (a, b, px, py) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / l2)), ox = px - a[0] - dx * t, oy = py - a[1] - dy * t;
+    return { d: Math.hypot(ox, oy), lit: ox * LX + oy * LY, t: t };
+  };
+  const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+  const x0 = Math.floor(Math.min.apply(null, xs)) - 3, x1 = Math.ceil(Math.max.apply(null, xs)) + 3;
+  const y0 = Math.floor(Math.min.apply(null, ys)) - 3, y1 = Math.ceil(Math.max.apply(null, ys)) + 3;
+  const L1 = Math.hypot(el[0] - sh[0], el[1] - sh[1]), cuff = 0.72;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const px = x + 0.5, py = y + 0.5;
+    let best = null;
+    for (let i = 0; i + 1 < pts.length; i++) { const q = near(pts[i], pts[i + 1], px, py); if (!best || q.d < best.d) best = q; }
+    /* Manga: só no trecho ombro-cotovelo, até cuff do comprimento (corte reto, perpendicular ao braço). */
+    const u = near(sh, el, px, py), along = u.t * L1;
+    if (u.d <= 2.4 && along <= L1 * cuff) {
+      const dark = u.lit < -0.9, band = along < L1 * cuff * 0.45 || along > L1 * cuff - 1.3;
+      cv.set(x, y, band ? (dark ? A.c : A.C) : dark ? A.v : A.w);
+    } else if (best.d <= 1.6) cv.set(x, y, best.lit < -0.45 ? A.s : A.S);
+  }
+  /* Antebraço apontando para cima (aceno, alongar, mão no rosto): mão aberta, com o polegar para o lado do corpo. */
+  const fx = end[0] - el[0], fy = end[1] - el[1];
+  if (fy < -0.6 * Math.hypot(fx, fy)) { blit(cv, Math.round(end[0]) - 2, Math.round(end[1]) - 3, sh[0] > 0 ? HAND_OPEN : HAND_OPEN.map(r => r.split('').reverse().join('')), A); return; }
+  cv.ell(end[0], end[1], 1.9, 1.8, A.S); cv.set(Math.round(end[0]), Math.round(end[1]) + 1, A.s);
+}
+/* Mão aberta de frente (polegar à esquerda), ancorada na palma: coluna 2, linha 3. */
+const HAND_OPEN = ['..S.S', '.SSSS', '.SSSS', 'SSSSs', '.SSss'];
 
 /* Poses dos braços (pontos finos relativos ao quadril, olhando para sudoeste). Ombros em L e R. */
 const SH_L = [-8, -11], SH_R = [6, -11];
@@ -424,7 +522,7 @@ function walkerSprites(role, back, carry, frame) {
     const cv = canvas();
     drawTorso(cv, back ? Object.assign({}, p, { shirt: '' }) : p, 12, 16, 27);
     drawHead(cv, p, 12, 8, back);
-    if (!back) drawEyes(cv, 12, 8, false);
+    if (!back) drawEyes(cv, p, 12, 8, false);
     if (fold) {
       drawArm(cv, p, [[4, 18], [3, 23], [6, 23]]); drawArm(cv, p, [[19, 18], [20, 23], [17, 23]]);
       cv.rect(5, 20, 18, 25, '#d9a441'); cv.rect(5, 19, 9, 19, '#e3ba6a'); cv.rect(7, 21, 16, 22, WHITE); cv.rect(5, 25, 18, 25, '#9c7226');
@@ -443,7 +541,7 @@ function seatedParts(role, v, i) {
   const arm = pts => put(cv => drawArm(cv, p, pts));
   const body = [SO('torso' + id, '', '', put(cv => { drawTorso(cv, p, 0, -14, 8); drawHead(cv, p, HEAD_C[0], HEAD_C[1], false); }))];
   const hands = [];
-  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, HEAD_C[0], HEAD_C[1], happy))));
+  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, p, HEAD_C[0], HEAD_C[1], happy))));
   /* Na mesa de aprovação não há caneca (o canto é do vaso). */
   const desk = role !== 'approval', sip = desk && v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
   if (desk) hands.push(mug(role, sip ? 'a-sipA' : '', d));
@@ -472,6 +570,7 @@ function seatedParts(role, v, i) {
     frames(2, 1.8, n => SO('stretch' + n + id, '', '', put(cv => POSE.stretch[n].forEach(a => drawArm(cv, p, a))))).forEach(s => body.push(s));
   } else if (v === 'failed') {
     cls = 'a-nod'; eyes('');
+    if (p.art) body.push(S('grimace' + id, '', '', put(cv => blit(cv, HEAD_C[0] - 9, HEAD_C[1] - 9, p.art.grimace, p.art.pal))));
     body.push(SO('facepalm' + id, '', '', arm(POSE.palmL)));
     hands.push(SO('handR' + id, '', '', arm(POSE.restR)));
   } else {
