@@ -1,16 +1,59 @@
 name: Release
 
-# Ao criar uma tag v*, publica no GitHub Releases o .dmg (macOS), o instalador
-# NSIS (Windows) e o latest.json que o updater do app consulta.
+# A cada push na main, confere a versão do app. Se ainda não existe a tag vX.Y.Z
+# dessa versão, publica no GitHub Releases o .dmg (macOS), o instalador NSIS
+# (Windows) e o latest.json que o updater do app consulta; a própria release cria
+# a tag. Para publicar, basta subir a versão: `pnpm release X.Y.Z`.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      publish: ${{ steps.read.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ler a versão e ver se já foi publicada
+        id: read
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          app=$(jq -r .version src-tauri/tauri.conf.json)
+          pkg=$(jq -r .version package.json)
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          if [ "$app" != "$pkg" ] || [ "$app" != "$crate" ]; then
+            echo "::error::Versões diferentes: tauri.conf.json=$app package.json=$pkg Cargo.toml=$crate. Use pnpm release X.Y.Z."
+            exit 1
+          fi
+          echo "version=$app" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$app" >/dev/null; then
+            echo "A v$app já foi publicada; nada a fazer."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_KEY" != "true" ]; then
+            echo "::warning::A v$app não foi publicada: falta o secret TAURI_SIGNING_PRIVATE_KEY para assinar a atualização."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versão nova: v$app."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: version
+    if: needs.version.outputs.publish == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -48,9 +91,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Lume ${{ github.ref_name }}"
+          tagName: v${{ needs.version.outputs.version }}
+          releaseName: "Lume v${{ needs.version.outputs.version }}"
           releaseBody: "Baixe o .dmg (macOS) ou o instalador .exe (Windows). Versões já instaladas atualizam sozinhas."
+          releaseCommitish: ${{ github.sha }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

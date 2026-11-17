@@ -9,7 +9,10 @@
   let error = $state<string | null>(null);
   let dismissed = $state(false);
 
+  // Primeira checagem logo depois de abrir; depois, de hora em hora, para quem
+  // deixa o app aberto o dia inteiro ver a versão nova sem precisar reabrir.
   const CHECK_DELAY_MS = 15_000;
+  const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
   async function install() {
     if (!update) return;
@@ -32,15 +35,26 @@
     }
   }
 
+  function lookForUpdate() {
+    if (progress !== null) return;
+    void check()
+      .then((found) => {
+        if (!found) return;
+        if (found.version !== update?.version) dismissed = false;
+        update = found;
+      })
+      .catch(() => {
+        /* sem rede ou sem versão publicada: silencioso */
+      });
+  }
+
   onMount(() => {
-    const timer = setTimeout(() => {
-      void check()
-        .then((found) => (update = found))
-        .catch(() => {
-          /* sem rede ou sem versão publicada: silencioso */
-        });
-    }, CHECK_DELAY_MS);
-    return () => clearTimeout(timer);
+    const first = setTimeout(lookForUpdate, CHECK_DELAY_MS);
+    const every = setInterval(lookForUpdate, CHECK_INTERVAL_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+    };
   });
 </script>
 
