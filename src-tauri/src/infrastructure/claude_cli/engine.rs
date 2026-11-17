@@ -239,6 +239,7 @@ impl ChatEngine for ClaudeCliEngine {
                 }
                 line = lines.next_line() => {
                     let Ok(Some(line)) = line else { break };
+                    let mut stop = false;
                     for event in parse_line(&line) {
                         match &event {
                             TurnEvent::Permission { request_id, input, .. } => {
@@ -263,20 +264,31 @@ impl ChatEngine for ClaudeCliEngine {
                         // com agentes em segundo plano, o usuário segue conversando enquanto eles trabalham.
                         // Quando o último termina, o CLI responde ao aviso dele e o turno fecha nesse resultado.
                         let answered = matches!(event, TurnEvent::Result { .. }) && unread.is_empty();
-                        let waiting = answered && !background.is_empty();
+                        observed.record(&event);
+                        // Limite ou login vencido não espera os agentes em segundo plano: eles usam a
+                        // mesma conta e também parariam. O turno acaba aqui e a próxima conta assume.
+                        let blocked = answered && observed.hit_wall();
+                        let waiting = answered && !background.is_empty() && !blocked;
                         if answered {
                             awaiting = waiting;
                             if !waiting {
                                 stdin = None;
                             }
                         }
-                        observed.record(&event);
                         on_event(&event);
+                        if blocked && !background.is_empty() {
+                            let _ = child.kill().await;
+                            stop = true;
+                            break;
+                        }
                         if waiting {
                             // O que veio até aqui já foi gravado; o fim do turno traz só o que vier depois.
                             observed.streamed.clear();
                             on_event(&TurnEvent::AwaitingBackground);
                         }
+                    }
+                    if stop {
+                        break;
                     }
                 }
             }

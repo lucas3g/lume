@@ -1,6 +1,7 @@
 //! Protocolo stream-json do Claude Code: leitura dos eventos e desfecho do turno.
 
 use crate::domain::chat::{RateInfo, SubagentStep, TurnEnd, TurnEvent};
+use chrono::{DateTime, Datelike, TimeZone};
 use serde_json::Value;
 
 /// Eventos contidos em uma linha do stream (a de inicialização gera dois).
@@ -245,7 +246,21 @@ impl Observed {
         }
     }
 
+    /// O resultado recebido diz que a conta bateu no limite ou perdeu o login: o turno acaba aí,
+    /// mesmo com agentes em segundo plano (eles usam a mesma conta e também parariam), para a
+    /// próxima conta assumir. Mais estrito que `into_end`: só o texto do resultado conta (um 429
+    /// passageiro antes não basta).
+    pub fn hit_wall(&self) -> bool {
+        matches!(&self.result, Some((true, text)) if looks_like_limit(text) || looks_like_auth(text))
+    }
+
     pub fn into_end(self, stderr: &str) -> TurnEnd {
+        self.end_at(stderr, chrono::Local::now())
+    }
+
+    /// `now` serve para ler o horário de reset escrito no texto ("resets 1pm"), que o CLI dá no
+    /// fuso local quando o evento do limite não traz o horário.
+    fn end_at<Tz: TimeZone>(self, stderr: &str, now: DateTime<Tz>) -> TurnEnd {
         let stderr = stderr.trim();
         match self.result {
             Some((false, text)) => TurnEnd::Done {
@@ -253,7 +268,7 @@ impl Observed {
                 text: if self.streamed.trim().is_empty() { text } else { self.streamed },
             },
             Some((true, text)) if self.limited || looks_like_limit(&text) => {
-                TurnEnd::Limited { resets_at: self.resets_at }
+                TurnEnd::Limited { resets_at: self.resets_at.or_else(|| reset_from_text(&text, &now)) }
             }
             Some((true, text)) if looks_like_auth(&text) => TurnEnd::AuthError(text),
             Some((true, text)) => TurnEnd::Failed(if text.is_empty() { stderr.to_owned() } else { text }),
@@ -267,12 +282,63 @@ impl Observed {
 
 fn looks_like_limit(text: &str) -> bool {
     let t = text.to_lowercase();
-    ["usage limit", "hit your limit", "rate limit", "limit reached"].iter().any(|p| t.contains(p))
+    // Formatos do CLI: "You've hit your 5-hour limit", "You've reached your Fable limit", "You're out of extra usage".
+    ["usage limit", "rate limit", "limit reached", "out of extra usage"].iter().any(|p| t.contains(p))
+        || (t.contains("limit") && (t.contains("hit your") || t.contains("reached your")) && (t.contains("resets") || t.contains("usage")))
 }
 
+/// Horário do reset escrito no aviso do CLI: "resets 1pm", "resets 1:40pm (America/Sao_Paulo)" ou
+/// "resets Nov 18 at 7am". Sem data, é a próxima vez que esse horário chega; com data, a próxima
+/// vez que essa data chega.
+fn reset_from_text<Tz: TimeZone>(text: &str, now: &DateTime<Tz>) -> Option<i64> {
+    let lower = text.to_lowercase();
+    let rest = &lower[lower.find("resets ")? + "resets ".len()..];
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let (date, clock) = match words.as_slice() {
+        [month, day, "at", clock, ..] => (Some((month_number(month)?, day.trim_matches(',').parse::<u32>().ok()?)), *clock),
+        [clock, ..] => (None, *clock),
+        [] => return None,
+    };
+    let (hour, minute) = parse_clock(clock)?;
+    let tz = now.timezone();
+    let at = |y: i32, m: u32, d: u32| tz.with_ymd_and_hms(y, m, d, hour, minute, 0).earliest();
+    let today = now.date_naive();
+    let found = match date {
+        None => {
+            let t = at(today.year(), today.month(), today.day())?;
+            if t > *now { t } else { t + chrono::Duration::days(1) }
+        }
+        Some((month, day)) => match at(today.year(), month, day)? {
+            t if t > *now => t,
+            _ => at(today.year() + 1, month, day)?,
+        },
+    };
+    Some(found.timestamp())
+}
+
+fn month_number(word: &str) -> Option<u32> {
+    let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    months.iter().position(|m| word.starts_with(m)).map(|i| i as u32 + 1)
+}
+
+/// "7am", "1:40pm", "12pm" → (hora, minuto) em 24 h.
+fn parse_clock(word: &str) -> Option<(u32, u32)> {
+    let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let (digits, pm) = if let Some(d) = word.strip_suffix("pm") { (d, true) } else { (word.strip_suffix("am")?, false) };
+    let (h, m) = digits.split_once(':').unwrap_or((digits, "0"));
+    let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+    if !(1..=12).contains(&h) || m > 59 {
+        return None;
+    }
+    Some((h % 12 + if pm { 12 } else { 0 }, m))
+}
+
+
+/// Login da própria conta do Claude vencido ou inválido. Não vale para o login de um conector
+/// ("Atlassian authentication required"): a conta segue boa e não deve ser marcada sem login.
 fn looks_like_auth(text: &str) -> bool {
     let t = text.to_lowercase();
-    ["/login", "authentication", "oauth", "not logged in"].iter().any(|p| t.contains(p))
+    ["/login", "not logged in", "authentication_error", "oauth token has expired", "invalid api key"].iter().any(|p| t.contains(p))
 }
 
 #[cfg(test)]
@@ -282,7 +348,25 @@ mod tests {
     fn end_of(lines: &[&str], stderr: &str) -> TurnEnd {
         let mut seen = Observed::default();
         lines.iter().flat_map(|l| parse_line(l)).for_each(|e| seen.record(&e));
-        seen.into_end(stderr)
+        seen.end_at(stderr, fixed_now())
+    }
+
+    /// 17/11/2026 11:00 em São Paulo (UTC-3).
+    fn fixed_now() -> DateTime<chrono::FixedOffset> {
+        chrono::FixedOffset::west_opt(3 * 3600).unwrap().with_ymd_and_hms(2026, 11, 17, 11, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn reads_the_reset_time_from_the_limit_text() {
+        let now = fixed_now();
+        let at = |m, d, h, min| now.timezone().with_ymd_and_hms(2026, m, d, h, min, 0).unwrap().timestamp();
+        assert_eq!(reset_from_text("You've hit your 5-hour limit · resets 1pm (America/Sao_Paulo)", &now), Some(at(11, 17, 13, 0)));
+        assert_eq!(reset_from_text("resets 1:40pm", &now), Some(at(11, 17, 13, 40)));
+        assert_eq!(reset_from_text("resets 8:10am", &now), Some(at(11, 18, 8, 10)), "já passou hoje: amanhã");
+        assert_eq!(reset_from_text("resets 12am", &now), Some(at(11, 18, 0, 0)));
+        assert_eq!(reset_from_text("You've hit your Fable limit · resets Nov 22 at 10pm (America/Sao_Paulo)", &now), Some(at(11, 22, 22, 0)));
+        assert_eq!(reset_from_text("You've hit your limit", &now), None);
+        assert_eq!(reset_from_text("resets soon", &now), None);
     }
 
     const DELTA: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}}"#;
@@ -431,7 +515,59 @@ mod tests {
     #[test]
     fn limit_message_without_event_is_still_limited() {
         let end = end_of(&[r#"{"type":"result","is_error":true,"result":"You've hit your limit · resets 6pm"}"#], "");
-        assert_eq!(end, TurnEnd::Limited { resets_at: None });
+        let six_pm = fixed_now().timezone().with_ymd_and_hms(2026, 11, 17, 18, 0, 0).unwrap().timestamp();
+        assert_eq!(end, TurnEnd::Limited { resets_at: Some(six_pm) }, "o horário vem do texto");
+    }
+
+    #[test]
+    fn current_limit_messages_are_limited() {
+        // Textos reais do CLI, copiados das transcrições.
+        for text in [
+            "You've hit your 5-hour limit · resets 1pm (America/Sao_Paulo)",
+            "You've hit your Fable limit · resets Nov 18 at 7am (America/Sao_Paulo)",
+            "You've reached your Fable limit. Run /usage-credits to continue",
+            "You're out of extra usage · resets 3pm",
+        ] {
+            let line = serde_json::json!({"type": "result", "is_error": true, "result": text}).to_string();
+            assert!(matches!(end_of(&[&line], ""), TurnEnd::Limited { .. }), "{text}");
+        }
+    }
+
+    #[test]
+    fn limited_result_ends_the_turn_even_with_background_agents() {
+        let started = r#"{"type":"system","subtype":"task_started","tool_use_id":"t1","task_type":"local_agent","is_backgrounded":true}"#;
+        let error = r#"{"type":"assistant","error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your 5-hour limit · resets 1pm"}]}}"#;
+        let result = r#"{"type":"result","is_error":true,"result":"You've hit your 5-hour limit · resets 1pm"}"#;
+        let mut seen = Observed::default();
+        for line in [started, error, result] {
+            parse_line(line).iter().for_each(|e| seen.record(e));
+        }
+        assert!(seen.hit_wall(), "o limite não espera os agentes em segundo plano");
+        assert!(matches!(seen.into_end(""), TurnEnd::Limited { resets_at: Some(_) }));
+
+        let mut ok = Observed::default();
+        parse_line(r#"{"type":"result","is_error":false,"result":"pronto"}"#).iter().for_each(|e| ok.record(e));
+        assert!(!ok.hit_wall());
+        let mut login = Observed::default();
+        parse_line(r#"{"type":"result","is_error":true,"result":"Please run /login"}"#).iter().for_each(|e| login.record(e));
+        assert!(login.hit_wall());
+
+        // Um 429 passageiro antes não faz de qualquer erro posterior um limite; nem o login de um conector.
+        let mut retried = Observed::default();
+        for line in [r#"{"type":"assistant","error":"rate_limit","message":{"content":[]}}"#, r#"{"type":"result","is_error":true,"result":"Prompt is too long"}"#] {
+            parse_line(line).iter().for_each(|e| retried.record(e));
+        }
+        assert!(!retried.hit_wall());
+        let mut connector = Observed::default();
+        parse_line(r#"{"type":"result","is_error":true,"result":"Atlassian authentication required"}"#).iter().for_each(|e| connector.record(e));
+        assert!(!connector.hit_wall());
+    }
+
+    #[test]
+    fn other_caps_are_not_account_limits() {
+        assert!(!looks_like_limit("You've reached your maximum turns limit"));
+        assert!(!looks_like_limit("You hit your file size limit"));
+        assert!(looks_like_limit("You've hit your session limit · resets 8:10am"));
     }
 
     #[test]
@@ -440,6 +576,11 @@ mod tests {
             end_of(&[r#"{"type":"result","is_error":true,"result":"Please run /login"}"#], ""),
             TurnEnd::AuthError(_)
         ));
+        let expired = r#"{"type":"result","is_error":true,"result":"API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"OAuth token has expired.\"}}"}"#;
+        assert!(matches!(end_of(&[expired], ""), TurnEnd::AuthError(_)));
+        // O login de um conector não é o da conta.
+        let connector = r#"{"type":"result","is_error":true,"result":"Atlassian authentication required"}"#;
+        assert!(matches!(end_of(&[connector], ""), TurnEnd::Failed(_)));
         assert_eq!(end_of(&[], "boom"), TurnEnd::Failed("boom".into()));
         assert!(matches!(end_of(&[], ""), TurnEnd::Failed(_)));
     }

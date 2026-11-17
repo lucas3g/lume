@@ -25,8 +25,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const TITLE_MAX_CHARS: usize = 48;
 /// Usado quando o provedor não informa o horário do reset.
-const DEFAULT_LIMIT_SECONDS: i64 = 3600;
+pub(crate) const DEFAULT_LIMIT_SECONDS: i64 = 3600;
 /// Configurações com o resumo das instruções e dos arquivos de conhecimento que a sessão já conhece.
+/// Pedido à conta que assume um trabalho começado por outra, na mesma sessão.
+const CONTINUE_PROMPT: &str = "A conta anterior atingiu o limite no meio do trabalho. Continue exatamente de onde parou, sem refazer o que já foi feito; confira o estado atual dos arquivos antes de seguir.";
 const RULES_PREFIX: &str = "rules_sent:";
 const KNOWLEDGE_PREFIX: &str = "knowledge_sent:";
 
@@ -142,6 +144,11 @@ impl SendMessage {
 
         let mut tried: Vec<String> = vec![];
         let mut previous: Option<(Account, Handoff)> = None;
+        // Sessão em que o turno roda. Se uma conta para no meio do trabalho, a seguinte (do mesmo
+        // serviço) continua a sessão dela em vez de refazer o pedido: as transcrições são compartilhadas.
+        let mut session = conversation.cli_session_id.clone();
+        let mut session_provider = conversation.session_provider;
+        let mut continuing = false;
         // Instruções e conhecimento que a sessão já recebeu: cada parte só é reenviada quando muda.
         let standing = [(RULES_PREFIX, setup.rules.as_deref()), (KNOWLEDGE_PREFIX, setup.knowledge_key.as_deref())]
             .map(|(prefix, text)| {
@@ -180,15 +187,17 @@ impl SendMessage {
 
             // A sessão só existe no serviço que a criou: uma conta de outro tipo começa
             // uma sessão nova e recebe o diálogo já gravado como contexto.
-            let foreign_session = conversation.cli_session_id.is_some() && conversation.session_provider != account.provider;
+            let foreign_session = session.is_some() && session_provider != account.provider;
             let extra_system = if foreign_session {
                 let sections = [setup.extra_system.clone(), self.prepare.dialogue(&conversation)?];
                 Some(sections.into_iter().flatten().collect::<Vec<_>>().join("\n\n")).filter(|s| !s.is_empty())
             } else {
                 setup.extra_system.clone()
             };
-            let resume = conversation.cli_session_id.clone().filter(|_| !foreign_session);
+            let resume = session.clone().filter(|_| !foreign_session);
+            let carry_on = continuing && resume.is_some();
             let prompt = match &resume {
+                Some(_) if carry_on => CONTINUE_PROMPT.to_owned(),
                 Some(_) if rules_changed || knowledge_changed => updated_instructions(
                     rules_changed.then(|| setup.rules.as_deref().unwrap_or_default()),
                     knowledge_changed.then(|| setup.knowledge.as_deref().unwrap_or_default()),
@@ -203,7 +212,8 @@ impl SendMessage {
                 model: model_for(account.provider, &setup.model, &provider_models),
                 resume,
                 prompt,
-                attachments: attachments.clone(),
+                // Continuando a sessão, os anexos já estão nela.
+                attachments: if carry_on { vec![] } else { attachments.clone() },
                 extra_system,
                 tools: setup.tools.clone(),
                 effort: setup.effort.clone(),
@@ -281,12 +291,14 @@ impl SendMessage {
                         self.emit(conversation_id, ChatEvent::Error { message });
                         return Ok(());
                     }
+                    keep_session(&journal, &account, &mut session, &mut session_provider, &mut continuing);
                     previous = Some((account, Handoff::Limit));
                 }
                 TurnEnd::AuthError(_) => {
                     self.accounts.set_auth(&account.id, false)?;
                     self.events.accounts_changed();
                     self.emit(conversation_id, ChatEvent::Reset);
+                    keep_session(&journal, &account, &mut session, &mut session_provider, &mut continuing);
                     previous = Some((account, Handoff::Auth));
                 }
                 TurnEnd::Failed(message) => {
@@ -515,6 +527,16 @@ fn user_meta(files: &[Attachment], paths: &[String], pasted: &[Attachment], keep
     Some(serde_json::json!({ "attachments": names, "paths": paths, "images": images }).to_string())
 }
 
+/// Uma conta que parou no meio do trabalho (algo já foi gravado) deixa a sessão para a próxima
+/// continuar. Sem trabalho feito, a próxima refaz o pedido como antes.
+fn keep_session(journal: &Journal, account: &Account, session: &mut Option<String>, provider: &mut Provider, continuing: &mut bool) {
+    if let Some(id) = journal.session.clone().filter(|_| journal.recorded) {
+        *session = Some(id);
+        *provider = account.provider;
+        *continuing = true;
+    }
+}
+
 /// Resumo das instruções em vigor; vazio quando não há nenhuma.
 fn fingerprint(standing: Option<&str>) -> String {
     use sha2::{Digest, Sha256};
@@ -601,6 +623,33 @@ mod tests {
             files: Arc::new(FakeFiles(vec![Attachment::text("nota.md", "conteúdo")])),
             clock: Arc::new(FixedClock(1000)),
         }
+    }
+
+    #[tokio::test]
+    async fn next_account_continues_the_session_when_work_was_done() {
+        let world = World::with_accounts(vec![sample("pessoal", 1), sample("trabalho", 2)]);
+        let engine = ScriptedEngine::new(|req, call| match call {
+            1 => {
+                assert_eq!((req.resume.as_deref(), req.prompt.as_str()), (None, "olá"));
+                let work = vec![
+                    TurnEvent::Session("s1".into()),
+                    TurnEvent::ToolCall { id: "t1".into(), name: "Edit".into(), input: "{}".into() },
+                    TurnEvent::ToolResult { id: "t1".into(), output: "ok".into(), is_error: false },
+                ];
+                (work, TurnEnd::Limited { resets_at: Some(5000) })
+            }
+            _ => {
+                assert_eq!(req.resume.as_deref(), Some("s1"), "a conta seguinte continua a mesma sessão");
+                assert_eq!(req.prompt, CONTINUE_PROMPT, "sem refazer o pedido");
+                assert!(req.attachments.is_empty());
+                (vec![], TurnEnd::Done { session_id: Some("s1".into()), text: "pronto".into() })
+            }
+        });
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
+        let messages = world.store.messages("c1").unwrap();
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "tool", "notice", "assistant"]);
+        assert_eq!(messages[3].account_id.as_deref(), Some("trabalho"));
     }
 
     #[tokio::test]
