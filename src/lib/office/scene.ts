@@ -238,6 +238,9 @@ const PEOPLE = {
   reviewer: { pal: { S: '#f7dcc4', s: '#e0bea2', H: '#c9ccd4', h: '#eef0f3', C: '#dd6a83', c: '#9c4257', P: '#5d6270' }, hair: 'bun', extra: 'glasses', shirt: 'pearls' },
   tester: { pal: { S: '#e0ac7e', s: '#c48f62', H: '#15161a', h: '#34363e', C: '#8fc45a', c: '#5c8a35', P: '#4a5578' }, hair: 'short', extra: 'goggles', shirt: 'coat' },
   reporter: { pal: { S: '#a9714b', s: '#8a5a3a', H: '#3a2a20', h: '#5a4232', C: '#b377d9', c: '#7d4a9e', P: '#6b5a4a' }, hair: 'beanie', shirt: 'scarf' },
+  /* Você, na mesa de aprovação: cabelo castanho curto com as laterais baixas, barba curta acobreada, sorriso
+     aberto e a camisa do Grêmio em xadrez azul-celeste e branco, com gola azul e o escudo no peito. */
+  approval: { pal: { S: '#f2c6a6', s: '#dca383', H: '#5e4030', h: '#82604a', C: '#a9d3f2', c: '#7fb0d8', P: '#2f3646' }, hair: 'fade', extra: 'beard', shirt: 'gremio' },
   /* Code review: coque no alto, óculos de leitura e camisa âmbar com gravata. */
   code_review: { pal: { S: '#d29a6e', s: '#b27d53', H: '#4a2c22', h: '#7a4c3a', C: '#d9a441', c: '#9c7226', P: '#3f4a63' }, hair: 'topknot', extra: 'readers', shirt: 'tie' }
 };
@@ -304,6 +307,11 @@ function drawHead(cv, p, cx, cy, back) {
     cv.rect(cx - 9, cy - 3, cx + 9, cy - 2, c);
     for (let x = cx - 8; x <= cx + 8; x += 2) cv.set(x, cy - 3, shade(c, 0.2));
     cv.ell(cx + 1, cy - 10, 2, 1.8, WHITE);
+  } else if (st === 'fade') {
+    /* Topete curto e laterais raspadas, mais claras perto da orelha. */
+    cap(x => (x >= cx + 2 ? cy + 2 : x <= cx - 7 ? cy - 1 : cy - 3), 0.4);
+    const fade = mix(H, S, 0.45);
+    for (let y = cy - 2; y <= cy + 3; y++) for (let x = cx - 10; x <= cx + 10; x++) if (cv.get(x, y) === H) cv.set(x, y, fade);
   } else cap(fringe, 0.5);
   /* Brilho do cabelo: um arco claro no alto da cabeça. */
   if (st !== 'beanie') for (let x = cx - 4; x <= cx + 3; x++) { const y = Math.round(cy - 6.6 + Math.pow((x - cx + 0.5) / 4.5, 2) * 2); if (cv.get(x, y) === H) cv.set(x, y, h); }
@@ -314,7 +322,16 @@ function drawHead(cv, p, cx, cy, back) {
     /* Sobrancelhas, nariz, boca e bochechas. Os olhos ficam em (cx-6, cy+1) e (cx-1, cy+1). */
     cv.rect(cx - 7, cy - 1, cx - 5, cy - 1, Hd); cv.rect(cx - 2, cy - 1, cx, cy - 1, Hd);
     cv.set(cx - 4, cy + 3, s); cv.set(cx - 5, cy + 4, s);
-    cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, mix(S, '#6a2420', 0.55));
+    if (p.extra === 'beard') {
+      /* Barba curta cobrindo o queixo e subindo pela costeleta; sorriso aberto com os dentes. */
+      const B = '#a8693f', Bd = '#8a5232';
+      for (let y = cy + 3; y <= cy + 8; y++) for (let x = cx - 9; x <= cx + 4; x++) {
+        const c = cv.get(x, y); if (c !== S && c !== s) continue;
+        if (y >= cy + 5 || x >= cx + 2) cv.set(x, y, (x + y) % 3 ? B : Bd);
+      }
+      cv.rect(cx - 7, cy + 4, cx - 3, cy + 4, B);
+      cv.rect(cx - 7, cy + 5, cx - 3, cy + 5, WHITE); cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, '#5a1f1f');
+    } else cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, mix(S, '#6a2420', 0.55));
     cv.set(cx - 8, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 1, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 2, cy + 4, mix(S, '#ff7a7a', 0.3));
   }
   /* Acessórios. */
@@ -355,6 +372,19 @@ function drawTorso(cv, p, cx, top, bottom) {
   else if (sh === 'pearls') { [[-4, 1], [-3, 2], [-1, 3], [1, 2], [2, 1]].forEach(d => cv.set(cx + d[0], top + d[1], WHITE)); }
   else if (sh === 'coat') { for (let y = top; y <= bottom; y++) { cv.set(cx - 5, y, WHITE); cv.set(cx - 4, y, '#d8dbe2'); cv.set(cx + 3, y, '#d8dbe2'); cv.set(cx + 4, y, WHITE); } cv.rect(cx + 5, top + 5, cx + 6, top + 6, '#5b6ad9'); }
   else if (sh === 'scarf') { cv.rect(cx - 5, top, cx + 4, top + 2, '#e3ba6a'); cv.rect(cx - 4, top + 3, cx - 2, top + 8, '#e3ba6a'); for (let y = top; y <= top + 8; y += 2) cv.set(cx - 3, y, '#d9645a'); }
+  else if (sh === 'gremio') {
+    /* Xadrez de blocos grandes azul-celeste e branco, mais escuro do lado de trás; gola azul e escudo. */
+    const BL = '#a9d3f2', WH = '#f3f6f9';
+    for (let y = top; y <= bottom; y++) for (let x = cx - 10; x <= cx + 9; x++) {
+      const c = cv.get(x, y); if (!c || c === S) continue;
+      const col = Math.floor((x - cx + 10) / 6), row = Math.floor((y - top) / 8), base = (col + row) % 2 ? BL : WH;
+      cv.set(x, y, x >= cx + 6 ? shade(base, 0.16) : base);
+    }
+    cv.rect(cx - 4, top, cx - 4, top + 1, '#2f7fc4'); cv.rect(cx + 2, top, cx + 2, top + 1, '#2f7fc4');
+    cv.rect(cx - 3, top + 2, cx - 3, top + 2, '#2f7fc4'); cv.rect(cx + 1, top + 2, cx + 1, top + 2, '#2f7fc4'); cv.rect(cx - 2, top + 3, cx, top + 3, '#2f7fc4');
+    cv.ell(cx + 4, top + 7, 1.9, 1.9, '#1d2a44'); cv.set(cx + 4, top + 7, '#4aa3e0'); cv.set(cx + 3, top + 6, WHITE);
+    cv.set(cx + 3, top + 4, '#e3ba6a'); cv.set(cx + 5, top + 4, '#e3ba6a');
+  }
   else if (sh === 'tie') { cv.rect(cx - 2, top + 2, cx - 1, top + 9, '#3f4a63'); cv.set(cx - 2, top + 10, '#3f4a63'); cv.rect(cx - 4, top, cx - 3, top + 1, WHITE); cv.rect(cx, top, cx + 1, top + 1, WHITE); }
 }
 /* Braço: manga do ombro ao cotovelo e até o pulso, mão na ponta; opcionalmente algo na mão (caneca). */
@@ -414,8 +444,9 @@ function seatedParts(role, v, i) {
   const body = [SO('torso' + id, '', '', put(cv => { drawTorso(cv, p, 0, -14, 8); drawHead(cv, p, HEAD_C[0], HEAD_C[1], false); }))];
   const hands = [];
   const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, HEAD_C[0], HEAD_C[1], happy))));
-  const sip = v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
-  hands.push(mug(role, sip ? 'a-sipA' : '', d));
+  /* Na mesa de aprovação não há caneca (o canto é do vaso). */
+  const desk = role !== 'approval', sip = desk && v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
+  if (desk) hands.push(mug(role, sip ? 'a-sipA' : '', d));
   let cls = 'a-bob';
   if (v === 'working') {
     cls = ''; eyes('a-wink');
@@ -577,7 +608,7 @@ function stationLayers(st, c) {
     else if (gateFrom != null) add(make(v), 'g-from', at(gateFrom));
     else add(make(v));
   };
-  const person = vis => (!you && vis !== 'skipped' && !c.away ? seatedParts(role, vis, c.index) : null);
+  const person = vis => (vis !== 'skipped' && !c.away ? seatedParts(role, vis, c.index) : null);
   const back = [];
   if (c.selected) back.push(S('sel' + id, 'a-sel', '', t => {
     const x0 = g.fx, y0 = g.fy, d = 0.36, gap = 0.14, m = 0.1, b = PAL.b;
@@ -767,8 +798,8 @@ function route(from, to) {
 
 /* Viagem da pasta, derivada só de { active, previous }: { kind, td, arrive, points, legs }.
    A pessoa da mesa de origem levanta (fica de pé atrás da mesa), sai pelo lado de caminho mais curto, anda pelos
-   corredores com a pasta, entrega na ponta da mesa seguinte, ao lado da cadeira, e volta. A mesa "você" não tem
-   pessoa: de lá a pasta voa como aviãozinho de papel. Cada trecho reto é um elemento com posição e z-index animados
+   corredores com a pasta, entrega na ponta da mesa seguinte, ao lado da cadeira, e volta. Da mesa "você" a pessoa
+   não levanta: a pasta voa como aviãozinho de papel. Cada trecho reto é um elemento com posição e z-index animados
    em passos de 2x1 px; fora da sua janela de tempo ele fica com opacity 0. */
 function legStyle(a, b, za, zb, t0, dur, steps) {
   return '--x0:' + a[0] + ';--y0:' + a[1] + ';--x1:' + b[0] + ';--y1:' + b[1] + ';--z0:' + za + ';--z1:' + zb +
