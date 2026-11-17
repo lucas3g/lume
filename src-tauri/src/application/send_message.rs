@@ -12,6 +12,7 @@ use super::{
     turn_setup::PrepareTurn,
     AppError, AppResult, ChatEvent, PendingUsers, TurnControl,
 };
+use crate::domain::permission::{needs_you, AUTO_APPROVE_PREFIX};
 use crate::domain::{
     account::{earliest_reset, pick_next, Account, Provider},
     workspace::context_percent,
@@ -396,6 +397,15 @@ impl SendMessage {
         matches!(self.conversations.get(conversation_id), Ok(Some(c)) if c.allowed_tools.iter().any(|t| t == tool))
     }
 
+    /// Bot da esteira: o app aprova sozinho o que não é crítico; perguntas, planos e ações críticas
+    /// continuam chegando a você.
+    fn auto_approves(&self, conversation_id: &str, tool: &str, input: &str) -> bool {
+        if !self.settings.flag(&format!("{AUTO_APPROVE_PREFIX}{conversation_id}"), false) {
+            return false;
+        }
+        matches!(self.conversations.get(conversation_id), Ok(Some(c)) if !needs_you(tool, input, &c.cwd))
+    }
+
     /// Repassa à interface o que acontece durante o turno, grava o uso de
     /// ferramentas na conversa e registra o consumo da conta.
     fn forward(
@@ -425,7 +435,7 @@ impl SendMessage {
                 }
             }
             TurnEvent::Permission { request_id, tool, input, description } => {
-                if self.is_tool_allowed(conversation_id, tool) {
+                if self.is_tool_allowed(conversation_id, tool) || self.auto_approves(conversation_id, tool, input) {
                     let _ = answer.send(PermissionDecision::new(request_id, true));
                 } else {
                     let event = ChatEvent::Permission {

@@ -11,6 +11,7 @@ use super::{
     AppError, AppResult,
 };
 use crate::domain::mcp::server_rule;
+use crate::domain::permission::AUTO_APPROVE_PREFIX;
 use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
@@ -364,6 +365,9 @@ impl ManagePipelines {
         }
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
+        // Os pedidos de permissão que não são críticos o app aprova sozinho: só as perguntas, os planos e as
+        // ações críticas chegam a você (além das suas paradas de aprovação, que não são do CLI).
+        self.settings.set_flag(&format!("{AUTO_APPROVE_PREFIX}{conversation_id}"), true)?;
         // No ChatGPT ninguém aprova no meio do turno: o Relator, que comenta e muda o status da task,
         // já sai com as pontes do Jira liberadas. Os outros papéis só leem.
         if role == Role::Reporter {
