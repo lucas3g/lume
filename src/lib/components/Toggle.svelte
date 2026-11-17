@@ -25,5 +25,4 @@
   }
   button.on { background: var(--accent); justify-content: flex-end; }
   span { width: 20px; height: 20px; border-radius: 50%; background: #fff; }
-  @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 </style>

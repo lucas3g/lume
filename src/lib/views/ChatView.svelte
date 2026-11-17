@@ -830,7 +830,6 @@
   .assistant:hover .msg-actions.shown .when, .assistant:focus-within .msg-actions.shown .when { opacity: 1; }
   .editing { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--muted); }
   .editing span { flex: 1; }
-  @media (prefers-reduced-motion: reduce) { .msg-actions, .msg-actions .when { transition: none; } }
   .assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; color: var(--text-body); }
   .context { align-self: flex-start; padding: 2px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--muted); }
   .notice { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
@@ -846,7 +845,6 @@
   .working { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
   .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-text); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.25; } }
-  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
 
   .artifact { align-self: flex-start; display: flex; align-items: center; gap: 12px; padding: 9px 14px 9px 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); text-align: left; color: var(--text); }
   .artifact:hover { background: var(--hover); }

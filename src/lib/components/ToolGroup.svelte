@@ -70,7 +70,6 @@
   .dots i:nth-child(4) { animation-delay: 0.6s; }
   .dots i:nth-child(3) { animation-delay: 0.9s; }
   @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-  @media (prefers-reduced-motion: reduce) { .dots i { animation: none; } }
 
   .box { margin-left: 30px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
   .item + .item { border-top: 1px solid var(--border); }

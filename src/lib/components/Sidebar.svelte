@@ -389,7 +389,6 @@
   /* Turno parado esperando o usuário (autorização, pergunta ou plano): se destaca do "respondendo". */
   .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 50% { box-shadow: 0 0 0 3px var(--warn-bg); } }
-  @media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
   .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .who.current { font-weight: 600; }
   .meter { display: block; width: 100%; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
@@ -397,5 +396,4 @@
   .meter span.full { background: var(--warn); }
   .note { flex-shrink: 0; text-align: right; font-size: 11px; color: var(--muted); }
   .pool .none { margin: 0; padding: 0; border: 0; }
-  @media (prefers-reduced-motion: reduce) { .toggle svg { transition: none; } }
 </style>
