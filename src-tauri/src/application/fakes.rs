@@ -51,11 +51,13 @@ pub struct ScriptedEngine {
     pub calls: Arc<Mutex<usize>>,
     /// Respostas a pedidos de autorização que chegaram ao motor.
     pub decisions: Arc<Mutex<Vec<PermissionDecision>>>,
+    /// Chamadas (1, 2...) que travam depois dos eventos, até o turno ser cancelado.
+    pub hangs: Arc<Mutex<Vec<usize>>>,
 }
 
 impl ScriptedEngine {
     pub fn new(script: impl Fn(&TurnRequest, usize) -> (Vec<TurnEvent>, TurnEnd) + Send + Sync + 'static) -> Self {
-        ScriptedEngine { script: Box::new(script), calls: Arc::default(), decisions: Arc::default() }
+        ScriptedEngine { script: Box::new(script), calls: Arc::default(), decisions: Arc::default(), hangs: Arc::default() }
     }
 }
 
@@ -75,6 +77,10 @@ impl ChatEngine for ScriptedEngine {
         let (events, end) = (self.script)(request, call);
         for event in &events {
             on_event(event);
+        }
+        if self.hangs.lock().unwrap().contains(&call) {
+            control.cancel.notified().await;
+            return TurnEnd::Cancelled;
         }
         while let Ok(decision) = control.decisions.try_recv() {
             self.decisions.lock().unwrap().push(decision);

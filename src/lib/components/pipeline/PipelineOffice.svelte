@@ -136,12 +136,13 @@
 
   /** Enquanto alguém pede autorização, a sua mesa acende como quando espera a sua aprovação. */
   const askingName = $derived(asking >= 0 ? cards[asking]?.station.name : null);
+  const lit = (c: (typeof cards)[number]) => !!askingName && c.station.role === "approval" && c.visual !== "you";
   const scene = $derived<OfficeScene>({
     stations: cards.map((c) => ({
       role: c.station.role,
-      visual: askingName && c.station.role === "approval" && c.visual !== "you" ? "you" : c.visual,
+      visual: lit(c) ? "you" : c.visual,
       label: c.station.name,
-      stateText: askingName && c.station.role === "approval" && c.visual !== "you" ? `${askingName} pede sua autorização` : c.label,
+      stateText: lit(c) ? `${askingName} pede sua autorização` : c.label,
       activity: c.visual === "working" ? (c.activity ?? "Trabalhando") : null,
       account: c.account && c.account !== "você" ? c.account : null,
       model: c.model,

@@ -10,6 +10,7 @@ pub mod pipeline;
 pub mod ports;
 pub mod projects;
 pub mod send_message;
+mod stall;
 pub mod store;
 pub mod tasks;
 pub mod terminal;

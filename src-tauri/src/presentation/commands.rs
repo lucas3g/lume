@@ -709,6 +709,12 @@ pub fn save_pipeline_config(app: App<'_>, project_id: String, config: PipelineCo
     app.pipelines.save_config(&project_id, config)
 }
 
+/// Modelo de task do Jira de todos os projetos (o de cada projeto vem antes).
+#[tauri::command]
+pub fn save_pipeline_default_template(app: App<'_>, template: Option<String>) -> AppResult<Option<String>> {
+    app.pipelines.save_default_template(template)
+}
+
 /// Modelo de cada nível (rápido, equilibrado, forte) em cada serviço, para a esteira.
 #[tauri::command]
 pub fn pipeline_models(app: App<'_>) -> TierModels {

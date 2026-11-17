@@ -21,6 +21,15 @@
   let choosing = $state(false);
   /** Grupos recolhidos (chave: id do projeto; "" é "Sem projeto"). */
   let collapsed = $state<Record<string, boolean>>({});
+  /** Quantas sessões cada projeto mostra antes do "Ver todas"; grupos abertos por inteiro (mesma chave). */
+  const RECENT = 10;
+  let expanded = $state<Record<string, boolean>>({});
+  /** As mais recentes do grupo; na busca, aberto por inteiro ou com poucas, todas. A aberta, a que espera
+      você e a que está respondendo aparecem mesmo além das 10. */
+  function visible(id: string, list: Conversation[]): Conversation[] {
+    if (search || expanded[id] || list.length <= RECENT) return list;
+    return list.filter((c, i) => i < RECENT || c.id === chat.activeId || !!chat.permissions[c.id] || !!chat.turns[c.id]);
+  }
   let error = $state<string | null>(null);
 
   /** Sessão em uma cópia isolada do repositório do projeto. */
@@ -277,7 +286,7 @@
         </div>
 
         {#if !collapsed[g.id]}
-          {#each g.conversations as c (c.id)}
+          {#each visible(g.id, g.conversations) as c (c.id)}
             <div class="conversation" class:active={view === "chat" && chat.activeId === c.id}>
               <button type="button" class="title" onclick={() => open(c.id)}>
                 {#if chat.permissions[c.id]}
@@ -296,6 +305,11 @@
           {:else}
             <div class="none">{search ? "Nada encontrado" : "Nenhuma conversa"}</div>
           {/each}
+          {#if !search && g.conversations.length > RECENT}
+            <button type="button" class="more" aria-expanded={!!expanded[g.id]} onclick={() => (expanded[g.id] = !expanded[g.id])}>
+              {expanded[g.id] ? "Mostrar só as recentes" : `Ver todas (${g.conversations.length})`}
+            </button>
+          {/if}
         {/if}
       </div>
     {/each}
@@ -375,6 +389,8 @@
   .conversation:hover .remove, .conversation:focus-within .remove { display: grid; }
   .conversation:hover .when, .conversation:focus-within .when { display: none; }
   .none { margin-left: 13px; padding: 4px 10px; border-left: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .more { display: block; margin-left: 13px; padding: 4px 10px; border: 0; border-left: 1px solid var(--border); background: none; font-size: 12px; color: var(--accent-text); text-align: left; cursor: pointer; }
+  .more:hover { color: var(--text); }
 
   .pool { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); text-align: left; }
   .pool:hover, .pool.active { border-color: var(--border-strong); }

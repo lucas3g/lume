@@ -30,7 +30,7 @@
   --ok-text: #86d3a6;
   --warn: #d9a441;
   /* Pontos que indicam o agente trabalhando numa sequência de ações. */
-  --working: #d97757;
+  --working: var(--ok);
   --warn-bg: #2e2513;
   --warn-text: #e3ba6a;
   --danger-bg: #2e1b1b;

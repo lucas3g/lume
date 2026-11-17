@@ -540,6 +540,8 @@ export interface PipelineConfig {
   skipped: PipelineRole[];
   /** Task do Jira que serve de modelo (link ou chave) para o Relator criar uma task nova. */
   jira_template: string | null;
+  /** Modelo padrão, de todos os projetos: vale quando o projeto não tem o seu. */
+  default_jira_template: string | null;
   /** Esforço de raciocínio por papel; ausente = padrão (médio). */
   efforts: Partial<Record<PipelineRole, string>>;
 }

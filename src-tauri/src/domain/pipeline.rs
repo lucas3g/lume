@@ -221,6 +221,9 @@ pub struct PipelineConfig {
     /// uma nova no mesmo projeto, tipo, campos e estrutura de descrição.
     #[serde(default)]
     pub jira_template: Option<String>,
+    /// Modelo padrão, de todos os projetos: vale quando o projeto não tem o seu.
+    #[serde(default)]
+    pub default_jira_template: Option<String>,
     /// Esforço de raciocínio por papel ("low" … "max"); sem entrada, o padrão da conversa.
     #[serde(default)]
     pub efforts: BTreeMap<Role, String>,
@@ -241,9 +244,7 @@ impl PipelineConfig {
         if self.efforts.values().any(|e| !super::chat::EFFORTS.contains(&e.as_str())) {
             return Err("Nível de esforço inválido.".into());
         }
-        if let Some(template) = &self.jira_template
-            && task_ref(template).is_none()
-        {
+        if [&self.jira_template, &self.default_jira_template].into_iter().flatten().any(|t| task_ref(t).is_none()) {
             return Err("Modelo de task inválido: cole o link da task no Jira ou a chave (ex.: EI-5198).".into());
         }
         Ok(())
@@ -1265,7 +1266,7 @@ mod tests {
         assert!(PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Reviewer], ..Default::default() }.validate().is_err());
         assert!(PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a".into())]), skipped: quick.to_vec(), ..Default::default() }.validate().is_ok());
         let json = serde_json::to_string(&PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Tester], ..Default::default() }).unwrap();
-        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"],"jira_template":null,"efforts":{}}"#);
+        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"],"jira_template":null,"default_jira_template":null,"efforts":{}}"#);
     }
 
     #[test]

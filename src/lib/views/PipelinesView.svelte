@@ -233,6 +233,13 @@
                 : `A Triagem lê a ${task.key} no Jira (descrição, critérios de aceite e comentários); o Relator comenta nela no fim.`}
             {:else}
               Sem task escolhida, nenhum bot procura task no Jira: a esteira segue só com a descrição.
+              {#if config?.skipped.includes("reporter")}
+                O Relator está desligado neste projeto: nenhuma task é criada.
+              {:else if config?.jira_template || config?.default_jira_template}
+                No fim, o Relator cria uma task no Jira pelo modelo {config.jira_template ? "do projeto" : "padrão"} e mostra o link.
+              {:else if config}
+                <span class="warn-text">Nenhuma task vai ser criada no Jira: preencha o modelo de task do Jira na esteira do projeto.</span>
+              {/if}
             {/if}
           </p>
           {#if project}
@@ -348,4 +355,5 @@
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb button { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 13px; line-height: 1; }
   .empty { padding: 14px 20px; border-top: 1px solid var(--hairline); }
+  .warn-text { color: var(--warn-text); }
 </style>

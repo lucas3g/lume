@@ -32,6 +32,8 @@ const EXTRA_BUDGET_MINUTES: i64 = 30;
 
 /// Configuração da esteira de cada projeto, guardada como texto: prefixo + id do projeto.
 const CONFIG_PREFIX: &str = "pipeline_config:";
+/// Modelo de task do Jira de todos os projetos (o de cada projeto vem antes).
+const DEFAULT_TEMPLATE_KEY: &str = "pipeline_default_template";
 
 pub struct ManagePipelines {
     pub pipelines: Arc<dyn PipelineRepository>,
@@ -132,7 +134,11 @@ impl ManagePipelines {
     /// Agentes apagados saem da resposta, para que salvar de novo não esbarre neles.
     pub fn config(&self, project_id: &str) -> AppResult<PipelineConfig> {
         let agents = self.role_agents(project_id)?.into_iter().map(|(role, agent)| (role, agent.id)).collect();
-        Ok(PipelineConfig { agents, ..self.stored_config(project_id) })
+        Ok(PipelineConfig { agents, default_jira_template: self.default_template(), ..self.stored_config(project_id) })
+    }
+
+    fn default_template(&self) -> Option<String> {
+        self.settings.text(DEFAULT_TEMPLATE_KEY).filter(|t| !t.trim().is_empty())
     }
 
     /// A configuração como foi gravada, sem conferir se os agentes ainda existem.
@@ -144,7 +150,11 @@ impl ManagePipelines {
     }
 
     pub fn save_config(&self, project_id: &str, mut config: PipelineConfig) -> AppResult<PipelineConfig> {
-        config.jira_template = config.jira_template.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        let clean = |t: Option<String>| t.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        config.jira_template = clean(config.jira_template);
+        // O modelo padrão é de todos os projetos e tem o próprio caminho (`save_default_template`): salvar
+        // um projeto não o regrava com o valor que a tela carregou.
+        config.default_jira_template = None;
         self.projects.get(project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
         config.validate().map_err(AppError)?;
         for id in config.agents.values() {
@@ -154,7 +164,15 @@ impl ManagePipelines {
         config.skipped.dedup();
         let text = serde_json::to_string(&config).map_err(|e| AppError(e.to_string()))?;
         self.settings.set_text(&format!("{CONFIG_PREFIX}{project_id}"), &text)?;
-        Ok(config)
+        Ok(PipelineConfig { default_jira_template: self.default_template(), ..config })
+    }
+
+    /// Modelo de task do Jira de todos os projetos (vazio apaga). Devolve o que ficou salvo.
+    pub fn save_default_template(&self, template: Option<String>) -> AppResult<Option<String>> {
+        let template = template.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        PipelineConfig { default_jira_template: template.clone(), ..Default::default() }.validate().map_err(AppError)?;
+        self.settings.set_text(DEFAULT_TEMPLATE_KEY, template.as_deref().unwrap_or_default())?;
+        Ok(template)
     }
 
     /// Agentes da configuração que ainda existem (um agente apagado volta às regras padrão).
@@ -226,7 +244,9 @@ impl ManagePipelines {
             return Err(AppError(format!("Cada imagem pode ter até {} MB.", MAX_IMAGE_BYTES / (1024 * 1024))));
         }
         let stored = self.stored_config(&project.id);
-        let (mut skipped, jira_template, efforts) = (stored.skipped, stored.jira_template, stored.efforts);
+        // Sem modelo no projeto, vale o padrão: o Relator cria a task quando não há uma escolhida.
+        let jira_template = stored.jira_template.or_else(|| self.default_template());
+        let (mut skipped, efforts) = (stored.skipped, stored.efforts);
         if !input.design {
             skipped.extend(Role::OPT_IN);
         }
@@ -968,6 +988,23 @@ mod tests {
         let config = uc.config("p1").unwrap();
         assert!(config.agents.is_empty());
         uc.save_config("p1", PipelineConfig { skipped: vec![Role::Triage], ..config }).unwrap();
+    }
+
+    #[test]
+    fn default_template_serves_projects_without_their_own() {
+        let (_world, uc, _vcs) = setup(false);
+        let default = "https://elinfo.atlassian.net/browse/EI-5198";
+        assert!(uc.save_default_template(Some("não é task".into())).is_err());
+        uc.save_default_template(Some(format!(" {default} "))).unwrap();
+        let config = uc.config("p1").unwrap();
+        assert_eq!((config.jira_template, config.default_jira_template.as_deref()), (None, Some(default)));
+        let run = uc.start(StartInput { request: "Exportar pedidos em CSV".into(), ..input(None) }).unwrap();
+        assert_eq!(run.jira_template.as_deref(), Some(default), "sem modelo no projeto, vale o padrão");
+        // O do projeto vem antes; salvar o projeto não mexe no padrão.
+        uc.save_config("p1", PipelineConfig { jira_template: Some("EI-1".into()), ..Default::default() }).unwrap();
+        assert_eq!(uc.config("p1").unwrap().default_jira_template.as_deref(), Some(default));
+        let run = uc.start(StartInput { request: "Outro pedido".into(), ..input(None) }).unwrap();
+        assert_eq!(run.jira_template.as_deref(), Some("EI-1"));
     }
 
     #[tokio::test]

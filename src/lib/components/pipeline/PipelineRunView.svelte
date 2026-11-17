@@ -440,6 +440,8 @@
                 </li>
               {:else if detail.jira_template && !detail.skipped.includes("reporter")}
                 <li class="warn-text">O Relator não criou a task no Jira; veja o motivo no relatório dele.</li>
+              {:else if !detail.skipped.includes("reporter")}
+                <li class="warn-text">Nenhuma task criada no Jira: sem task escolhida e sem modelo de task (do projeto ou padrão) quando a execução começou.</li>
               {/if}
             </ul>
             {#if detail.mode === "worktree"}
@@ -455,6 +457,9 @@
             <div class="row-w acts">
               <button type="button" class="btn" onclick={() => select("implementer")}>Ver alterações</button>
               <button type="button" class="btn" onclick={() => select("reporter")}>Ver relatório</button>
+              {#if detail.jira_key && detail.jira_url}
+                <button type="button" class="btn" title={detail.jira_url} onclick={() => openUrl(detail.jira_url!)}>Abrir {detail.jira_key} no Jira ↗</button>
+              {/if}
               <button type="button" class="btn" aria-expanded={reopening} onclick={() => (reopening = !reopening)}>Reabrir com um ajuste</button>
             </div>
             {#if reopening}

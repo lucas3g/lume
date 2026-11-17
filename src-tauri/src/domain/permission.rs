@@ -44,7 +44,10 @@ fn safe_path(path: &str, cwd: &str) -> bool {
     if full.components().any(|c| c.as_os_str() == ".git") {
         return false;
     }
-    full.starts_with(normalize(Path::new(cwd))) || TEMP_DIRS.iter().any(|t| full.starts_with(t))
+    full.starts_with(normalize(Path::new(cwd)))
+        || TEMP_DIRS.iter().any(|t| full.starts_with(t))
+        // A pasta temporária do sistema (no Windows, %TEMP%).
+        || full.starts_with(normalize(&std::env::temp_dir()))
 }
 
 /// Resolve `.` e `..` sem tocar no disco.
@@ -76,8 +79,17 @@ fn critical_command(command: &str) -> bool {
         // Atribuições de ambiente e prefixos que só repassam o comando.
         let start = words.iter().position(|w| !w.contains('=') && !["env", "command", "exec", "time", "nohup", "xargs"].contains(w)).unwrap_or(words.len());
         let words = &words[start..];
-        let Some((&cmd, args)) = words.split_first() else { continue };
-        let cmd = cmd.rsplit('/').next().unwrap_or(cmd);
+        let Some((&cmd, mut args)) = words.split_first() else { continue };
+        let mut cmd = cmd.rsplit('/').next().unwrap_or(cmd);
+        // `bash -c "git push"`, `eval "rm -rf x"`: vale o comando de dentro.
+        while let Some((&inner, rest)) = match cmd {
+            "sh" | "bash" | "zsh" if args.first() == Some(&"-c") => args[1..].split_first(),
+            "eval" => args.split_first(),
+            _ => None,
+        } {
+            cmd = inner.rsplit('/').next().unwrap_or(inner);
+            args = rest;
+        }
         if piped && after_pipe && ["sh", "bash", "zsh"].contains(&cmd) {
             return true;
         }
@@ -89,8 +101,8 @@ fn critical_command(command: &str) -> bool {
     false
 }
 
-/// Pedaços do comando separados por `;`, `&&`, `||`, `|` e quebras de linha; o booleano diz se o
-/// pedaço recebe a saída de um pipe.
+/// Pedaços do comando separados por `;`, `&&`, `||`, `|`, quebras de linha e substituições (`$(`, crase);
+/// o booleano diz se o pedaço recebe a saída de um pipe.
 fn segments(command: &str) -> Vec<(String, bool)> {
     let mut out = vec![];
     let mut current = String::new();
@@ -103,7 +115,8 @@ fn segments(command: &str) -> Vec<(String, bool)> {
         let split = match (c, next) {
             ('&', Some('&')) | ('|', Some('|')) => Some((2, false)),
             ('|', _) => Some((1, true)),
-            (';', _) | ('\n', _) => Some((1, false)),
+            ('$', Some('(')) => Some((2, false)),
+            (';', _) | ('\n', _) | ('`', _) => Some((1, false)),
             _ => None,
         };
         if let Some((len, pipe)) = split {
@@ -145,6 +158,8 @@ fn critical_words(cmd: &str, args: &[&str]) -> bool {
         c if c.starts_with("mkfs") => true,
         // O comando chega em minúsculas: `-R` vira `-r`, `-D` vira `-d`.
         "rm" | "chmod" | "chown" => has_flag(args, 'r', "--recursive"),
+        // PowerShell: `Remove-Item -Recurse` (e os apelidos).
+        "remove-item" | "ri" | "rd" | "rmdir" | "del" | "erase" => has_flag(args, 'r', "-recurse"),
         "git" => {
             let (sub, rest) = subcommand(args);
             match sub {
@@ -240,6 +255,11 @@ mod tests {
             "kubectl delete pod x",
             "terraform apply",
             "chmod -R 777 .",
+            "bash -c 'git push origin main'",
+            "eval \"rm -rf build\"",
+            "echo $(rm -rf dist)",
+            "echo `git push`",
+            "Remove-Item -Recurse -Force node_modules",
         ] {
             assert!(bash(c), "{c}");
         }

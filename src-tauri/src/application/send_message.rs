@@ -9,6 +9,7 @@ use super::{
         AccountRepository, ChatEngine, Clock, ConnectorRepository, ConversationRepository, EventSink, FileLoader,
         Settings, SkillRepository, SwitchLog,
     },
+    stall::{resume_prompt, Watch, MAX_STALLS},
     turn_setup::PrepareTurn,
     AppError, AppResult, ChatEvent, PendingUsers, TurnControl,
 };
@@ -22,7 +23,7 @@ use crate::domain::{
     },
 };
 use std::{collections::{HashMap, HashSet}, sync::Arc};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc;
 
 const TITLE_MAX_CHARS: usize = 48;
 /// Usado quando o provedor não informa o horário do reset.
@@ -150,6 +151,11 @@ impl SendMessage {
         let mut session = conversation.cli_session_id.clone();
         let mut session_provider = conversation.session_provider;
         let mut continuing = false;
+        // O vigia interrompeu a última tentativa: o que travou, para avisar o agente ao continuar.
+        let mut stall_note: Option<String> = None;
+        let mut stalls = 0usize;
+        // Depois de uma interrupção pelo vigia, a mesma conta continua a sessão (sem escolher de novo).
+        let mut retry: Option<Account> = None;
         // Instruções e conhecimento que a sessão já recebeu: cada parte só é reenviada quando muda.
         let standing = [(RULES_PREFIX, setup.rules.as_deref()), (KNOWLEDGE_PREFIX, setup.knowledge_key.as_deref())]
             .map(|(prefix, text)| {
@@ -167,24 +173,30 @@ impl SendMessage {
         };
 
         loop {
-            let all = self.accounts.all()?;
             let now = self.clock.now();
-            let spare = self.settings.flag(flags::SWITCH_EARLY, true);
-            let Some(account) = pick_next(&all, now, &tried, spare).cloned() else {
-                self.emit(conversation_id, ChatEvent::Exhausted { resets_at: earliest_reset(&all, now) });
-                return Ok(());
-            };
-            if let Some((from, reason)) = previous.take() {
-                self.announce_switch(conversation_id, &title, &from, &account, reason)?;
-            } else if tried.is_empty() {
-                // Na primeira tentativa, avisa se a conta da vez foi poupada por estar quase no limite.
-                let spared = pick_next(&all, now, &tried, false).filter(|a| a.id != account.id);
-                if let Some(from) = spared.filter(|_| last_account.as_deref() != Some(account.id.as_str())) {
-                    self.announce_switch(conversation_id, &title, &from.clone(), &account, Handoff::NearLimit)?;
+            let account = match retry.take() {
+                Some(account) => account,
+                None => {
+                    let all = self.accounts.all()?;
+                    let spare = self.settings.flag(flags::SWITCH_EARLY, true);
+                    let Some(account) = pick_next(&all, now, &tried, spare).cloned() else {
+                        self.emit(conversation_id, ChatEvent::Exhausted { resets_at: earliest_reset(&all, now) });
+                        return Ok(());
+                    };
+                    if let Some((from, reason)) = previous.take() {
+                        self.announce_switch(conversation_id, &title, &from, &account, reason)?;
+                    } else if tried.is_empty() {
+                        // Na primeira tentativa, avisa se a conta da vez foi poupada por estar quase no limite.
+                        let spared = pick_next(&all, now, &tried, false).filter(|a| a.id != account.id);
+                        if let Some(from) = spared.filter(|_| last_account.as_deref() != Some(account.id.as_str())) {
+                            self.announce_switch(conversation_id, &title, &from.clone(), &account, Handoff::NearLimit)?;
+                        }
+                    }
+                    tried.push(account.id.clone());
+                    account
                 }
-            }
+            };
             self.emit(conversation_id, ChatEvent::Account { id: account.id.clone(), name: account.name.clone() });
-            tried.push(account.id.clone());
 
             // A sessão só existe no serviço que a criou: uma conta de outro tipo começa
             // uma sessão nova e recebe o diálogo já gravado como contexto.
@@ -198,6 +210,7 @@ impl SendMessage {
             let resume = session.clone().filter(|_| !foreign_session);
             let carry_on = continuing && resume.is_some();
             let prompt = match &resume {
+                Some(_) if carry_on && stall_note.is_some() => resume_prompt(stall_note.as_deref().unwrap_or_default()),
                 Some(_) if carry_on => CONTINUE_PROMPT.to_owned(),
                 Some(_) if rules_changed || knowledge_changed => updated_instructions(
                     rules_changed.then(|| setup.rules.as_deref().unwrap_or_default()),
@@ -228,15 +241,82 @@ impl SendMessage {
                 read_dirs: setup.read_dirs.clone(),
                 mcp_servers: setup.mcp_servers.clone(),
             };
+            stall_note = None;
             let mut journal = Journal::default();
-            let answer = control.answer.clone();
+            // As suas respostas passam pelo vigia a caminho do motor: ele sabe quando você respondeu.
+            // As aprovações do próprio app vão direto.
+            let (relay, relayed) = mpsc::unbounded_channel();
+            let mut yours = std::mem::replace(&mut control.decisions, relayed);
+            let answer = relay.clone();
             let pending_users = control.pending_users.clone();
-            let end = self
-                .engine
-                .run_turn(&request, &mut control, &mut |event| {
-                    self.forward(conversation_id, &account, &mut journal, &answer, &pending_users, event)
-                })
-                .await;
+            // Vigia: tempo demais sem nenhum evento (um conector que não devolve a chamada, um CLI parado)
+            // interrompe o turno; esperar a sua autorização não conta.
+            let watch = std::sync::Mutex::new(Watch::new(tokio::time::Instant::now()));
+            let cancel = control.cancel.clone();
+            let mut stalled: Option<String> = None;
+            let end = {
+                let mut listen = |event: &TurnEvent| {
+                    let approved = matches!(event, TurnEvent::Permission { tool, input, .. }
+                        if self.is_tool_allowed(conversation_id, tool) || self.auto_approves(conversation_id, tool, input));
+                    let asks_you = matches!(event, TurnEvent::Permission { .. }) && !approved;
+                    if let Ok(mut w) = watch.lock() {
+                        w.see(event, asks_you, tokio::time::Instant::now());
+                    }
+                    match event {
+                        TurnEvent::Permission { request_id, .. } if approved => {
+                            let _ = answer.send(PermissionDecision::new(request_id, true));
+                        }
+                        _ => self.forward(conversation_id, &account, &mut journal, &pending_users, event),
+                    }
+                };
+                let turn = self.engine.run_turn(&request, &mut control, &mut listen);
+                tokio::pin!(turn);
+                loop {
+                    // Confere de novo daqui a pouco mesmo com prazo mais longe: um evento novo pode
+                    // encurtá-lo (ex.: uma chamada de conector que começou).
+                    let poll = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+                    let wake = watch.lock().ok().and_then(|w| w.deadline()).map_or(poll, |d| d.min(poll));
+                    tokio::select! {
+                        end = &mut turn => break end,
+                        Some(decision) = yours.recv() => {
+                            if let Ok(mut w) = watch.lock() {
+                                w.answered(&decision.request_id, tokio::time::Instant::now());
+                            }
+                            let _ = relay.send(decision);
+                        }
+                        _ = tokio::time::sleep_until(wake), if stalled.is_none() => {
+                            if let Ok(w) = watch.lock()
+                                && w.deadline().is_some_and(|d| d <= tokio::time::Instant::now())
+                            {
+                                stalled = Some(w.culprit());
+                                cancel.notify_one();
+                            }
+                        }
+                    }
+                }
+            };
+            control.decisions = yours;
+
+            // Interrompido pelo vigia: grava o que veio, avisa e continua a mesma sessão na mesma conta.
+            if let (Some(culprit), TurnEnd::Cancelled) = (stalled, &end) {
+                self.record_segment(conversation_id, &account.id, &mut journal);
+                self.record_unanswered_calls(conversation_id, &account.id, &mut journal);
+                stalls += 1;
+                if stalls > MAX_STALLS {
+                    let message = format!("{culprit}. O agente travou {stalls} vezes seguidas e o turno foi encerrado.");
+                    self.conversations.add_message(conversation_id, ROLE_NOTICE, &message, None, None)?;
+                    return Err(AppError(message));
+                }
+                let notice = format!("{culprit}: o app interrompeu a chamada e o agente segue sem ela.");
+                self.conversations.add_message(conversation_id, ROLE_NOTICE, &notice, None, None)?;
+                self.emit(conversation_id, ChatEvent::Notice { text: notice });
+                self.emit(conversation_id, ChatEvent::Reset);
+                remember_standing();
+                keep_session(&journal, &account, &mut session, &mut session_provider, &mut continuing);
+                stall_note = Some(culprit);
+                retry = Some(account);
+                continue;
+            }
 
             // Com a resposta já entregue, um limite ou login vencido no fim (enquanto os agentes
             // em segundo plano terminavam) não refaz a pergunta em outra conta: ela já foi respondida.
@@ -413,7 +493,6 @@ impl SendMessage {
         conversation_id: &str,
         account: &Account,
         journal: &mut Journal,
-        answer: &UnboundedSender<PermissionDecision>,
         pending_users: &PendingUsers,
         event: &TurnEvent,
     ) {
@@ -434,18 +513,15 @@ impl SendMessage {
                     self.record_tool(conversation_id, account_id, journal, &content);
                 }
             }
+            // Os pedidos que o app aprova sozinho não chegam aqui.
             TurnEvent::Permission { request_id, tool, input, description } => {
-                if self.is_tool_allowed(conversation_id, tool) || self.auto_approves(conversation_id, tool, input) {
-                    let _ = answer.send(PermissionDecision::new(request_id, true));
-                } else {
-                    let event = ChatEvent::Permission {
-                        request_id: request_id.clone(),
-                        tool: tool.clone(),
-                        input: input.clone(),
-                        description: description.clone(),
-                    };
-                    self.emit(conversation_id, event);
-                }
+                let event = ChatEvent::Permission {
+                    request_id: request_id.clone(),
+                    tool: tool.clone(),
+                    input: input.clone(),
+                    description: description.clone(),
+                };
+                self.emit(conversation_id, event);
             }
             TurnEvent::Thinking(text) => self.emit(conversation_id, ChatEvent::Thinking { text: text.clone() }),
             TurnEvent::SubagentDelta(text) => self.emit(conversation_id, ChatEvent::Subagent { text: text.clone() }),
@@ -661,6 +737,40 @@ mod tests {
         let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, ["user", "tool", "notice", "assistant"]);
         assert_eq!(messages[3].account_id.as_deref(), Some("trabalho"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_connector_is_interrupted_and_the_session_continues() {
+        let world = World::with_accounts(vec![sample("pessoal", 1)]);
+        let engine = ScriptedEngine::new(|req, call| match call {
+            1 => {
+                let work = vec![
+                    TurnEvent::Session("s1".into()),
+                    TurnEvent::ToolCall { id: "t1".into(), name: "mcp__claude_ai_Atlassian__getJiraIssue".into(), input: "{}".into() },
+                ];
+                (work, TurnEnd::Done { session_id: None, text: String::new() })
+            }
+            _ => {
+                assert_eq!(req.resume.as_deref(), Some("s1"), "segue na mesma sessão");
+                assert!(req.prompt.starts_with("O conector Atlassian (getJiraIssue) não respondeu em 3 minutos"), "{}", req.prompt);
+                (vec![], TurnEnd::Done { session_id: Some("s1".into()), text: "segui sem ele".into() })
+            }
+        });
+        engine.hangs.lock().unwrap().push(1);
+        use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
+        let messages = world.store.messages("c1").unwrap();
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "tool", "notice", "assistant"]);
+        assert!(messages[2].content.contains("o app interrompeu a chamada"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_with_an_error_when_it_keeps_stalling() {
+        let world = World::with_accounts(vec![sample("pessoal", 1)]);
+        let engine = ScriptedEngine::new(|_, _| (vec![TurnEvent::Session("s1".into())], TurnEnd::Done { session_id: None, text: String::new() }));
+        engine.hangs.lock().unwrap().extend([1, 2, 3]);
+        let err = use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap_err();
+        assert!(err.0.contains("travou 3 vezes"), "{}", err.0);
     }
 
     #[tokio::test]
