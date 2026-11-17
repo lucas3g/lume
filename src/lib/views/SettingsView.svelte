@@ -89,7 +89,7 @@
 </div>
 
 <style>
-  .panel { display: flex; flex-direction: column; gap: 12px; }
+  .panel { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
   .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
   .choice {
     display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 12px;
