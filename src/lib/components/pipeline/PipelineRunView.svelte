@@ -8,12 +8,13 @@
   import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
-    clock, duration, icon, inputSummary, isActive, outputSummary, passesByRole, passLabel, RUN_STATUS,
+    choiceFindings, clock, duration, findingsMarkdown, icon, inputSummary, isActive, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, VISUAL,
   } from "../../pipeline";
-  import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type StageRun, type View } from "../../types";
+  import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
   import PipelineOffice from "./PipelineOffice.svelte";
+  import ReviewChoiceCard from "./ReviewChoiceCard.svelte";
   import { ui } from "../../state/ui.svelte";
 
   interface Props {
@@ -48,10 +49,15 @@
   const active = $derived(isActive(detail.status));
   const passes = $derived(passesByRole(detail));
   const latest = $derived(detail.stages.at(-1) ?? null);
-  const running = $derived(detail.stages.find((s) => s.status === "running" && s.role !== "approval") ?? null);
+  const running = $derived(detail.stages.find((s) => s.status === "running" && !isUserStep(s.role)) ?? null);
   const approval = $derived(
     detail.status === "awaiting_approval" ? (detail.stages.findLast((s) => s.role === "approval" && s.status === "running") ?? null) : null,
   );
+  /** Parada da sua escolha sobre o code review, e a passagem do Code review que a abriu. */
+  const choice = $derived(
+    detail.status === "awaiting_choice" ? (detail.stages.findLast((s) => s.role === "review_choice" && s.status === "running") ?? null) : null,
+  );
+  const choiceReview = $derived(choice ? (detail.stages.findLast((s) => s.role === "code_review" && s.status === "done") ?? null) : null);
   const status = $derived(RUN_STATUS[detail.status]);
   /** Segundos gastos pelos bots, contando a etapa em andamento até agora. */
   const spent = $derived(detail.spent_seconds + (running ? Math.max(0, now - pipelines.fetchedAt / 1000) : 0));
@@ -133,7 +139,7 @@
 
   const accountName = (id: string | null) => accounts.list.find((a) => a.id === id)?.name ?? null;
   function stageAccount(stage: StageRun): string {
-    if (stage.role === "approval" || stage.role === "feedback") return "você";
+    if (isUserStep(stage.role)) return "você";
     const live = stage.status === "running" ? chat.turns[stage.conversation_id]?.account : null;
     const name = live ?? accountName(stageAccountId(pipelines.messages[stage.conversation_id] ?? []));
     const swapped = switchedAccount(pipelines.messages[stage.conversation_id] ?? []);
@@ -145,6 +151,7 @@
   /** O que está acontecendo agora, em uma linha. */
   const nowLine = $derived.by(() => {
     if (detail.status === "awaiting_approval") return { tone: "you", who: "Sua aprovação", text: "a esteira está parada até você aprovar o plano ou pedir ajustes" };
+    if (detail.status === "awaiting_choice") return { tone: "you", who: "Sua escolha", text: "a esteira está parada até você escolher o que corrigir do code review" };
     if (running) {
       const who = STATION[running.role].name;
       if (chat.permissions[running.conversation_id]) return { tone: "you", who, text: "pede sua autorização para continuar" };
@@ -177,6 +184,10 @@
     await api.decidePipelinePlan(detail.id, feedback.trim());
     feedback = "";
     adjusting = false;
+    follow = true;
+  });
+  const decideReview = (picks: ReviewPick[], note: string | null) => act(async () => {
+    await api.decidePipelineReview(detail.id, picks, note);
     follow = true;
   });
   const cancelRun = () => act(async () => {
@@ -253,7 +264,7 @@
           <button type="button" class="key link" title={`Abrir ${detail.jira_key} no Jira`} onclick={() => openUrl(detail.jira_url!)}>{detail.jira_key} ↗</button>
         {:else if detail.jira_key}<span class="key">{detail.jira_key}</span>{:else}<span class="key manual">Pedido escrito</span>{/if}
         <h1>{detail.title}</h1>
-        <span class="pill {status.tone}">{#if detail.status === "awaiting_approval"}<span class="dot warn pulse"></span>{:else if detail.status === "running"}<span class="dot acc"></span>{/if}{status.label}</span>
+        <span class="pill {status.tone}">{#if isWaitingYou(detail.status)}<span class="dot warn pulse"></span>{:else if detail.status === "running"}<span class="dot acc"></span>{/if}{status.label}</span>
       </div>
       <div class="meta">
         <span class="m">{@html icon("folder", 13)}Projeto <b>{projectName(detail.project_id) ?? "?"}</b></span>
@@ -266,7 +277,7 @@
     </div>
     <div class="nums">
       <div class="num"><span class="label">Tempo decorrido</span><span class="value" class:stopped={!active}>{clock(elapsed)}</span></div>
-      <div class="num" title="Só o tempo dos bots conta: a espera pela sua aprovação fica de fora.">
+      <div class="num" title="Só o tempo dos bots conta: a espera pelas suas decisões fica de fora.">
         <span class="label">Orçamento</span>
         <span class="value">{clock(spent)} <small>de {detail.budget_minutes} min</small></span>
         <span class="meter" aria-hidden="true"><span style:width={`${budgetPercent.toFixed(1)}%`}></span></span>
@@ -314,7 +325,7 @@
             <li><span class="node mini s-{key}">{@html icon(v.glyph, 9, 2.8)}</span><span><b>{v.label}</b> · {v.desc}</span></li>
           {/each}
         </ul>
-        <p class="foot">Caminhos de devolução: você devolve o plano ao Planejador; o Revisor e o Testador devolvem o trabalho ao Implementador, no máximo {detail.max_rounds} vezes. O losango é a parada em que a decisão é sua.</p>
+        <p class="foot">Caminhos de devolução: você devolve o plano ao Planejador; o Revisor e o Testador devolvem o trabalho ao Implementador, no máximo {detail.max_rounds} vezes. Depois do Code review, você escolhe o que corrigir e o trabalho volta ao Implementador. O losango é a parada em que a decisão é sua.</p>
       </div>
     {/if}
     {#if ui.pipelineView === "office"}
@@ -355,6 +366,8 @@
           {/if}
           <div class="plan md">{@html renderMarkdown(approval.input)}</div>
         </section>
+      {:else if choice}
+        <ReviewChoiceCard stage={choice} review={choiceReview} {busy} ondecide={decideReview} />
       {:else if !active}
         <section class="card outcome" class:ok={detail.status === "done"} class:bad={detail.status === "failed" || detail.status === "needs_info"} aria-label="Resultado da execução">
           {#if detail.status === "done"}
@@ -424,7 +437,7 @@
             <li>
               <button type="button" class="reg-item" class:sel={panelStageId === s.id} onclick={() => select(s.role, s.id)}>
                 <span class="r-time">{clock(s.started_at - detail.created_at)}</span>
-                <span class="r-mark"><span class="node mini s-{v.visual}" class:gate={s.role === "approval"}>{@html stationGlyph(s.role, v.visual)}</span></span>
+                <span class="r-mark"><span class="node mini s-{v.visual}" class:gate={isUserStep(s.role)}>{@html stationGlyph(s.role, v.visual)}</span></span>
                 <span class="r-body">
                   <span class="r-l1">
                     <b>{STATION[s.role].name}</b>{#if tag}<span class="tag">{tag}</span>{/if}
@@ -450,7 +463,7 @@
           </div>
           <div class="p-meta">
             {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelModel}modelo <b>{panelModel}</b> · {:else if panelStation.model}{panelStation.model.toLowerCase()} · {/if}{#if panelEffort}esforço <b>{panelEffort}</b> · {/if}{panelStation.perm}
-            {#if panelStage && panelStage.role !== "approval" && panelStage.role !== "feedback"} · conta <b>{stageAccount(panelStage)}</b>{/if}
+            {#if panelStage && !isUserStep(panelStage.role)} · conta <b>{stageAccount(panelStage)}</b>{/if}
             {#if panelStage} · <span class="mono">{duration(stageSeconds(panelStage))}</span>{/if}
           </div>
           {#if passes[panelStation.role].length > 1 || (!follow && latest)}
@@ -491,12 +504,14 @@
               {/if}
               {#if panelStage.role === "approval"}
                 <div class="md">{@html renderMarkdown(panelStage.input)}</div>
+              {:else if panelStage.role === "review_choice"}
+                <div class="md">{@html renderMarkdown(findingsMarkdown(choiceFindings(panelStage)) || "O code review não trouxe a lista de achados.")}</div>
               {:else}
                 <pre class="prompt">{panelStage.input}</pre>
               {/if}
             </details>
             {/if}
-            {#if panelStage.role !== "approval" && panelStage.role !== "feedback"}
+            {#if !isUserStep(panelStage.role)}
               <section>
                 <h3 class="label">{panelStage.status === "running" ? "Agora" : "O que fez"}</h3>
                 <ol class="tlog" bind:this={logEl} onscroll={onLogScroll}>
@@ -516,7 +531,7 @@
               {#if panelStage.output}
                 {#if panelStage.status === "failed"}<p class="failed">{panelStage.output}</p>{:else}<div class="md">{@html renderMarkdown(panelStage.output)}</div>{/if}
               {:else}
-                <p class="muted small">{panelStage.status === "running" ? (panelStage.role === "approval" ? "Falta a sua decisão: aprovar o plano ou pedir ajustes." : `Ainda trabalhando. Vai entregar: ${panelStation.delivers.toLowerCase()}`) : "Nada entregue."}</p>
+                <p class="muted small">{panelStage.status === "running" ? (panelStage.role === "approval" ? "Falta a sua decisão: aprovar o plano ou pedir ajustes." : panelStage.role === "review_choice" ? "Falta a sua escolha: o que corrigir dos achados do code review." : `Ainda trabalhando. Vai entregar: ${panelStation.delivers.toLowerCase()}`) : "Nada entregue."}</p>
               {/if}
             </section>
             {#if panelStage.conversation_id}

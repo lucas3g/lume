@@ -2,7 +2,7 @@
 
 import { parseToolUse, summarize } from "./tools";
 import { modelLabel } from "./types";
-import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, StageRun } from "./types";
+import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, ReviewFinding, StageRun } from "./types";
 
 export interface Station {
   role: PipelineRole;
@@ -36,6 +36,9 @@ export const STATIONS: Station[] = [
   { role: "tester", name: "Testador", model: "Modelo equilibrado", tier: "balanced", perm: "executa",
     does: "Roda as verificações do projeto (tipos, testes, lint) e relata o resultado. Não corrige código.",
     receives: "A pasta de trabalho com as alterações aprovadas.", delivers: "Cada comando rodado, o resultado e os erros." },
+  { role: "code_review", name: "Code review", model: "Modelo forte", tier: "strong", perm: "só leitura",
+    does: "Roda a skill de code review do CLI e lista os achados. Você escolhe o que corrigir e decide os que têm mais de um caminho.",
+    receives: "As alterações aprovadas e testadas.", delivers: "Os achados, com a gravidade e, quando há, os caminhos possíveis." },
   { role: "reporter", name: "Relator", model: "Modelo rápido", tier: "fast", perm: "Jira",
     does: "Comenta o resultado na task, move para revisão e sugere a mensagem de commit. Não faz commit nem push.",
     receives: "Plano, resumo da implementação, revisão e testes.", delivers: "O comentário no Jira, a mudança de status e a sugestão de commit." },
@@ -48,7 +51,7 @@ export const TIERS: { tier: Tier; label: string }[] = [
 ];
 
 /** Etapas que o projeto pode desligar; as demais garantem plano aprovado e código revisado. */
-export const OPTIONAL_ROLES: PipelineRole[] = ["triage", "tester", "reporter"];
+export const OPTIONAL_ROLES: PipelineRole[] = ["triage", "tester", "code_review", "reporter"];
 
 /** Ajuste que você pede ao reabrir uma execução concluída; aparece no registro, não na esteira. */
 export const FEEDBACK_STEP: Station = {
@@ -57,7 +60,48 @@ export const FEEDBACK_STEP: Station = {
   receives: "A execução concluída.", delivers: "O que precisa mudar.",
 };
 
-export const STATION = Object.fromEntries([...STATIONS, FEEDBACK_STEP].map((s) => [s.role, s])) as Record<PipelineRole, Station>;
+/** Sua escolha sobre o code review; aparece no registro e, na esteira, na estação do Code review. */
+export const CHOICE_STEP: Station = {
+  role: "review_choice", name: "Sua escolha", model: null, tier: null, perm: "você decide", gate: true,
+  does: "Você vê os achados do code review, marca os que quer corrigir e escolhe o caminho dos que têm mais de um. Sem nada marcado, a esteira segue para o Relator.",
+  receives: "Os achados do code review.", delivers: "O que corrigir e como.",
+};
+
+export const STATION = Object.fromEntries([...STATIONS, FEEDBACK_STEP, CHOICE_STEP].map((s) => [s.role, s])) as Record<PipelineRole, Station>;
+
+/** Etapas que esperam você, não um bot. */
+export const isUserStep = (role: PipelineRole) => role === "approval" || role === "feedback" || role === "review_choice";
+
+/** Estação em que a etapa aparece na esteira: a sua escolha fica na do Code review; o ajuste, em nenhuma. */
+export const stationRole = (role: PipelineRole): PipelineRole | null =>
+  role === "review_choice" ? "code_review" : role === "feedback" ? null : role;
+
+/** Texto do code review sem o bloco ```json final dos achados (que a tela mostra como lista). */
+export function reviewSummary(text: string): string {
+  const start = text.lastIndexOf("```json");
+  return (start < 0 ? text : text.slice(0, start)).trim();
+}
+
+/** Os achados em Markdown, para o registro da sua escolha. */
+export function findingsMarkdown(findings: ReviewFinding[]): string {
+  return findings
+    .map((f) => {
+      const place = f.file ? ` · \`${f.file}${f.line ? `:${f.line}` : ""}\`` : "";
+      const options = f.options.map((o, i) => `\n   ${i + 1}. ${o}`).join("");
+      return `- **${f.id} · ${f.title}**${f.severity ? ` (${f.severity})` : ""}${place}${f.detail ? `\n  ${f.detail}` : ""}${options}`;
+    })
+    .join("\n");
+}
+
+/** Achados gravados na parada da sua escolha (vazio se o code review não trouxe a lista). */
+export function choiceFindings(stage: StageRun): ReviewFinding[] {
+  try {
+    const list = JSON.parse(stage.input);
+    return Array.isArray(list) ? (list as ReviewFinding[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Estado visual de uma estação. */
 export type Visual = "waiting" | "working" | "done" | "returned" | "failed" | "skipped" | "you";
@@ -105,13 +149,16 @@ export function icon(name: Glyph, size = 14, stroke = 2): string {
 export const RUN_STATUS: Record<PipelineStatus, { tone: "acc" | "warn" | "ok" | "bad" | ""; label: string }> = {
   running: { tone: "acc", label: "Em execução" },
   awaiting_approval: { tone: "warn", label: "Aguardando aprovação" },
+  awaiting_choice: { tone: "warn", label: "Aguardando sua escolha" },
   needs_info: { tone: "bad", label: "Precisa de informação" },
   done: { tone: "ok", label: "Concluída" },
   failed: { tone: "bad", label: "Falhou" },
   cancelled: { tone: "", label: "Cancelada" },
 };
 
-export const isActive = (status: PipelineStatus) => status === "running" || status === "awaiting_approval";
+export const isActive = (status: PipelineStatus) => status === "running" || isWaitingYou(status);
+/** A execução está parada esperando uma decisão sua (plano ou code review). */
+export const isWaitingYou = (status: PipelineStatus) => status === "awaiting_approval" || status === "awaiting_choice";
 
 /** Visual e rótulo de uma etapa registrada. `asking`: o bot pede autorização ao usuário. */
 export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual; label: string } {
@@ -119,14 +166,17 @@ export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual;
   switch (stage.status) {
     case "running":
       if (role === "approval") return { visual: "you", label: "Esperando você" };
+      if (role === "review_choice") return { visual: "you", label: "Esperando sua escolha" };
       return asking ? { visual: "you", label: "Pede autorização" } : { visual: "working", label: "Trabalhando" };
     case "done":
       if (role === "feedback") return { visual: "you", label: "Ajuste pedido" };
       if (role === "approval") return { visual: "done", label: "Aprovado" };
+      if (role === "review_choice") return { visual: "done", label: "Sem correções" };
       if (role === "reviewer" || role === "tester") return { visual: "done", label: "Aprovou" };
       return { visual: "done", label: "Concluída" };
     case "returned":
       if (role === "approval") return { visual: "returned", label: "Ajustes pedidos" };
+      if (role === "review_choice") return { visual: "returned", label: "Correções pedidas" };
       if (role === "triage") return { visual: "returned", label: "Achou vaga" };
       return { visual: "returned", label: "Devolveu" };
     case "failed":
@@ -138,7 +188,7 @@ export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual;
 
 /** Etapas de cada papel, na ordem em que rodaram. */
 export function passesByRole(detail: PipelineDetail): Record<PipelineRole, StageRun[]> {
-  const out = Object.fromEntries([...STATIONS, FEEDBACK_STEP].map((s) => [s.role, [] as StageRun[]])) as Record<PipelineRole, StageRun[]>;
+  const out = Object.fromEntries([...STATIONS, FEEDBACK_STEP, CHOICE_STEP].map((s) => [s.role, [] as StageRun[]])) as Record<PipelineRole, StageRun[]>;
   for (const stage of detail.stages) out[stage.role].push(stage);
   return out;
 }
@@ -161,11 +211,14 @@ export function inputSummary(stage: StageRun, detail: PipelineDetail): string {
       return stage.input.includes("<triagem>") ? "Task + triagem" : "Task (sem triagem)";
     case "approval": return "Plano";
     case "implementer":
+      if (stage.input.includes("O code review apontou")) return "Correções do code review";
       if (stage.input.includes("<problemas>")) return "Problemas apontados";
       return stage.input.includes("<ajuste_do_usuario>") ? "Seu ajuste" : "Plano aprovado";
     case "reviewer": return stage.input.includes("<diff>") ? "Só o diff" : "Resumo do Implementador";
     case "tester": return "Alterações aprovadas";
-    case "reporter": return "Plano, implementação, revisão e testes";
+    case "code_review": return "Alterações aprovadas e testadas";
+    case "review_choice": return "Achados do code review";
+    case "reporter": return stage.input.includes("<code_review>") ? "Plano, implementação, revisão, testes e code review" : "Plano, implementação, revisão e testes";
     case "feedback": return "Seu teste";
   }
 }
@@ -174,15 +227,33 @@ const VERDICT_LINE = /^\W*VEREDITO\W.*$/im;
 
 /** A entrega da etapa em poucas palavras: o veredito ou a primeira linha com conteúdo. */
 export function outputSummary(stage: StageRun): string {
-  if (stage.status === "running") return stage.role === "approval" ? "esperando você" : "trabalhando…";
+  if (stage.status === "running") return isUserStep(stage.role) ? "esperando você" : "trabalhando…";
   if (stage.status === "cancelled") return "Cancelada por você";
   if (stage.role === "approval") return stage.status === "done" ? "Aprovado por você" : "Ajustes pedidos";
   if (stage.role === "feedback") return firstLine(stage.output ?? "") || "Ajuste pedido";
+  if (stage.role === "review_choice") return stage.status === "done" ? "Seguir sem correções" : "Correções escolhidas por você";
+  if (stage.role === "code_review" && stage.status === "done") {
+    const found = findingsIn(stage.output ?? "");
+    if (found !== null) return found === 0 ? "Nenhum achado" : found === 1 ? "1 achado" : `${found} achados`;
+  }
   const text = stage.output ?? "";
   if (stage.status === "failed") return firstLine(text) || "Falhou";
   const verdict = text.match(VERDICT_LINE)?.[0].replace(/[*`_]/g, "").trim();
   if (verdict) return verdict;
   return firstLine(text) || "Concluída";
+}
+
+/** Quantos achados a resposta do code review lista no último bloco ```json; `null` sem a lista. */
+function findingsIn(text: string): number | null {
+  const start = text.lastIndexOf("```json");
+  if (start < 0) return null;
+  const block = text.slice(start + 7).split("```")[0];
+  try {
+    const list = JSON.parse(block);
+    return Array.isArray(list) ? list.length : null;
+  } catch {
+    return null;
+  }
 }
 
 function firstLine(text: string): string {

@@ -371,8 +371,28 @@ export const SCOPE_ALL = "all";
 
 // ---- esteira de bots
 
-export type PipelineRole = "triage" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "reporter" | "feedback";
-export type PipelineStatus = "running" | "awaiting_approval" | "needs_info" | "done" | "failed" | "cancelled";
+export type PipelineRole =
+  | "triage" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "code_review" | "reporter" | "feedback" | "review_choice";
+export type PipelineStatus = "running" | "awaiting_approval" | "awaiting_choice" | "needs_info" | "done" | "failed" | "cancelled";
+
+/** Achado do code review, para você escolher o que corrigir. */
+export interface ReviewFinding {
+  id: string;
+  title: string;
+  file: string | null;
+  line: number | null;
+  /** "alta", "média" ou "baixa", como o bot escreveu. */
+  severity: string | null;
+  detail: string;
+  /** Caminhos possíveis quando a correção depende de uma decisão sua; vazio é correção direta. */
+  options: string[];
+}
+
+/** Achado que você quer corrigir e, quando ele tem caminhos, o escolhido. */
+export interface ReviewPick {
+  id: string;
+  option: number | null;
+}
 export type StageStatus = "running" | "done" | "returned" | "failed" | "cancelled";
 
 export interface PipelineRun {

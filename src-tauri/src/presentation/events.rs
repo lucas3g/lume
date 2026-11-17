@@ -82,6 +82,7 @@ fn notice_for(event: &ChatEvent) -> Option<(&'static str, String)> {
 fn pipeline_notice(run: &PipelineRun) -> Option<(&'static str, String)> {
     let title = match run.status {
         RunStatus::AwaitingApproval => "Esteira: plano pronto para aprovação",
+        RunStatus::AwaitingChoice => "Esteira: code review pronto para você escolher o que corrigir",
         RunStatus::Done => "Esteira concluída",
         RunStatus::NeedsInfo => "Esteira: a task precisa de mais informação",
         RunStatus::Failed => "Esteira parou",

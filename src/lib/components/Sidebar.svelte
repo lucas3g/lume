@@ -214,7 +214,7 @@
       <button type="button" class="item" class:active={view === item.id} aria-current={view === item.id ? "page" : undefined} title={item.hint} onclick={() => onnavigate(item.id)}>
         <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d={item.icon} /></svg>
         {item.label}
-        {#if item.id === "pipelines" && pipelines.list.some((r) => r.status === "awaiting_approval")}<span class="waiting-dot" title="Um plano espera a sua aprovação"></span>{/if}
+        {#if item.id === "pipelines" && pipelines.list.some((r) => r.status === "awaiting_approval" || r.status === "awaiting_choice")}<span class="waiting-dot" title="Uma execução espera a sua decisão"></span>{/if}
       </button>
     {/each}
   </div>

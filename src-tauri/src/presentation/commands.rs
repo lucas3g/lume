@@ -15,7 +15,7 @@ use crate::domain::{
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
     history::{HistSession, HistoryStatus},
-    pipeline::{PipelineConfig, PipelineRun, TierModels},
+    pipeline::{PipelineConfig, PipelineRun, ReviewPick, TierModels},
     project::{MemoryFile, Project, ProjectFile},
     schedule::{Repeat, Task},
     store::{PluginListing, ServerListing},
@@ -746,6 +746,14 @@ pub struct ImageOut {
 #[tauri::command]
 pub fn decide_pipeline_plan(app: App<'_>, id: String, feedback: Option<String>) -> AppResult<()> {
     app.pipelines.decide_plan(&id, feedback.as_deref())?;
+    app.spawn_pipeline(id);
+    Ok(())
+}
+
+/// Escolha do usuário sobre o code review: os achados a corrigir e uma observação livre.
+#[tauri::command]
+pub fn decide_pipeline_review(app: App<'_>, id: String, picks: Vec<ReviewPick>, note: Option<String>) -> AppResult<()> {
+    app.pipelines.decide_review(&id, &picks, note.as_deref())?;
     app.spawn_pipeline(id);
     Ok(())
 }

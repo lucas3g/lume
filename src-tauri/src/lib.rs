@@ -108,6 +108,7 @@ pub fn run() {
             commands::pipeline_detail,
             commands::start_pipeline,
             commands::decide_pipeline_plan,
+            commands::decide_pipeline_review,
             commands::pipeline_images,
             commands::reopen_pipeline,
             commands::cancel_pipeline,

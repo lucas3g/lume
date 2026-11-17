@@ -3,7 +3,7 @@ import { accounts, activeAccount } from "./state/accounts.svelte";
 import { chat } from "./state/chat.svelte";
 import { pipelines } from "./state/pipelines.svelte";
 import {
-  duration, isActive, passesByRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
+  duration, isActive, isUserStep, passesByRole, stationRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
   type Station, type Visual,
 } from "./pipeline";
 import { EFFORTS, type PipelineDetail, type PipelineRole, type Provider, type StageRun, type TierModels } from "./types";
@@ -51,8 +51,10 @@ export function stationCards(
 ): StationCard[] {
   const finished = !isActive(detail.status);
   return STATIONS.map((station) => {
+    // Bots da estação; na do Code review, a sua escolha vem depois da passagem do bot.
     const list = passes[station.role];
-    const last = list.at(-1) ?? null;
+    const last = (station.role === "code_review" ? detail.stages.filter((s) => stationRole(s.role) === "code_review").at(-1) : list.at(-1)) ?? null;
+    const lastBot = list.at(-1) ?? null;
     const off = detail.skipped.includes(station.role);
     let visual: Visual = finished || off ? "skipped" : "waiting";
     let label = off ? "Desligada" : VISUAL[visual].label;
@@ -70,15 +72,15 @@ export function stationCards(
         const id = stageAccountId(pipelines.messages[last.conversation_id] ?? []);
         account = accounts.list.find((a) => a.id === id)?.name ?? null;
       }
-      if (station.gate) account = "você";
+      if (station.gate || isUserStep(last.role)) account = "você";
     }
     const agentInfo = detail.agents[station.role] ?? null;
     let model: string | null = null;
     if (!station.gate) {
-      if (last?.conversation_id) {
-        const id = stageAccountId(pipelines.messages[last.conversation_id] ?? []);
-        const live = last.status === "running" ? chat.turns[last.conversation_id]?.account : null;
-        model = stageModelText(detail, last, providerOf(live ? { name: live } : { id }));
+      if (lastBot?.conversation_id) {
+        const id = stageAccountId(pipelines.messages[lastBot.conversation_id] ?? []);
+        const live = lastBot.status === "running" ? chat.turns[lastBot.conversation_id]?.account : null;
+        model = stageModelText(detail, lastBot, providerOf(live ? { name: live } : { id }));
       }
       model ??= plannedModelText(station.role, providerOf({}), tiers.models, agentInfo?.model ?? null);
     }

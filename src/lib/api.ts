@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
   Account, AccountConnector, Agent, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, TierModels, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
+  MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -109,6 +109,7 @@ export const api = {
     invoke<PipelineRun>("start_pipeline", input),
   pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),
   decidePipelinePlan: (id: string, feedback: string | null) => invoke<void>("decide_pipeline_plan", { id, feedback }),
+  decidePipelineReview: (id: string, picks: ReviewPick[], note: string | null) => invoke<void>("decide_pipeline_review", { id, picks, note }),
   reopenPipeline: (id: string, feedback: string) => invoke<void>("reopen_pipeline", { id, feedback }),
   cancelPipeline: (id: string) => invoke<void>("cancel_pipeline", { id }),
   retryPipeline: (id: string) => invoke<void>("retry_pipeline", { id }),

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { icon, passesByRole, STATIONS, VISUAL, type Visual } from "../../pipeline";
+  import { icon, passesByRole, stationRole, STATIONS, VISUAL, type Visual } from "../../pipeline";
   import { loadTierModels, stationCards } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
@@ -17,7 +17,7 @@
   const ORDER = STATIONS.map((s) => s.role);
   const FORWARD_LABEL: Partial<Record<PipelineRole, string>> = {
     triage: "task", planner: "task triada", approval: "plano", implementer: "plano aprovado",
-    reviewer: "diff", tester: "diff aprovado", reporter: "verificado",
+    reviewer: "diff", tester: "diff aprovado", code_review: "verificado", reporter: "revisado",
   };
 
   const passes = $derived(passesByRole(detail));
@@ -30,6 +30,7 @@
     plan: returnedBy("approval"),
     review: returnedBy("reviewer"),
     test: returnedBy("tester"),
+    fix: returnedBy("review_choice"),
   });
   /** Trilho até a estação já percorrido. */
   const reached = (role: PipelineRole): boolean => {
@@ -78,6 +79,7 @@
     plan: { from: "approval", to: "planner", dx: 0, h: 24 },
     review: { from: "reviewer", to: "implementer", dx: 7, h: 24 },
     test: { from: "tester", to: "implementer", dx: -7, h: 42 },
+    fix: { from: "code_review", to: "implementer", dx: 0, h: 60 },
   } as const;
   const arcD = (k: keyof typeof ARCS) => arcPath(geo.x[ARCS[k].from], geo.x[ARCS[k].to] + ARCS[k].dx, ARCS[k].h);
   const arcMid = (k: keyof typeof ARCS) => ({
@@ -113,8 +115,9 @@
       seenCount = count - 1;
       return;
     }
-    if (!geo.w || (before && before.role === latest.role)) return;
-    const fromIdx = before ? ORDER.indexOf(before.role) : -1;
+    // A sua escolha fica na estação do Code review: passar de um para o outro não move o pacote.
+    if (!geo.w || (before && stationRole(before.role) === stationRole(latest.role))) return;
+    const fromIdx = before ? ORDER.indexOf(stationRole(before.role) ?? before.role) : -1;
     const toIdx = ORDER.indexOf(latest.role);
     let d: string;
     let back = false;
@@ -126,9 +129,9 @@
       label = "seu ajuste";
     } else if (fromIdx > toIdx && before) {
       back = true;
-      const key = before.role === "approval" ? "plan" : before.role === "tester" ? "test" : "review";
+      const key = before.role === "approval" ? "plan" : before.role === "tester" ? "test" : before.role === "review_choice" ? "fix" : "review";
       d = arcD(key);
-      label = key === "plan" ? "ajustes" : key === "test" ? "falhas" : "problemas";
+      label = { plan: "ajustes", test: "falhas", fix: "correções", review: "problemas" }[key];
     } else {
       d = line(fromIdx < 0 ? 6 : geo.x[ORDER[fromIdx]], geo.x[latest.role]);
     }
@@ -192,7 +195,7 @@
         <path class="rail" class:done={detail.status === "done"} d={line(geo.x.reporter, geo.w - 6)} />
         <circle class="end" cx="6" cy={f(geo.y)} r="2.5" />
         <circle class="end" cx={f(geo.w - 6)} cy={f(geo.y)} r="2.5" />
-        {#each ["plan", "review", "test"] as const as k (k)}
+        {#each ["plan", "review", "test", "fix"] as const as k (k)}
           <path class="arc" class:used={arcs[k] > 0} d={arcD(k)} />
           <path class="tip" class:used={arcs[k] > 0} d={arrowHead(geo.x[ARCS[k].to] + ARCS[k].dx)} />
         {/each}
@@ -201,7 +204,7 @@
       <path bind:this={movePath} class="hidden-path" d="M0 0" />
     </svg>
     {#if geo.w}
-      {#each [["plan", arcs.plan ? `ajustes ${arcs.plan}` : "ajustes"], ["review", `voltas ${Math.min(arcs.review + arcs.test, detail.max_rounds)}/${detail.max_rounds}`], ["test", "reprova"]] as const as [k, text] (k)}
+      {#each [["plan", arcs.plan ? `ajustes ${arcs.plan}` : "ajustes"], ["review", `voltas ${Math.min(arcs.review + arcs.test, detail.max_rounds)}/${detail.max_rounds}`], ["test", "reprova"], ["fix", arcs.fix ? `correções ${arcs.fix}` : "correções"]] as const as [k, text] (k)}
         {@const p = arcMid(k)}
         <span class="arc-label" class:used={arcs[k] > 0} style:transform={`translate(calc(${f(p.x)}px - 50%), calc(${f(p.y)}px - 50%))`}>{text}</span>
       {/each}
@@ -247,7 +250,7 @@
 
 <style>
   .scroll { overflow-x: auto; overflow-y: hidden; }
-  .stage { position: relative; min-width: 940px; padding: 58px 0 12px; }
+  .stage { position: relative; min-width: 1060px; padding: 78px 0 12px; }
   .rails { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
   .rail { fill: none; stroke: var(--border-strong); stroke-width: 2; stroke-linecap: round; transition: stroke 0.3s, opacity 0.3s; }
   .rail.done { stroke: var(--ok); opacity: 0.55; }
@@ -265,7 +268,7 @@
   .arc-label { position: absolute; left: 0; top: 0; z-index: 1; padding: 0 6px; border-radius: 4px; background: var(--bg-side); font-family: var(--mono); font-size: 10.5px; line-height: 1.5; color: var(--faint); white-space: nowrap; }
   .arc-label.used { color: var(--danger-text); }
 
-  .grid { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
+  .grid { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px; }
   .station { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; padding: 0; border: 0; border-radius: 10px; background: none; color: inherit; text-align: left; }
   .node { position: relative; z-index: 2; display: grid; place-items: center; width: 28px; height: 28px; border: 1.5px solid var(--border-strong); border-radius: 50%; background: var(--bg-side); color: var(--faint); transition: background 0.25s, border-color 0.25s, color 0.25s; }
   .node :global(svg) { display: block; }

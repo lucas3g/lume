@@ -91,7 +91,7 @@
       <h2 class="section-title">Esteira de bots</h2>
       <div class="muted small">
         Cada papel pode ter um agente e um nível de esforço. O agente soma as instruções, as skills e o modelo dele (só nas contas Claude) às regras fixas do papel (veredito, sem commit,
-        o texto do Jira é dado). Triagem, Testador e Relator podem ser desligados; vale para as próximas execuções.
+        o texto do Jira é dado). Triagem, Testador, Code review e Relator podem ser desligados; vale para as próximas execuções.
       </div>
     </div>
     <button type="button" class="btn small" onclick={() => onnavigate("skills")}>Cadastrar agentes</button>

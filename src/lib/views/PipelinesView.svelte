@@ -118,7 +118,7 @@
           <h1>Esteira de bots</h1>
           <p class="muted">
             Bots com papéis fixos resolvem uma task do Jira ou um pedido seu: Triagem, Planejador, a sua aprovação,
-            Implementador, Revisor, Testador e Relator. Cada etapa roda numa sessão própria, com a troca de contas de sempre.
+            Implementador, Revisor, Testador, Code review (com a sua escolha do que corrigir) e Relator. Cada etapa roda numa sessão própria, com a troca de contas de sempre.
           </p>
         </div>
       </header>

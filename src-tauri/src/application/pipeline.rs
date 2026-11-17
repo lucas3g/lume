@@ -15,7 +15,7 @@ use crate::domain::{
     chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, created_task, found_task, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
-        suggested_commit, Next, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, fix_request, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -321,6 +321,7 @@ impl ManagePipelines {
                 Next::Wait => return Ok(()),
                 Next::Finish(status, note) => return self.finish(&mut run, status, note),
                 Next::AskApproval => return self.ask_approval(&mut run, &stages),
+                Next::AskChoice => return self.ask_choice(&mut run, &stages),
                 Next::Run(role) => role,
             };
             if spent_seconds(&stages, self.clock.now()) >= run.budget_minutes * 60 {
@@ -449,6 +450,55 @@ impl ManagePipelines {
         self.touch(run)
     }
 
+    /// Abre a parada da escolha com os achados do último code review. Sem a lista na resposta,
+    /// a entrada fica vazia: o usuário lê o texto do code review e escreve o que quer corrigir.
+    fn ask_choice(&self, run: &mut PipelineRun, stages: &[StageRun]) -> AppResult<()> {
+        let review = stages.iter().rev().find(|s| s.role == Role::CodeReview && s.status == StageStatus::Done);
+        let findings = review.and_then(|s| s.output.as_deref()).and_then(parse_findings);
+        let stage = StageRun {
+            id: self.ids.new_id(),
+            run_id: run.id.clone(),
+            role: Role::ReviewChoice,
+            round: rounds(stages),
+            status: StageStatus::Running,
+            conversation_id: String::new(),
+            input: findings.map(|f| serde_json::to_string(&f).unwrap_or_default()).unwrap_or_default(),
+            output: None,
+            started_at: self.clock.now(),
+            finished_at: None,
+        };
+        self.pipelines.save_stage(&stage)?;
+        run.status = RunStatus::AwaitingChoice;
+        self.touch(run)
+    }
+
+    /// Escolha do usuário sobre o code review: os achados a corrigir (com o caminho decidido
+    /// nos que têm mais de um) e uma observação livre. Sem nada escolhido, a esteira segue para
+    /// o Relator; com algo, o Implementador corrige e o Revisor e o Testador conferem.
+    /// A execução volta a andar e precisa de `advance`.
+    pub fn decide_review(&self, run_id: &str, picks: &[ReviewPick], note: Option<&str>) -> AppResult<()> {
+        let mut run = self.get(run_id)?;
+        if run.status != RunStatus::AwaitingChoice {
+            return Err(AppError("Esta execução não está esperando a sua escolha.".into()));
+        }
+        let mut stage = self
+            .pipelines
+            .stages(run_id)?
+            .into_iter()
+            .rev()
+            .find(|s| s.role == Role::ReviewChoice && s.status == StageStatus::Running)
+            .ok_or_else(|| AppError("Não há code review esperando a sua escolha.".into()))?;
+        let findings: Vec<Finding> = serde_json::from_str(&stage.input).unwrap_or_default();
+        (stage.status, stage.output) = match fix_request(&findings, picks, note).map_err(AppError)? {
+            Some(request) => (StageStatus::Returned, Some(request)),
+            None => (StageStatus::Done, Some("Nenhuma correção escolhida.".into())),
+        };
+        stage.finished_at = Some(self.clock.now());
+        self.pipelines.save_stage(&stage)?;
+        run.status = RunStatus::Running;
+        self.touch(&mut run)
+    }
+
     /// Resposta do usuário ao plano: aprovar (sem `feedback`) ou pedir ajustes.
     /// A execução volta a andar e precisa de `advance`.
     pub fn decide_plan(&self, run_id: &str, feedback: Option<&str>) -> AppResult<()> {
@@ -493,7 +543,7 @@ impl ManagePipelines {
             conducted
         };
         for mut stage in running {
-            if stage.role == Role::Approval || !conducted {
+            if stage.role.is_user_step() || !conducted {
                 stage.status = StageStatus::Cancelled;
                 stage.finished_at = Some(self.clock.now());
                 self.pipelines.save_stage(&stage)?;
@@ -741,13 +791,34 @@ mod tests {
             Ok("tratei"),
             Ok("VEREDITO: APROVADO"),
             Ok("tudo passou\nVEREDITO: APROVADO"),
-            Ok("Relatório\nCOMMIT: Exporta CSV"),
+            Ok("Dois achados.\n```json\n[{\"id\": \"A1\", \"title\": \"CSV sem cabeçalho\", \"file\": \"a.rs\", \"line\": 3, \"options\": []},\
+                {\"id\": \"A2\", \"title\": \"Separador\", \"options\": [\"vírgula\", \"ponto e vírgula\"]}]\n```"),
         ]);
         uc.advance(&run.id, &bots).await.unwrap();
         let prompts = bots.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("plano com CSV") && prompts[2].contains("falta tratar erro"));
+        assert!(prompts[5].contains("skill `code-review`"), "o Code review roda a skill do CLI");
         let detail = uc.detail(&run.id).unwrap();
-        assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 1));
+        assert_eq!(detail.run.status, RunStatus::AwaitingChoice);
+        let choice = detail.stages.last().unwrap();
+        assert_eq!((choice.role, choice.status), (Role::ReviewChoice, StageStatus::Running));
+        assert!(choice.input.contains("CSV sem cabeçalho"));
+        assert!(uc.decide_plan(&run.id, None).is_err(), "não é a parada do plano");
+        assert!(uc.decide_review(&run.id, &[ReviewPick { id: "A2".into(), option: None }], None).is_err(), "A2 pede a decisão");
+
+        uc.decide_review(&run.id, &[ReviewPick { id: "A2".into(), option: Some(1) }], Some("mantenha a API")).unwrap();
+        let bots = Bots::new(vec![
+            Ok("troquei o separador"),
+            Ok("VEREDITO: APROVADO"),
+            Ok("tudo passou\nVEREDITO: APROVADO"),
+            Ok("Relatório\nCOMMIT: Exporta CSV"),
+        ]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        let prompts = bots.prompts.lock().unwrap().clone();
+        assert!(prompts[0].contains("Decisão do usuário: ponto e vírgula") && prompts[0].contains("mantenha a API") && !prompts[0].contains("CSV sem cabeçalho"));
+        assert!(prompts[3].contains("<code_review>") && prompts[3].contains("Escolha do usuário"), "o Relator sabe o que o code review apontou");
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 2));
         assert_eq!(detail.commit_message.as_deref(), Some("Exporta CSV"));
         let implementer = world.conversation(&detail.stages.iter().find(|s| s.role == Role::Implementer).unwrap().conversation_id);
         assert_eq!(implementer.permission_mode, "acceptEdits");
@@ -767,19 +838,19 @@ mod tests {
         assert!(uc.save_config("p1", PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Planner], ..Default::default() }).is_err());
         let config = PipelineConfig {
             agents: BTreeMap::from([(Role::Reviewer, "a1".into())]),
-            skipped: vec![Role::Reporter, Role::Triage, Role::Tester],
+            skipped: vec![Role::Reporter, Role::CodeReview, Role::Triage, Role::Tester],
             efforts: BTreeMap::from([(Role::Planner, "max".into())]),
             ..Default::default()
         };
         uc.save_config("p1", config).unwrap();
-        assert_eq!(uc.config("p1").unwrap().skipped, [Role::Triage, Role::Tester, Role::Reporter]);
+        assert_eq!(uc.config("p1").unwrap().skipped, [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter]);
 
         let image = |n: &str| Attachment { name: n.into(), kind: crate::domain::chat::AttachmentKind::Image, media_type: "image/png".into(), data: "iVBO".into() };
         let too_many = StartInput { images: (0..=MAX_IMAGES).map(|i| image(&i.to_string())).collect(), ..input(Some("loja-9")) };
         assert!(uc.start(too_many).is_err());
         let run = uc.start(StartInput { title: "Corrigir o cálculo do frete".into(), images: vec![image("a.png"), image("b.png")], ..input(Some("loja-9")) }).unwrap();
         assert_eq!((run.image_count, uc.images(&run.id).unwrap().len()), (2, 2));
-        assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::Reporter]);
+        assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter]);
         // Mudar o projeto depois de começar não muda a execução.
         uc.save_config("p1", PipelineConfig::default()).unwrap();
         assert_eq!(run.jira_url, None, "sem modelo, o site do Jira não é conhecido");
@@ -823,9 +894,9 @@ mod tests {
         assert_eq!(run.jira_template.as_deref(), Some(template));
         uc.advance(&run.id, &Bots::new(vec![Ok("plano")])).await.unwrap();
         uc.decide_plan(&run.id, None).unwrap();
-        let bots = Bots::new(vec![Ok("fiz"), Ok("VEREDITO: APROVADO"), Ok("Relatório\nTASK_CRIADA: EI-6001\nCOMMIT: Exporta CSV")]);
+        let bots = Bots::new(vec![Ok("fiz"), Ok("VEREDITO: APROVADO"), Ok("Nada a corrigir.\n```json\n[]\n```"), Ok("Relatório\nTASK_CRIADA: EI-6001\nCOMMIT: Exporta CSV")]);
         uc.advance(&run.id, &bots).await.unwrap();
-        assert!(bots.prompts.lock().unwrap()[2].contains("seguindo o modelo https://elinfo.atlassian.net/browse/EI-5198"));
+        assert!(bots.prompts.lock().unwrap()[3].contains("seguindo o modelo https://elinfo.atlassian.net/browse/EI-5198"));
         let done = uc.detail(&run.id).unwrap().run;
         assert_eq!(done.status, RunStatus::Done);
         assert_eq!((done.jira_key.as_deref(), done.jira_url.as_deref()), (Some("EI-6001"), Some("https://elinfo.atlassian.net/browse/EI-6001")));
@@ -850,6 +921,7 @@ mod tests {
             Ok("corrigi"),
             Ok("VEREDITO: APROVADO"),
             Ok("VEREDITO: APROVADO"),
+            Ok("```json\n[]\n```"),
             Ok("TASK_CRIADA: https://elinfo.atlassian.net/browse/EI-6001\nCOMMIT: x"),
         ]);
         uc.advance(&run.id, &first).await.unwrap();
@@ -857,12 +929,13 @@ mod tests {
 
         assert!(uc.reopen(&run.id, "  ").is_err());
         uc.reopen(&run.id, "O botão exporta o arquivo vazio").unwrap();
-        let again = Bots::new(vec![Ok("ajustei"), Ok("VEREDITO: APROVADO"), Ok("VEREDITO: APROVADO"), Ok("Comentei na EI-6001\nCOMMIT: y")]);
+        let again = Bots::new(vec![Ok("ajustei"), Ok("VEREDITO: APROVADO"), Ok("VEREDITO: APROVADO"), Ok("```json\n[]\n```"), Ok("Comentei na EI-6001\nCOMMIT: y")]);
         uc.advance(&run.id, &again).await.unwrap();
         let prompts = again.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("<ajuste_do_usuario>\nO botão exporta o arquivo vazio") && !prompts[0].contains("falta X"), "o Implementador recebe o ajuste, não a devolução antiga");
         assert!(prompts[1].contains("Ajuste pedido pelo usuário depois de testar: O botão exporta o arquivo vazio"));
-        assert!(prompts[3].contains("Comente na task EI-6001") && !prompts[3].contains("crie uma no Jira"), "não cria outra task");
+        assert!(prompts[3].contains("skill `code-review`"), "cada reabertura é um ciclo novo, com o seu code review");
+        assert!(prompts[4].contains("Comente na task EI-6001") && !prompts[4].contains("crie uma no Jira"), "não cria outra task");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!((detail.run.status, detail.run.rounds, detail.run.jira_key.as_deref()), (RunStatus::Done, 0, Some("EI-6001")));
         let implementer_rounds: Vec<i64> = detail.stages.iter().filter(|s| s.role == Role::Implementer).map(|s| s.round).collect();

@@ -4,7 +4,7 @@
    em um <path> de retângulos por cor; a animação fica toda no CSS (steps()) de office.css.
    Funções puras: estado da cena -> modelo de desenho. Os tipos públicos ficam no fim do arquivo. */
 const LW = 360, LH = 186, HW = 12, HH = 6, OX = 180, OY = 26, GRID = 13, WALL = 24, SPEED = 3.2, HAND = 0.6;
-const ORDER = ['triage', 'planner', 'approval', 'implementer', 'reviewer', 'tester', 'reporter'];
+const ORDER = ['triage', 'planner', 'approval', 'implementer', 'reviewer', 'tester', 'code_review', 'reporter'];
 /* Estações: área de 2x2 tiles a partir de `at`. Na moldura local, u corre ao longo da mesa (0..2) e v vai da
    cadeira (0..1, atrás da mesa) até a frente da mesa (1..2). Em 'sw' a pessoa olha para sudoeste (u = x, v = y);
    em 'se' olha para sudeste (u = y, v = x), que é o espelho. As de parede ficam de costas para ela. */
@@ -15,7 +15,9 @@ const STATIONS = {
   implementer: { at: [4, 4], face: 'sw' },
   reviewer: { at: [8, 4], face: 'sw' },
   tester: { at: [4, 8], face: 'se' },
-  reporter: { at: [8, 8], face: 'sw' }
+  reporter: { at: [8, 8], face: 'sw' },
+  /* Na frente do andar, à esquerda: corredor livre dos dois lados e na frente da mesa. */
+  code_review: { at: [4, 11], face: 'sw' }
 };
 
 /* Projeção isométrica 2:1. x cresce para sudeste, y para sudoeste, z é a altura em px. */
@@ -155,7 +157,11 @@ const PEOPLE = {
     back: ['..HHHHHH..', '.HHHhHHHH.', 'bbbbbbbbbH', 'HHHHHHHHHH', 'SHHHHHHHHH', 'HHHHHHHHH.', '.HSSSSSH..', '...SSSS...'] },
   reporter: { pal: { S: '#a9714b', s: '#8a5a3a', H: '#3a2a20', h: '#5a4232', C: '#b377d9', c: '#7d4a9e', P: '#6b5a4a' },
     front: ['..CCCCCC..', '.CCCCCCCC.', 'ccccCCCCCC', '.HSSSSHHH.', '.SSSSSSSH.', '.SSSSSSsH.', '..SSSss...', '...sSS....'],
-    back: ['..CCCCCC..', '.CCCCCCCC.', 'CCCCCCCCCC', '.HHHHHHHH.', 'SHHHHHHHH.', '.sHHHHHH..', '..SSSSSS..', '...SSSS...'] }
+    back: ['..CCCCCC..', '.CCCCCCCC.', 'CCCCCCCCCC', '.HHHHHHHH.', 'SHHHHHHHH.', '.sHHHHHH..', '..SSSSSS..', '...SSSS...'] },
+  /* Code review: coque no alto, óculos escuros de leitura e camisa âmbar. */
+  code_review: { pal: { S: '#d29a6e', s: '#b27d53', H: '#4a2c22', h: '#6e4434', C: '#d9a441', c: '#9c7226', P: '#3f4a63' },
+    front: ['...HHHH...', '..HhHHHH..', '.HHHHHHHH.', 'HHSSSSSHHH', '.kkSkkSSH.', '.SSSSSSsH.', '..SSSss...', '...sSS....'],
+    back: ['...HHHH...', '..HHHhHH..', '.HHHHHHHH.', 'HHHHHHHHHH', 'kHHHHHHHHH', '.sHHHHHHH.', '..SSSSSS..', '...SSSS...'] }
 };
 const EYES = ['e..e'];
 const TORSO = ['..CCCCCC..', '.CCCCCCCC.', '.cCCCCCCc.', '.cCCCCCCc.', '..CCCCCC..'];
@@ -312,6 +318,7 @@ function liveSprites(role, v) {
   else if (role === 'implementer') out.push(S('nb' + id, busy ? 'a-flick' : '', 'animation-duration:.5s', K(k => k.front(1.47, 0.62, 0.74, 12, 13, PAL.a))));
   else if (role === 'reviewer') out.push(S('pen' + id, busy ? 'a-tapR' : '', '', K(k => k.at(1.86, 1.72, 10, ['R', 'R', 'R', 'K']))));
   else if (role === 'tester' && busy) frames(2, 0.7, n => S('bub' + n + id, '', '', K(k => k.at(1.64, 1.76, 17, n ? ['n...n', '.....', '..n..'] : ['..n..', '.....', 'n...n'])))).forEach(s => out.push(s));
+  else if (role === 'code_review') out.push(S('bug' + id, busy ? 'a-flick' : '', 'animation-duration:.8s', K(k => k.at(1.86, 1.72, 10.5, ['r.r', '.R.', 'RRR', '.R.', 'r.r']))));
   else if (role === 'reporter' && busy) frames(3, 0.9, n => S('wave' + n + id, '', '', t => { const p = g.pt(1.64, 1.76, 13); t.px(p[0] + (g.se ? 5 + n * 2 : -6 - n * 2), p[1] - 3 - n, 1, 3 + n * 2, PAL.a); })).forEach(s => out.push(s));
   if (v === 'done') frames(2, 1.1, n => S('steam' + n + id, '', '', t => { const p = g.pt(1.87, 1.17, 14); t.px(p[0] - n, p[1] - 2, 1, 1, PAL.w); t.px(p[0] - 1 + n, p[1] - 4, 1, 1, PAL.w); })).forEach(s => out.push(s));
   return out;
@@ -336,6 +343,7 @@ function deskSprites(role) {
     else if (role === 'implementer') { k.box(0.5, 1.48, 0.98, 1.88, 10, 10.6, LIGHT); k.box(0.5, 1.42, 0.98, 1.48, 10.6, 15.5, CASE); k.front(1.48, 0.55, 0.93, 11.2, 15, SCREEN); k.front(1.48, 0.6, 0.86, 13.6, 14.4, '#e0894e'); }
     else if (role === 'reviewer') { k.top(1.4, 1.5, 1.86, 1.92, 10.02, '#ecedef'); k.top(1.48, 1.58, 1.78, 1.63, 10.03, PAL.N); k.top(1.48, 1.7, 1.78, 1.75, 10.03, PAL.R); k.top(1.48, 1.82, 1.7, 1.87, 10.03, PAL.N); }
     else if (role === 'tester') k.at(1.64, 1.76, 10, TUBES);
+    else if (role === 'code_review') { k.top(1.38, 1.5, 1.64, 1.74, 10.02, PAL.A); k.top(1.5, 1.6, 1.8, 1.92, 10.03, '#ecedef'); k.top(1.56, 1.66, 1.74, 1.71, 10.04, PAL.R); k.top(1.56, 1.76, 1.7, 1.81, 10.04, PAL.N); k.top(1.56, 1.86, 1.74, 1.9, 10.04, PAL.N); }
     else if (role === 'reporter') { k.top(0.9, 1.52, 1.3, 1.9, 10.02, '#d8dbe2'); k.top(0.98, 1.6, 1.22, 1.64, 10.03, PAL.g); k.at(1.64, 1.76, 10, MEGA); }
   })];
 }
@@ -492,7 +500,7 @@ function props() {
       prop('stool-a', [[11, 5]], [S('stool-a', '', '', t => { t.box(11.45, 5.45, 11.55, 5.55, 0, 5, STEEL); t.box(11.26, 5.26, 11.74, 5.74, 5, 6.5, ['#dd6a83', '#9c4257', '#7a3245']); })]),
       prop('stool-b', [[11, 8]], [S('stool-b', '', '', t => { t.box(11.45, 8.45, 11.55, 8.55, 0, 5, STEEL); t.box(11.26, 8.26, 11.74, 8.74, 5, 6.5, ['#49b5b0', '#2c7f7b', '#22625f']); })]),
       plant('plant-d', 12, 11),
-      plant('plant-e', 6, 12)
+      plant('plant-e', 9, 12)
     ];
   });
 }

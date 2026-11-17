@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import "../../office/office.css";
   import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, spritesSvg, type OfficeScene } from "../../office/scene";
-  import { passesByRole, passLabel, STATIONS } from "../../pipeline";
+  import { passesByRole, passLabel, stationRole, STATIONS } from "../../pipeline";
   import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
@@ -19,7 +19,11 @@
   let { detail, selected, now, onselect }: Props = $props();
 
   const ORDER = STATIONS.map((s) => s.role);
-  const indexOf = (role: PipelineRole | undefined) => (role ? ORDER.indexOf(role) : -1);
+  /** Mesa de um papel; a sua escolha fica na mesa do Code review. */
+  const indexOf = (role: PipelineRole | undefined) => {
+    const station = role ? stationRole(role) : null;
+    return station ? ORDER.indexOf(station) : -1;
+  };
 
   onMount(loadTierModels);
   const passes = $derived(passesByRole(detail));
@@ -58,7 +62,7 @@
       seenCount = count - 1;
       return;
     }
-    if (!before || before.role === latest.role) return;
+    if (!before || indexOf(before.role) === indexOf(latest.role)) return;
     // Reaberta com o seu ajuste: a pasta sai da última mesa que trabalhou antes dele.
     const source = before.role === "feedback" ? detail.stages.slice(0, count - 2).findLast((s) => s.role !== "feedback") : before;
     const from = indexOf(source?.role);

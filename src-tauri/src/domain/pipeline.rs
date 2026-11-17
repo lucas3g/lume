@@ -24,25 +24,43 @@ pub enum Role {
     Implementer,
     Reviewer,
     Tester,
+    /// Roda a skill de code review do CLI e lista os achados para o usuário escolher.
+    CodeReview,
     Reporter,
     /// Parada em que o usuário aprova o plano ou pede ajustes; não é um bot.
     Approval,
     /// Ajuste que o usuário pediu ao reabrir uma execução concluída; não é uma estação.
     Feedback,
+    /// Parada em que o usuário escolhe quais achados do code review corrigir e decide os que
+    /// têm mais de um caminho; não é um bot nem uma estação (aparece na estação do Code review).
+    ReviewChoice,
 }
 
 impl Role {
     /// Estações, na ordem da esteira.
-    pub const ALL: [Role; 7] =
-        [Role::Triage, Role::Planner, Role::Approval, Role::Implementer, Role::Reviewer, Role::Tester, Role::Reporter];
+    pub const ALL: [Role; 8] = [
+        Role::Triage,
+        Role::Planner,
+        Role::Approval,
+        Role::Implementer,
+        Role::Reviewer,
+        Role::Tester,
+        Role::CodeReview,
+        Role::Reporter,
+    ];
 
     /// Etapas que o projeto pode desligar. Planejador, aprovação, Implementador e Revisor
     /// são obrigatórios: nada muda sem você ver o plano, e todo código passa por revisão.
-    pub const OPTIONAL: [Role; 3] = [Role::Triage, Role::Tester, Role::Reporter];
+    pub const OPTIONAL: [Role; 4] = [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter];
 
     /// Papéis feitos por bots (que podem ter um agente).
     pub fn is_bot(self) -> bool {
-        !matches!(self, Role::Approval | Role::Feedback)
+        !matches!(self, Role::Approval | Role::Feedback | Role::ReviewChoice)
+    }
+
+    /// Paradas que esperam o usuário: não são trabalho dos bots e não contam no orçamento.
+    pub fn is_user_step(self) -> bool {
+        !self.is_bot()
     }
 
     pub fn key(self) -> &'static str {
@@ -53,13 +71,15 @@ impl Role {
             Role::Reviewer => "reviewer",
             Role::Tester => "tester",
             Role::Reporter => "reporter",
+            Role::CodeReview => "code_review",
             Role::Approval => "approval",
             Role::Feedback => "feedback",
+            Role::ReviewChoice => "review_choice",
         }
     }
 
     pub fn parse(key: &str) -> Option<Role> {
-        Role::ALL.into_iter().chain([Role::Feedback]).find(|r| r.key() == key)
+        Role::ALL.into_iter().chain([Role::Feedback, Role::ReviewChoice]).find(|r| r.key() == key)
     }
 
     pub fn label(self) -> &'static str {
@@ -70,17 +90,19 @@ impl Role {
             Role::Reviewer => "Revisor",
             Role::Tester => "Testador",
             Role::Reporter => "Relator",
+            Role::CodeReview => "Code review",
             Role::Approval => "Sua aprovação",
             Role::Feedback => "Seu ajuste",
+            Role::ReviewChoice => "Sua escolha",
         }
     }
 
     /// Nível de modelo do papel: leitura rápida no rápido, raciocínio e código no forte.
     pub fn tier(self) -> Tier {
         match self {
-            Role::Triage | Role::Reporter | Role::Approval | Role::Feedback => Tier::Fast,
+            Role::Triage | Role::Reporter | Role::Approval | Role::Feedback | Role::ReviewChoice => Tier::Fast,
             Role::Tester => Tier::Balanced,
-            Role::Planner | Role::Implementer | Role::Reviewer => Tier::Strong,
+            Role::Planner | Role::Implementer | Role::Reviewer | Role::CodeReview => Tier::Strong,
         }
     }
 
@@ -203,7 +225,7 @@ impl PipelineConfig {
             return Err("A sua aprovação não pode ser feita por um agente.".into());
         }
         if self.skipped.iter().any(|r| !Role::OPTIONAL.contains(r)) {
-            return Err("Só Triagem, Testador e Relator podem ser desligados.".into());
+            return Err("Só Triagem, Testador, Code review e Relator podem ser desligados.".into());
         }
         if self.efforts.keys().any(|r| !r.is_bot()) {
             return Err("Só os bots têm nível de esforço.".into());
@@ -236,6 +258,8 @@ pub enum RunStatus {
     Running,
     /// Plano pronto: espera o usuário aprovar ou pedir ajustes.
     AwaitingApproval,
+    /// Code review pronto: espera o usuário escolher o que corrigir.
+    AwaitingChoice,
     /// A Triagem achou a task vaga demais para seguir.
     NeedsInfo,
     Done,
@@ -248,6 +272,7 @@ impl RunStatus {
         match self {
             RunStatus::Running => "running",
             RunStatus::AwaitingApproval => "awaiting_approval",
+            RunStatus::AwaitingChoice => "awaiting_choice",
             RunStatus::NeedsInfo => "needs_info",
             RunStatus::Done => "done",
             RunStatus::Failed => "failed",
@@ -256,7 +281,15 @@ impl RunStatus {
     }
 
     pub fn parse(key: &str) -> RunStatus {
-        [RunStatus::Running, RunStatus::AwaitingApproval, RunStatus::NeedsInfo, RunStatus::Done, RunStatus::Failed, RunStatus::Cancelled]
+        [
+            RunStatus::Running,
+            RunStatus::AwaitingApproval,
+            RunStatus::AwaitingChoice,
+            RunStatus::NeedsInfo,
+            RunStatus::Done,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+        ]
             .into_iter()
             .find(|s| s.key() == key)
             .unwrap_or(RunStatus::Failed)
@@ -273,7 +306,8 @@ impl RunStatus {
 pub enum StageStatus {
     Running,
     Done,
-    /// Revisor ou Testador devolveram o trabalho ao Implementador.
+    /// Revisor ou Testador devolveram o trabalho ao Implementador (ou o usuário escolheu
+    /// achados do code review para corrigir).
     Returned,
     Failed,
     Cancelled,
@@ -464,6 +498,8 @@ pub struct StageContext {
     pub diff: Option<String>,
     pub review: Option<String>,
     pub tests: Option<String>,
+    /// Resumo do code review e as correções que o usuário escolheu.
+    pub code_review: Option<String>,
     /// Ajuste mais recente que o usuário pediu ao reabrir a execução concluída.
     pub user_feedback: Option<String>,
 }
@@ -561,7 +597,31 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             run.title,
             adjustment(ctx)
         ),
-        Role::Approval | Role::Feedback => String::new(),
+        Role::CodeReview => {
+            let fallback = match run.mode {
+                WorkMode::Worktree => "as alterações ainda não commitadas da pasta de trabalho",
+                WorkMode::Direct => "os arquivos citados no resumo do Implementador (a pasta não tem git)",
+            };
+            let level = run.efforts.get(&Role::CodeReview).map(|e| format!(" (argumento `{e}`)")).unwrap_or_default();
+            format!(
+                "Objetivo da task: {}\n{}<resumo_da_implementacao>\n{}\n</resumo_da_implementacao>\n\n\
+                 Rode a skill de code review do CLI: chame a ferramenta Skill com a skill `code-review`{level} para revisar as \
+                 alterações ainda não commitadas da pasta de trabalho. Se a skill não existir neste CLI, revise você mesmo {fallback}, \
+                 procurando bugs de correção, casos não tratados e problemas de segurança. Não altere nada: quem decide o que \
+                 corrigir é o usuário.\n\
+                 Responda com um resumo curto e termine com um bloco ```json com a lista dos achados que valem correção \
+                 (ignore gosto pessoal), do mais grave ao menos grave:\n\
+                 [{{\"id\": \"A1\", \"title\": \"o problema em uma frase\", \"file\": \"src/arquivo.ts\", \"line\": 42, \
+                 \"severity\": \"alta\", \"detail\": \"o cenário em que falha e a correção\", \"options\": []}}]\n\
+                 `severity` é \"alta\", \"média\" ou \"baixa\". Use `options` só quando a correção depende de uma decisão do \
+                 usuário, porque há mais de um caminho razoável: descreva cada caminho em uma frase, com a consequência. Para \
+                 uma correção direta, deixe `\"options\": []`. Sem achados, o bloco é `[]`.",
+                run.title,
+                adjustment(ctx),
+                ctx.implementation.as_deref().unwrap_or(""),
+            )
+        }
+        Role::Approval | Role::Feedback | Role::ReviewChoice => String::new(),
         Role::Reporter => {
             let round = match &ctx.user_feedback {
                 Some(f) => format!("Esta é uma rodada de ajuste pedida pelo usuário depois da entrega ({f}). O relatório e o comentário falam do que foi ajustado.\n"),
@@ -588,13 +648,14 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 },
             };
             format!(
-                "{task}\n{round}<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n\n\
+                "{task}\n{round}<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n{}\n\
                  {jira}\nNão faça commit nem push. Responda com o relatório final e uma sugestão de mensagem de commit em uma linha \
                  na última linha, no formato `COMMIT: <mensagem>`.",
                 ctx.plan.as_deref().unwrap_or(""),
                 ctx.implementation.as_deref().unwrap_or(""),
                 ctx.review.as_deref().unwrap_or(""),
                 ctx.tests.as_deref().unwrap_or(""),
+                ctx.code_review.as_deref().map(|c| format!("<code_review>\n{c}\n</code_review>\n")).unwrap_or_default(),
             )
         }
     };
@@ -674,6 +735,8 @@ pub enum Next {
     Run(Role),
     /// Abre a parada de aprovação do plano.
     AskApproval,
+    /// Abre a parada em que o usuário escolhe os achados do code review a corrigir.
+    AskChoice,
     /// Algo está em andamento (etapa ou aprovação): nada a fazer agora.
     Wait,
     Finish(RunStatus, Option<String>),
@@ -703,9 +766,12 @@ pub fn rounds(stages: &[StageRun]) -> i64 {
 }
 
 /// A estação seguinte a `from` (o começo, sem `from`) que não foi desligada, na ordem de `Role::ALL`.
-fn forward(from: Option<Role>, skipped: &[Role]) -> Next {
+/// O code review roda uma vez por ciclo: depois das correções escolhidas, quem confere são o
+/// Revisor e o Testador, e a esteira segue para o Relator.
+fn forward(from: Option<Role>, skipped: &[Role], stages: &[StageRun]) -> Next {
     let start = from.and_then(|r| Role::ALL.iter().position(|c| *c == r)).map_or(0, |i| i + 1);
-    match Role::ALL[start..].iter().find(|r| !skipped.contains(r)) {
+    let reviewed = effective(current_cycle(stages)).any(|s| s.role == Role::CodeReview);
+    match Role::ALL[start..].iter().find(|r| !skipped.contains(r) && !(**r == Role::CodeReview && reviewed)) {
         Some(Role::Approval) => Next::AskApproval,
         Some(role) => Next::Run(*role),
         None => Next::Finish(RunStatus::Done, None),
@@ -715,7 +781,7 @@ fn forward(from: Option<Role>, skipped: &[Role]) -> Next {
 /// Próximo passo da sequência: Triagem → Planejador → aprovação → Implementador
 /// ⇄ (Revisor, Testador) → Relator, pulando as etapas desligadas no projeto.
 pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
-    let Some(last) = effective(stages).last() else { return forward(None, skipped) };
+    let Some(last) = effective(stages).last() else { return forward(None, skipped, stages) };
     if last.status == StageStatus::Running {
         return Next::Wait;
     }
@@ -731,7 +797,15 @@ pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
         Role::Reporter => Next::Finish(RunStatus::Done, None),
         // Reaberta com um ajuste: volta ao Implementador, sem replanejar.
         Role::Feedback => Next::Run(Role::Implementer),
-        role => forward(Some(role), skipped),
+        // Sem achados, segue direto; com achados (ou resposta sem a lista), o usuário escolhe.
+        Role::CodeReview if last.output.as_deref().and_then(parse_findings).is_some_and(|f| f.is_empty()) => {
+            forward(Some(Role::CodeReview), skipped, stages)
+        }
+        Role::CodeReview => Next::AskChoice,
+        // Correções escolhidas: o Implementador corrige e o Revisor e o Testador conferem.
+        Role::ReviewChoice if returned => Next::Run(Role::Implementer),
+        Role::ReviewChoice => forward(Some(Role::CodeReview), skipped, stages),
+        role => forward(Some(role), skipped, stages),
     }
 }
 
@@ -744,11 +818,15 @@ pub fn context_for(stages: &[StageRun]) -> StageContext {
         triage: latest(Role::Triage),
         plan: latest(Role::Planner),
         plan_feedback: returned_by(&[Role::Approval]),
-        returned: returned_by(&[Role::Reviewer, Role::Tester]),
+        returned: returned_by(&[Role::Reviewer, Role::Tester, Role::ReviewChoice]),
         implementation: latest(Role::Implementer),
         diff: None,
         review: latest(Role::Reviewer),
         tests: latest(Role::Tester),
+        code_review: latest(Role::CodeReview).map(|review| match latest(Role::ReviewChoice) {
+            Some(choice) => format!("{review}\n\nEscolha do usuário:\n{choice}"),
+            None => review,
+        }),
         user_feedback: latest(Role::Feedback),
     }
 }
@@ -768,9 +846,119 @@ pub fn finished_status(role: Role, output: &str) -> StageStatus {
 pub fn spent_seconds(stages: &[StageRun], now: i64) -> i64 {
     stages
         .iter()
-        .filter(|s| !matches!(s.role, Role::Approval | Role::Feedback))
+        .filter(|s| !s.role.is_user_step())
         .map(|s| s.finished_at.unwrap_or(now) - s.started_at)
         .sum()
+}
+
+/// Achado do code review, para o usuário escolher o que corrigir.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Finding {
+    pub id: String,
+    pub title: String,
+    pub file: Option<String>,
+    pub line: Option<i64>,
+    /// "alta", "média" ou "baixa", como o bot escreveu.
+    pub severity: Option<String>,
+    pub detail: String,
+    /// Caminhos possíveis quando a correção depende de uma decisão do usuário; vazio é correção direta.
+    pub options: Vec<String>,
+}
+
+/// Lista de achados do último bloco ```json da resposta do code review. `None` quando a
+/// resposta não traz a lista: o usuário lê o texto e escolhe mesmo assim.
+pub fn parse_findings(text: &str) -> Option<Vec<Finding>> {
+    let start = text.rfind("```json")? + "```json".len();
+    let block = &text[start..];
+    let block = &block[..block.find("```").unwrap_or(block.len())];
+    let items: Vec<serde_json::Value> = serde_json::from_str(block.trim()).ok()?;
+    let text_of = |v: &serde_json::Value, key: &str| {
+        v.get(key).and_then(|x| match x {
+            serde_json::Value::String(s) => Some(s.trim().to_owned()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
+        .filter(|s| !s.is_empty())
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let findings = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| {
+            let title = text_of(item, "title")?;
+            // Ids repetidos ou ausentes ganham um próprio: a escolha do usuário aponta por id.
+            let id = text_of(item, "id").filter(|id| !seen.contains(id)).unwrap_or_else(|| format!("A{}", i + 1));
+            seen.insert(id.clone());
+            let line = item.get("line").and_then(|l| l.as_i64().or_else(|| l.as_str().and_then(|s| s.trim().parse().ok())));
+            let options = item
+                .get("options")
+                .and_then(|o| o.as_array())
+                .map(|o| o.iter().filter_map(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned).collect())
+                .unwrap_or_default();
+            Some(Finding {
+                id,
+                title,
+                file: text_of(item, "file"),
+                line,
+                severity: text_of(item, "severity"),
+                detail: text_of(item, "detail").unwrap_or_default(),
+                options,
+            })
+        })
+        .collect();
+    Some(findings)
+}
+
+/// Um achado que o usuário quer corrigir e, quando ele tem caminhos, o escolhido.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ReviewPick {
+    pub id: String,
+    #[serde(default)]
+    pub option: Option<usize>,
+}
+
+/// Pedido de correção ao Implementador com os achados escolhidos e as decisões do usuário.
+/// `None` quando nada foi escolhido nem pedido: a esteira segue sem correções.
+pub fn fix_request(findings: &[Finding], picks: &[ReviewPick], note: Option<&str>) -> Result<Option<String>, String> {
+    let note = note.map(str::trim).filter(|n| !n.is_empty());
+    let mut items = Vec::new();
+    for (n, pick) in picks.iter().enumerate() {
+        let finding = findings.iter().find(|f| f.id == pick.id).ok_or_else(|| format!("Achado desconhecido: {}.", pick.id))?;
+        if picks[..n].iter().any(|p| p.id == pick.id) {
+            continue;
+        }
+        let place = match (&finding.file, finding.line) {
+            (Some(file), Some(line)) => format!(" ({file}:{line})"),
+            (Some(file), None) => format!(" ({file})"),
+            _ => String::new(),
+        };
+        let mut item = format!("{}. [{}] {}{place}", items.len() + 1, finding.id, finding.title);
+        if !finding.detail.is_empty() {
+            item.push_str(&format!("\n   {}", finding.detail));
+        }
+        if !finding.options.is_empty() {
+            let chosen = pick
+                .option
+                .and_then(|i| finding.options.get(i))
+                .ok_or_else(|| format!("Escolha o caminho para \"{}\".", finding.title))?;
+            item.push_str(&format!("\n   Decisão do usuário: {chosen}"));
+        }
+        items.push(item);
+    }
+    if items.is_empty() && note.is_none() {
+        return Ok(None);
+    }
+    let mut out = String::from("O code review apontou problemas e o usuário escolheu o que corrigir. Corrija só estes, seguindo as decisões dele:\n");
+    if items.is_empty() {
+        out.push_str("(nenhum achado da lista)\n");
+    } else {
+        out.push_str(&items.join("\n"));
+        out.push('\n');
+    }
+    if let Some(note) = note {
+        out.push_str(&format!("\nObservação do usuário: {note}\n"));
+    }
+    Ok(Some(out))
 }
 
 /// Diff cortado no limite, com aviso do corte.
@@ -895,20 +1083,72 @@ mod tests {
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
         assert_eq!(next_step(&stages, &[]), Next::Run(Role::Tester));
         stages.push(stage(Role::Tester, Done, "ok"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::CodeReview));
+        stages.push(stage(Role::CodeReview, Done, "Achei um.\n```json\n[{\"id\": \"A1\", \"title\": \"nulo\", \"options\": []}]\n```"));
+        assert_eq!(next_step(&stages, &[]), Next::AskChoice);
+        stages.push(stage(Role::ReviewChoice, Running, ""));
+        assert_eq!(next_step(&stages, &[]), Next::Wait);
+        stages.last_mut().unwrap().status = Returned;
+        stages.last_mut().unwrap().output = Some("corrija A1".into());
+        assert_eq!((next_step(&stages, &[]), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("corrija A1")));
+        stages.push(stage(Role::Implementer, Done, "corrigi A1"));
+        stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Tester));
+        stages.push(stage(Role::Tester, Done, "ok"));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter), "o code review roda uma vez por ciclo");
+        assert!(context_for(&stages).code_review.is_some_and(|c| c.contains("corrija A1")));
         stages.push(stage(Role::Reporter, Done, "COMMIT: x"));
         assert_eq!(next_step(&stages, &[]), Next::Finish(RunStatus::Done, None));
     }
 
     #[test]
+    fn code_review_without_findings_goes_on_and_an_empty_choice_skips_the_fix() {
+        use StageStatus::*;
+        let mut stages = vec![stage(Role::Implementer, Done, ""), stage(Role::Reviewer, Done, "VEREDITO: APROVADO"), stage(Role::Tester, Done, "ok")];
+        stages.push(stage(Role::CodeReview, Done, "Tudo certo.\n```json\n[]\n```"));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter));
+        // Resposta sem a lista: o usuário lê o texto e escolhe mesmo assim.
+        stages.last_mut().unwrap().output = Some("Achei coisas, mas esqueci o bloco.".into());
+        assert_eq!(next_step(&stages, &[]), Next::AskChoice);
+        stages.push(stage(Role::ReviewChoice, Done, "Nenhuma correção escolhida."));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter));
+        assert_eq!(next_step(&stages, &[Role::Reporter]), Next::Finish(RunStatus::Done, None));
+        assert_eq!(spent_seconds(&stages, 10), 40, "a espera pela sua escolha não conta no orçamento");
+    }
+
+    #[test]
+    fn findings_are_read_from_the_last_json_block_and_turned_into_a_fix_request() {
+        let text = "Resumo.\n```json\n[{\"id\": \"A1\", \"title\": \"Divisão por zero\", \"file\": \"src/a.ts\", \"line\": \"12\", \
+                    \"severity\": \"alta\", \"detail\": \"total vazio\", \"options\": [\"retornar 0\", \" lançar erro \"]},\
+                    {\"id\": \"A1\", \"title\": \"Sem log\"}, {\"detail\": \"sem título\"}]\n```";
+        let findings = parse_findings(text).unwrap();
+        assert_eq!(findings.len(), 2, "achado sem título é ignorado");
+        assert_eq!((findings[0].line, findings[0].options.clone()), (Some(12), vec!["retornar 0".to_owned(), "lançar erro".to_owned()]));
+        assert_eq!(findings[1].id, "A2", "id repetido ganha um próprio");
+        assert_eq!(parse_findings("sem bloco"), None);
+
+        let pick = |id: &str, option: Option<usize>| ReviewPick { id: id.into(), option };
+        assert_eq!(fix_request(&findings, &[], Some("  ")), Ok(None));
+        assert!(fix_request(&findings, &[pick("A1", None)], None).is_err(), "achado com caminhos pede a decisão");
+        assert!(fix_request(&findings, &[pick("X9", None)], None).is_err());
+        let request = fix_request(&findings, &[pick("A1", Some(1)), pick("A2", None)], Some("sem mudar a API")).unwrap().unwrap();
+        assert!(request.contains("[A1] Divisão por zero (src/a.ts:12)"));
+        assert!(request.contains("Decisão do usuário: lançar erro"));
+        assert!(request.contains("2. [A2] Sem log"));
+        assert!(request.contains("Observação do usuário: sem mudar a API"));
+        assert!(fix_request(&findings, &[], Some("renomeie a função")).unwrap().is_some());
+    }
+
+    #[test]
     fn skipped_stages_are_jumped_over() {
         use StageStatus::*;
-        let quick = [Role::Triage, Role::Tester, Role::Reporter];
+        let quick = [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter];
         assert_eq!(next_step(&[], &quick), Next::Run(Role::Planner));
         let mut stages = vec![stage(Role::Planner, Done, "plano"), stage(Role::Approval, Done, ""), stage(Role::Implementer, Done, "")];
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
         assert_eq!(next_step(&stages, &quick), Next::Finish(RunStatus::Done, None));
-        assert_eq!(next_step(&stages, &[Role::Tester]), Next::Run(Role::Reporter));
+        assert_eq!(next_step(&stages, &[Role::Tester]), Next::Run(Role::CodeReview));
+        assert_eq!(next_step(&stages, &[Role::Tester, Role::CodeReview]), Next::Run(Role::Reporter));
         let config = PipelineConfig { agents: BTreeMap::from([(Role::Approval, "a".into())]), skipped: vec![], ..Default::default() };
         assert!(config.validate().is_err());
         assert!(PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Reviewer], ..Default::default() }.validate().is_err());
