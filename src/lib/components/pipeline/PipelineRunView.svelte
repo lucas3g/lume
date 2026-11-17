@@ -796,7 +796,4 @@
     .bottom { grid-template-columns: minmax(0, 1fr); }
     .panel { position: static; max-height: none; }
   }
-  @media (prefers-reduced-motion: reduce) {
-    .screen *, .screen *::before, .screen *::after { animation: none !important; transition: none !important; }
-  }
 </style>

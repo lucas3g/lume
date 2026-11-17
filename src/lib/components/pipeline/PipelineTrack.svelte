@@ -97,7 +97,6 @@
   let flowing = $state<string | null>(null);
   let seenRun: string | null = null;
   let seenCount = 0;
-  const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   $effect(() => {
     const count = detail.stages.length;
@@ -166,14 +165,11 @@
         };
         requestAnimationFrame(frame);
       });
-    if (reduce) {
-      place(1, 1, 1);
-      await new Promise((r) => setTimeout(r, 600));
-    } else {
-      await animate(170, (p) => place(0, 0.6 + 0.4 * p, p));
-      await animate(480 + length * 2, (p) => place(ease(p), 1, 1));
-      await animate(170, (p) => place(1, 1 - 0.4 * p, 1 - p));
-    }
+    // Sem atalho de movimento reduzido: o Windows o liga sozinho com "Efeitos de animação" desligado (comum em PC
+    // sem placa de vídeo) e o pacote pulava direto para o destino. São três animações curtas, leves em qualquer máquina.
+    await animate(170, (p) => place(0, 0.6 + 0.4 * p, p));
+    await animate(480 + length * 2, (p) => place(ease(p), 1, 1));
+    await animate(170, (p) => place(1, 1 - 0.4 * p, 1 - p));
     el.style.opacity = "0";
     flowing = null;
   }
@@ -326,8 +322,4 @@
   .packet { position: absolute; left: 0; top: 0; z-index: 3; display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: 6px; background: var(--accent); color: #fff; font-family: var(--mono); font-size: 10.5px; font-weight: 500; white-space: nowrap; pointer-events: none; opacity: 0; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45); }
   .packet :global(svg) { display: block; flex: none; }
   .packet.back { background: var(--danger-bg); color: var(--danger-text); box-shadow: inset 0 0 0 1px rgba(239, 164, 155, 0.6), 0 2px 8px rgba(0, 0, 0, 0.45); }
-
-  @media (prefers-reduced-motion: reduce) {
-    .stage *, .stage *::before, .stage *::after { animation: none !important; transition: none !important; }
-  }
 </style>
