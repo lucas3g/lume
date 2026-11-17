@@ -439,10 +439,14 @@ function shapeLight(cv, wx, wy, bias, noise) {
    a ela e a assenta na tela de baixo, projetando sombra de `cast` px para baixo e para o lado oposto à luz sobre o
    que já estava lá (o braço no tronco, a cabeça no pescoço), mais forte junto da borda. Onde a parte encosta em
    outra, a borda de cima ganha um fio de luz e a de baixo um de sombra: as duas não se fundem mesmo com a mesma cor.
-   flat: desenho à mão, já sombreado. */
-function part(cv, draw, wx, wy, cast, flat, bias, noise) {
+   flat: desenho à mão, já sombreado. skin: cores de pele da parte; a sombra que cai depois sobre esses pixels (a mão
+   de baixo nos braços cruzados) fica bem mais leve, e a própria parte só escurece a pele um degrau leve: a mão não
+   vira uma mancha escura. */
+function part(cv, draw, wx, wy, cast, flat, bias, noise, skin) {
   const sub = canvas(cv.flip, cv);
   draw(sub);
+  const bare = {};
+  if (skin) Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => { const c = sub.m[ys][xs]; if (skin.has(c)) { cv.soft[ys + ',' + xs] = 1; bare[ys + ',' + xs] = c; } }));
   const L = cv.flip ? 1 : -1, own = (x, y) => !!(sub.m[y] && sub.m[y][x]), dark = {};
   const under = (x, y) => { const c = cv.m[y] && cv.m[y][x]; return !!c && c.length <= 7 && !own(x, y); };
   if (!flat) {
@@ -456,6 +460,11 @@ function part(cv, draw, wx, wy, cast, flat, bias, noise) {
       if (d) edge.push([x, y, tone(c, d)]);
     }));
     edge.forEach(e => { sub.m[e[1]][e[0]] = e[2]; });
+    const sum = c => rgb(c).reduce((a, b) => a + b, 0);
+    Object.keys(bare).forEach(key => {
+      const xy = key.split(','), y = +xy[0], x = +xy[1], c = sub.m[y][x], o = bare[key];
+      if (sum(c) < sum(o)) sub.m[y][x] = tone(o, -0.07);
+    });
   }
   Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => {
     for (let k = 1; k <= cast; k++) {
@@ -463,7 +472,10 @@ function part(cv, draw, wx, wy, cast, flat, bias, noise) {
       if (under(x, y) && !(key in dark && dark[key][3] <= k)) dark[key] = [x, y, cv.m[y][x], k];
     }
   }));
-  Object.keys(dark).forEach(key => { const d = dark[key]; cv.m[d[1]][d[0]] = tone(d[2], d[3] === 1 ? -0.24 : -0.15); });
+  Object.keys(dark).forEach(key => {
+    const d = dark[key], soft = cv.soft[key];
+    if (!soft || d[3] === 1) cv.m[d[1]][d[0]] = tone(d[2], soft ? -0.07 : d[3] === 1 ? -0.24 : -0.15);
+  });
   Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => cv.set(+xs, +ys, sub.m[ys][xs])));
 }
 /* Tela fina: pixels soltos em coordenadas locais (origem no quadril), copiados depois para a grade com espelho. */
@@ -486,7 +498,7 @@ function canvas(flip, under) {
       for (let k = 0; k <= n; k++) ell(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, r, r, c);
     }
   };
-  return { m: m, flip: !!flip, set: set, get: get, ell: ell, rect: rect, limb: limb };
+  return { m: m, soft: {}, flip: !!flip, set: set, get: get, ell: ell, rect: rect, limb: limb };
 }
 
 /* Cabeça em 3/4 (olhando para a esquerda) com centro do crânio em (cx, cy). back: vista de costas (só cabelo,
@@ -594,7 +606,7 @@ function torsoShape(cv, p, cx, top, bottom) {
 }
 /* Braço: manga do ombro ao cotovelo e até o pulso, mão na ponta; opcionalmente algo na mão (caneca). */
 /* Braço: membro fino, iluminado por cima; projeta sombra no tronco. */
-function drawArm(cv, p, pts) { part(cv, s => armShape(s, p, pts), 0.6, 0.8, 2, !!p.art, 0.05, 0.06); }
+function drawArm(cv, p, pts) { part(cv, s => armShape(s, p, pts), 0.6, 0.8, 2, !!p.art, 0.05, 0.06, new Set([p.pal.S, p.pal.s])); }
 function armShape(cv, p, pts) {
   if (p.art) { armYou(cv, p.art.pal, pts); return; }
   const C = p.pal.C, c = p.pal.c, S = p.pal.S, s = p.pal.s, end = pts[pts.length - 1];
