@@ -115,6 +115,26 @@
     if (logEl && logStuck) logEl.scrollTop = logEl.scrollHeight;
   });
 
+  /** Registro das etapas: o mesmo comportamento do log, acompanhando a etapa mais nova. */
+  let regEl = $state<HTMLOListElement>();
+  let regStuck = $state(true);
+  const onRegScroll = () => {
+    if (regEl) regStuck = regEl.scrollHeight - regEl.scrollTop - regEl.clientHeight < 24;
+  };
+  // Outra execução aberta: volta a acompanhar o fim.
+  $effect(() => {
+    void detail.id;
+    regStuck = true;
+  });
+  $effect(() => {
+    // Etapa nova ou a última mudando de situação (o resumo do que entregou aumenta a linha).
+    const last = detail.stages.at(-1);
+    void detail.stages.length;
+    void last?.status;
+    void last?.output;
+    if (regEl && regStuck) regEl.scrollTop = regEl.scrollHeight;
+  });
+
   /** Modelo da etapa aberta no serviço da conta que a atende. */
   const panelModel = $derived.by(() => {
     if (!panelStage?.conversation_id) return null;
@@ -432,7 +452,7 @@
 
       <section class="card log-card" aria-label="Registro da execução">
         <div class="r-top"><h2>Registro</h2><span class="muted small">cada etapa roda numa sessão própria; o que recebeu e o que entregou ficam guardados</span></div>
-        <ol class="reg">
+        <ol class="reg" bind:this={regEl} onscroll={onRegScroll}>
           {#each detail.stages as s (s.id)}
             {@const v = stageVisual(s, s.status === "running" && !!chat.permissions[s.conversation_id])}
             {@const tag = passLabel(s, indexOf(s), detail.max_rounds)}
