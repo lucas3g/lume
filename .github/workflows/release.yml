@@ -1,8 +1,8 @@
 name: Release
 
 # A cada push na main, confere a versão do app. Se ainda não existe a tag vX.Y.Z
-# dessa versão, publica no GitHub Releases o .dmg (macOS), o instalador NSIS
-# (Windows) e o latest.json que o updater do app consulta; a própria release cria
+# dessa versão, publica no GitHub Releases o instalador NSIS do Windows e o
+# latest.json que o updater do app consulta; a própria release cria
 # a tag. Para publicar, basta subir a versão: `pnpm release X.Y.Z`.
 on:
   push:
@@ -54,15 +54,7 @@ jobs:
   build:
     needs: version
     if: needs.version.outputs.publish == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            args: --bundles app,dmg
-          - platform: windows-latest
-            args: --bundles nsis
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -93,9 +85,9 @@ jobs:
         with:
           tagName: v${{ needs.version.outputs.version }}
           releaseName: "Lume v${{ needs.version.outputs.version }}"
-          releaseBody: "Baixe o .dmg (macOS) ou o instalador .exe (Windows). Versões já instaladas atualizam sozinhas."
+          releaseBody: "Baixe o instalador .exe (Windows). Versões já instaladas atualizam sozinhas."
           releaseCommitish: ${{ github.sha }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          args: ${{ matrix.args }}
+          args: --bundles nsis

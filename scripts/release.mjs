@@ -2,7 +2,7 @@
 // Sobe a versão do Lume e publica: `pnpm release 0.2.1`.
 // Atualiza a versão em package.json, tauri.conf.json, Cargo.toml e Cargo.lock,
 // faz o commit na main e o push. O push dispara .github/workflows/release.yml,
-// que compila macOS e Windows e publica a atualização para quem tem o app.
+// que compila o instalador do Windows e publica a atualização para quem tem o app.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 

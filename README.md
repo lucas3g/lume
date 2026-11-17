@@ -49,7 +49,7 @@ O instalador para Windows é compilado pelo GitHub Actions (`.github/workflows/b
 pnpm release 0.2.1
 ```
 
-O script sobe a versão em `package.json`, `tauri.conf.json`, `Cargo.toml` e `Cargo.lock`, faz o commit na main e o push. A cada push na main, `.github/workflows/release.yml` confere a versão: se ainda não existe a tag `vX.Y.Z`, compila e publica no GitHub Releases o `.dmg` (macOS), o instalador NSIS (Windows) e o `latest.json` consultado pelo updater, e a release cria a tag. O app procura atualização 15 segundos depois de abrir e depois de hora em hora, e avisa quando há versão nova.
+O script sobe a versão em `package.json`, `tauri.conf.json`, `Cargo.toml` e `Cargo.lock`, faz o commit na main e o push. A cada push na main, `.github/workflows/release.yml` confere a versão: se ainda não existe a tag `vX.Y.Z`, compila e publica no GitHub Releases o instalador NSIS do Windows e o `latest.json` consultado pelo updater, e a release cria a tag. O app procura atualização 15 segundos depois de abrir e depois de hora em hora, e avisa quando há versão nova.
 
 O workflow precisa dos segredos `TAURI_SIGNING_PRIVATE_KEY` (conteúdo de `~/.tauri/lume.key`) e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (a chave não tem senha, então esse pode ficar sem cadastro) no repositório. O repositório precisa ser público para os apps instalados baixarem o `latest.json` sem login. A chave pública correspondente está em `src-tauri/tauri.conf.json`; sem a privada não dá para assinar atualizações.
 
