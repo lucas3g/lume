@@ -137,7 +137,8 @@ impl ManagePipelines {
         Ok(PipelineConfig { agents, default_jira_template: self.default_template(), ..self.stored_config(project_id) })
     }
 
-    fn default_template(&self) -> Option<String> {
+    /// Modelo de task do Jira de todos os projetos, se houver.
+    pub fn default_template(&self) -> Option<String> {
         self.settings.text(DEFAULT_TEMPLATE_KEY).filter(|t| !t.trim().is_empty())
     }
 

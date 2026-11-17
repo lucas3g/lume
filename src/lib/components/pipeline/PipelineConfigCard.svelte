@@ -31,7 +31,6 @@
         if (id !== projectId) return;
         config = c;
         template = c.jira_template ?? "";
-        defaultTemplate = c.default_jira_template ?? "";
         loadedFor = id;
       },
       (e) => {
@@ -71,21 +70,6 @@
   function saveTemplate() {
     const value = template.trim() || null;
     if (value !== (config.jira_template ?? null)) void save({ ...config, jira_template: value });
-  }
-
-  /** Texto do campo do modelo padrão (de todos os projetos), salvo ao sair do campo. */
-  let defaultTemplate = $state("");
-  function saveDefaultTemplate() {
-    const value = defaultTemplate.trim() || null;
-    if (value === (config.default_jira_template ?? null)) return;
-    error = null;
-    api.savePipelineDefaultTemplate(value).then(
-      (saved) => {
-        config = { ...config, default_jira_template: saved };
-        defaultTemplate = saved ?? "";
-      },
-      (e) => (error = errorMessage(e)),
-    );
   }
 
   function setEffort(role: PipelineRole, effort: string) {
@@ -144,20 +128,11 @@
       <span class="muted small">
         Quando a execução começa sem task escolhida, o Relator cria uma no fim, copiando o projeto, o tipo, os campos e a
         estrutura da descrição deste modelo, e mostra o link no relatório. Precisa do conector do Atlassian (Jira) na conta.
-        Vazio: usa o modelo padrão.
+        Vazio: usa o modelo padrão, definido em Configurações{config.default_jira_template ? "" : " (nenhum por enquanto)"}.
       </span>
     </label>
     <input id={`tpl-${projectId}`} class="input tpl" bind:value={template} placeholder={config.default_jira_template ?? "https://empresa.atlassian.net/browse/EI-5198"}
       disabled={config.skipped.includes("reporter")} onblur={saveTemplate}
-      onkeydown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
-  </div>
-  <div class="template sub">
-    <label class="grow" for={`tpl-default-${projectId}`}>
-      <span class="name">Modelo padrão (todos os projetos)</span>
-      <span class="muted small">Vale para os projetos sem modelo próprio. Vazio em ambos: o Relator não cria task.</span>
-    </label>
-    <input id={`tpl-default-${projectId}`} class="input tpl" bind:value={defaultTemplate} placeholder="https://empresa.atlassian.net/browse/EI-5198"
-      disabled={config.skipped.includes("reporter")} onblur={saveDefaultTemplate}
       onkeydown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
   </div>
 </section>
@@ -175,7 +150,6 @@
   .effort { width: 170px; min-height: 34px; }
   .toggle-space { width: 44px; flex-shrink: 0; }
   .template { display: flex; align-items: center; gap: 12px; padding: 12px 16px 16px; border-top: 1px solid var(--hairline); }
-  .template.sub { padding-top: 0; border-top: 0; }
   .template label { display: flex; flex-direction: column; gap: 2px; }
   .tpl { width: 330px; min-height: 34px; font-family: var(--mono); font-size: 12px; }
   @media (max-width: 640px) {

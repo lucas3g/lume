@@ -101,6 +101,7 @@ export const api = {
   pipelineConfig: (projectId: string) => invoke<PipelineConfig>("pipeline_config", { projectId }),
   savePipelineConfig: (projectId: string, config: PipelineConfig) =>
     invoke<PipelineConfig>("save_pipeline_config", { projectId, config }),
+  pipelineDefaultTemplate: () => invoke<string | null>("pipeline_default_template"),
   savePipelineDefaultTemplate: (template: string | null) => invoke<string | null>("save_pipeline_default_template", { template }),
   cliModels: (provider: Provider) => invoke<string[]>("cli_models", { provider }),
   pipelineModels: () => invoke<TierModels>("pipeline_models"),

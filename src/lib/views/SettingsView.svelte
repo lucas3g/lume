@@ -1,10 +1,40 @@
 <script lang="ts">
+  import { api, errorMessage } from "../api";
   import { setPipelineView, ui, type PipelineViewMode } from "../state/ui.svelte";
 
   const PIPELINE_VIEWS: { id: PipelineViewMode; title: string; description: string }[] = [
     { id: "track", title: "Esteira", description: "Cartões em trilha, com as voltas entre as estações e o trabalho passando de uma para a outra." },
     { id: "office", title: "Escritório", description: "Um escritório em pixel art: cada bot na sua mesa, andando para entregar ou devolver o trabalho." },
   ];
+
+  /** Modelo de task do Jira de todos os projetos: o que está salvo e o texto do campo, salvo ao sair dele. */
+  let savedTemplate = $state<string | null>(null);
+  let template = $state("");
+  let templateLoaded = $state(false);
+  let templateError = $state<string | null>(null);
+
+  api.pipelineDefaultTemplate().then(
+    (t) => {
+      savedTemplate = t;
+      template = t ?? "";
+      templateLoaded = true;
+    },
+    (e) => (templateError = errorMessage(e)),
+  );
+
+  function saveTemplate() {
+    if (!templateLoaded) return;
+    const value = template.trim() || null;
+    if (value === savedTemplate) return;
+    templateError = null;
+    api.savePipelineDefaultTemplate(value).then(
+      (saved) => {
+        savedTemplate = saved;
+        template = saved ?? "";
+      },
+      (e) => (templateError = errorMessage(e)),
+    );
+  }
 </script>
 
 <div class="page">
@@ -41,6 +71,19 @@
           </button>
         {/each}
       </div>
+      <div class="template">
+        <label class="grow" for="default-jira-template">
+          <span class="title">Modelo padrão de task do Jira</span>
+          <span class="muted small">
+            Vale para todos os projetos sem modelo próprio (o de cada projeto fica na tela do projeto). Quando a execução começa sem task
+            escolhida, o Relator cria uma no fim copiando o projeto, o tipo, os campos e a estrutura da descrição deste modelo. Vazio no
+            projeto e aqui: nenhuma task é criada.
+          </span>
+        </label>
+        <input id="default-jira-template" class="input tpl" bind:value={template} placeholder="https://empresa.atlassian.net/browse/EI-5198"
+          disabled={!templateLoaded} onblur={saveTemplate} onkeydown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+      </div>
+      {#if templateError}<p class="error-text" role="alert">{templateError}</p>{/if}
     </section>
   </div>
 </div>
@@ -57,6 +100,14 @@
   .choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .choice:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
   .title { font-weight: 600; }
+  .template { display: flex; align-items: center; gap: 12px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+  .template label { display: flex; flex-direction: column; gap: 2px; }
+  .grow { flex: 1; min-width: 0; }
+  .tpl { width: 330px; min-height: 34px; font-family: var(--mono); font-size: 12px; }
+  @media (max-width: 720px) {
+    .template { flex-wrap: wrap; }
+    .tpl { width: 100%; }
+  }
 
   .preview {
     position: relative; height: 56px; border-radius: 6px; background: var(--bg);

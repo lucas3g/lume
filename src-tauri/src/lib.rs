@@ -107,6 +107,7 @@ pub fn run() {
             commands::set_project_versioned,
             commands::pipeline_config,
             commands::save_pipeline_config,
+            commands::pipeline_default_template,
             commands::save_pipeline_default_template,
             commands::pipeline_models,
             commands::save_pipeline_models,
