@@ -8,7 +8,7 @@
   import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
-    choiceFindings, clock, duration, findingsMarkdown, icon, inputSummary, isActive, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
+    choiceFindings, clock, clockMinutes, duration, findingsMarkdown, icon, inputSummary, isActive, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
@@ -438,7 +438,7 @@
             {@const tag = passLabel(s, indexOf(s), detail.max_rounds)}
             <li>
               <button type="button" class="reg-item" class:sel={panelStageId === s.id} onclick={() => select(s.role, s.id)}>
-                <span class="r-time">{clock(s.started_at - detail.created_at)}</span>
+                <span class="r-time">{clockMinutes(s.started_at - detail.created_at)}</span>
                 <span class="r-mark"><span class="node mini s-{v.visual}" class:gate={isUserStep(s.role)}>{@html stationGlyph(s.role, v.visual)}</span></span>
                 <span class="r-body">
                   <span class="r-l1">
@@ -518,7 +518,7 @@
                 <h3 class="label">{panelStage.status === "running" ? "Agora" : "O que fez"}</h3>
                 <ol class="tlog" bind:this={logEl} onscroll={onLogScroll}>
                   {#each panelLog as l, i (i)}
-                    <li class={l.tone}><span class="t">{clock(l.at - detail.created_at)}</span><span class="i">{@html icon(l.glyph, 12)}</span><span class="va"><span class="v">{l.verb}</span> <span class="a">{l.target}</span></span></li>
+                    <li class={l.tone}><span class="t">{clockMinutes(l.at - detail.created_at)}</span><span class="i">{@html icon(l.glyph, 12)}</span><span class="va"><span class="v">{l.verb}</span> <span class="a">{l.target}</span></span></li>
                   {/each}
                   {#if panelStage.status === "running"}
                     <li class="live"><span class="t"></span><span class="i">{#if panelAsking}<span class="dot warn pulse"></span>{:else}<span class="spinner mini"></span>{/if}</span><span class="va"><span class="a">{panelAsking ? "Esperando sua autorização" : (liveStatus ?? "Trabalhando")}</span></span></li>

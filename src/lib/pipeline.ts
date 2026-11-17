@@ -335,6 +335,12 @@ export function clock(seconds: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+/** Momento dentro da execução, sem segundos: "h:mm" ("0:07", "19:43"). */
+export function clockMinutes(seconds: number): string {
+  const m = Math.floor(Math.max(0, seconds) / 60);
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+}
+
 /** Duração curta: "4:07". */
 export function duration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
