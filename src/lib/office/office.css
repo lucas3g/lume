@@ -2,17 +2,20 @@
    grade lógica 360x186 px escalada por inteiro (--s), animações só em passos de 1 px lógico.
    Global porque os sprites entram por {@html}; tudo fica sob .office-room e as animações têm o prefixo of-. */
 /* ---- sala isométrica: tudo em px lógicos (--x, --y, --w, --h) vezes a escala ---- */
-.office-room{--s:3;--u:calc(var(--s)*1px);position:relative;width:calc(360px*var(--s));height:calc(186px*var(--s));overflow:hidden;isolation:isolate;margin:0 auto;background:var(--bg)}
+/* Sprites são bitmaps (<image>) ampliados sem suavizar. contain + content-visibility: o que muda lá dentro não
+   recalcula o resto da página, e fora da tela a sala nem pinta (as animações param de custar). */
+.office-room{--s:3;--u:calc(var(--s)*1px);position:relative;width:calc(360px*var(--s));height:calc(186px*var(--s));overflow:hidden;isolation:isolate;margin:0 auto;background:var(--bg);contain:strict;content-visibility:auto;contain-intrinsic-size:calc(360px*var(--s)) calc(186px*var(--s))}
 .office-room svg{display:block;overflow:visible;shape-rendering:crispEdges;image-rendering:pixelated}
+.office-room image{image-rendering:pixelated;pointer-events:none}
 .office-room .bg{position:absolute;left:0;top:0;width:100%;height:100%;z-index:0}
 .office-room .row{list-style:none;margin:0;padding:0}
 .office-room .it,.office-room .desk{position:absolute;left:calc(var(--x)*var(--u));top:calc(var(--y)*var(--u));width:calc(var(--w)*var(--u));height:calc(var(--h)*var(--u))}
 .office-room .desk{z-index:var(--z)}
 .office-room .it{pointer-events:none}
 .office-room .it>svg,.office-room .desk>svg{width:100%;height:100%}
-/* A mesa é um <button>; só os pixels pintados recebem o clique, para estações vizinhas não roubarem a seleção. */
+/* A mesa é um <button>; só a máscara dos pixels pintados (path.hit) recebe o clique, para estações vizinhas não roubarem a seleção. */
 .office-room .desk{appearance:none;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer;pointer-events:none}
-.office-room .desk path{pointer-events:auto}
+.office-room .desk .hit{pointer-events:auto}
 .office-room .desk:focus-visible{outline:var(--u) dashed var(--accent-text);outline-offset:calc(var(--u)*-1)}
 .office-room .desk:hover>svg{filter:brightness(1.12)}
 .office-room .v-skipped .desk>svg{filter:brightness(.42) saturate(.3)}
@@ -89,6 +92,8 @@
 @keyframes of-sel{0%,100%{opacity:1}50%{opacity:.4}}
 .office-room .a-walkbob{animation:of-walkbob .44s steps(1) infinite}
 @keyframes of-walkbob{0%,50%,100%{transform:none}25%,75%{transform:translateY(-1px)}}
+/* Relógio (clock.ts): pausadas aqui e avançadas só nos instantes em que algum degrau troca. */
+.office-room.clocked *{animation-play-state:paused!important}
 /* Portões da viagem: a camada troca no instante --at (chegada da pasta ou volta de quem levou). */
 .office-room .g-from{animation:of-g-from .01s steps(1) var(--at) both}
 @keyframes of-g-from{0%{opacity:0}100%{opacity:1}}

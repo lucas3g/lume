@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import "../../office/office.css";
+  import { officeClock } from "../../office/clock";
   import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, spritesSvg, type OfficeScene } from "../../office/scene";
   import { passesByRole, passLabel, stationRole, STATIONS } from "../../pipeline";
   import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
@@ -103,48 +104,77 @@
 
   let width = $state(0);
   const scale = $derived(Math.max(1, Math.min(4, Math.floor(width / OFFICE_W))));
-  const view = $derived(officeView(scene, { scale, traveling }));
-  const scenery = officeScenery();
+  // Densidade da tela (muda ao arrastar a janela para outro monitor ou com zoom): os bitmaps saem nela.
+  let dpr = $state(window.devicePixelRatio || 1);
+  onMount(() => {
+    let query: MediaQueryList | undefined;
+    const watch = () => {
+      query?.removeEventListener("change", update);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      query.addEventListener("change", update);
+    };
+    const update = () => {
+      dpr = window.devicePixelRatio || 1;
+      watch();
+    };
+    watch();
+    return () => query?.removeEventListener("change", update);
+  });
+  // Só depois de medir a largura: a escala entra nos bitmaps, e montar antes geraria tudo duas vezes.
+  const scenery = $derived(width ? officeScenery(scale, dpr) : null);
+  const view = $derived(width ? officeView(scene, { scale, dpr, traveling }) : null);
+
+  // Animações em passos avançadas pelo relógio da sala, só quando algum pixel muda: 12 quadros por segundo parado
+  // (o ritmo da pixel art), 30 enquanto a pasta anda (passos de 2x1 px mais rápidos).
+  let room: HTMLDivElement;
+  let clock: ReturnType<typeof officeClock> | undefined;
+  onMount(() => {
+    clock = officeClock(room, 12);
+    return () => clock?.destroy();
+  });
+  $effect(() => clock?.setFps(traveling ? 30 : 12));
   const meta = (text: string, role: string) => [text, times[role]].filter(Boolean).join(" · ");
 </script>
 
 <div class="office" bind:clientWidth={width}>
-  <div class="office-room" style={view.roomStyle}>
-    <svg class="bg" viewBox="0 0 {OFFICE_W} {OFFICE_H}" aria-hidden="true">{@html scenery.backdrop}</svg>
-    {#each scenery.props as prop, i (i)}
-      <div class="it" style={prop.style}><svg viewBox={prop.vb} aria-hidden="true">{@html prop.svg}</svg></div>
-    {/each}
-    <ol class="row">
-      {#each view.stations as v (v.role)}
-        <li class={v.cls} style={v.style}>
-          <button
-            type="button"
-            class="desk"
-            aria-label={`${v.aria}. Abrir detalhes`}
-            aria-pressed={v.pressed}
-            onclick={() => onselect(v.role as PipelineRole)}
-          >
-            <svg viewBox={v.vb} aria-hidden="true">{@html layersSvg(v.layers)}</svg>
-          </button>
-          <span class="tag"><span class="name">{v.label}</span><span class="pass">{v.passText}</span></span>
-          {#if v.balloon}
-            <div class={v.balloon.cls} style={v.balloon.style}>
-              <span class="act">{v.balloon.activity}</span>
-              {#if meta(v.balloon.meta, v.role)}<span class="meta">{meta(v.balloon.meta, v.role)}</span>{/if}
-            </div>
-          {/if}
-        </li>
+  <div class="office-room" style="--s:{scale}" bind:this={room}>
+    {#if view && scenery}
+      <svg class="bg" viewBox="0 0 {OFFICE_W} {OFFICE_H}" aria-hidden="true">{@html scenery.backdrop}</svg>
+      {#each scenery.props as prop, i (i)}
+        <div class="it" style={prop.style}><svg viewBox={prop.vb} aria-hidden="true">{@html prop.svg}</svg></div>
       {/each}
-    </ol>
-    <div class="trip" aria-hidden="true">
-      {#if view.trip}
-        {#key view.trip.id}
-          {#each view.trip.legs as leg, i (i)}
-            <div class={leg.cls} style={leg.style}><svg viewBox={leg.vb}>{@html spritesSvg(leg.sprites)}</svg></div>
-          {/each}
-        {/key}
-      {/if}
-    </div>
+      <ol class="row">
+        {#each view.stations as v (v.role)}
+          <li class={v.cls} style={v.style}>
+            <button
+              type="button"
+              class="desk"
+              aria-label={`${v.aria}. Abrir detalhes`}
+              aria-pressed={v.pressed}
+              onclick={() => onselect(v.role as PipelineRole)}
+            >
+              <svg viewBox={v.vb} aria-hidden="true">{@html layersSvg(v.layers)}</svg>
+            </button>
+            <span class="tag"><span class="name">{v.label}</span><span class="pass">{v.passText}</span></span>
+            {#if v.balloon}
+              <div class={v.balloon.cls} style={v.balloon.style}>
+                <span class="act">{v.balloon.activity}</span>
+                {#if meta(v.balloon.meta, v.role)}<span class="meta">{meta(v.balloon.meta, v.role)}</span>{/if}
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ol>
+      <div class="trip" aria-hidden="true">
+        {#if view.trip}
+          {#key view.trip.id}
+            {#each view.trip.legs as leg, i (i)}
+              <div class={leg.cls} style={leg.style}><svg viewBox={leg.vb}>{@html spritesSvg(leg.sprites)}</svg></div>
+            {/each}
+          {/key}
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>
 

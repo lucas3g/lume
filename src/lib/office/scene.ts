@@ -190,30 +190,47 @@ function kit(t, g) {
     body: (dx, dy, lines, pal) => t.map(g.seat[0] + (g.se ? -dx - lines[0].length : dx), g.seat[1] + dy, lines, pal, g.se)
   };
 }
-function toPaths(g) {
-  const rects = {}, order = [], open = {};
+/* Grade -> bitmap. Cada sprite vira um PNG do tamanho exato dos seus pixels finos (data URL, decodificado uma vez
+   pelo navegador), desenhado como <image> com image-rendering: pixelated: os mesmos pixels de antes, mas repintar
+   um quadro de animação é copiar um bitmap em vez de rasterizar milhares de retângulos de <path>.
+   mask: as células de px lógico ocupadas, a partir de (mx, my) com largura mw (máscara de clique da mesa). */
+const RGBA = {};
+const rgba = c => RGBA[c] || (RGBA[c] = [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16), c.length > 7 ? parseInt(c.slice(7, 9), 16) : 255]);
+let ENC = null;
+/* Densidade: pixels de tela por pixel fino (escala x devicePixelRatio / R). Inteira, o bitmap fica na grade fina e o
+   navegador amplia sem suavizar. Fracionária (1,5 numa tela 1x na escala 3), ampliar faria o WebKit arredondar
+   diferente a cada repintura parcial e o piso "tremeria" perto das animações; então o bitmap já sai na grade da
+   tela (cada coluna de tela pega o pixel fino do seu centro) e é desenhado 1:1. K = 1 marca o caso inteiro. */
+let K = 1;
+function density(scale, dpr) { const k = (scale * dpr) / R; K = Math.abs(k - Math.round(k)) < 1e-6 ? 1 : k; }
+function toImage(g) {
   let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9;
-  Object.keys(g).map(Number).sort((a, b) => a - b).forEach(y => {
-    const row = g[y], xs = Object.keys(row).map(Number).sort((a, b) => a - b);
-    by0 = Math.min(by0, y); by1 = Math.max(by1, y + 1); bx0 = Math.min(bx0, xs[0]); bx1 = Math.max(bx1, xs[xs.length - 1] + 1);
-    for (let i = 0; i < xs.length;) {
-      const x = xs[i], c = row[x]; let w = 1;
-      while (i + w < xs.length && xs[i + w] === x + w && row[x + w] === c) w++;
-      const key = c + '|' + x + '|' + w, o = open[key];
-      if (o && o.y + o.h === y) o.h++;
-      else { const r = { x: x, y: y, w: w, h: 1 }; open[key] = r; if (!rects[c]) { rects[c] = []; order.push(c); } rects[c].push(r); }
-      i += w;
+  const ys = Object.keys(g).map(Number);
+  ys.forEach(y => { by0 = Math.min(by0, y); by1 = Math.max(by1, y + 1); Object.keys(g[y]).forEach(xs => { const x = +xs; if (x < bx0) bx0 = x; if (x + 1 > bx1) bx1 = x + 1; }); });
+  if (!ys.length) return { href: '', x: 0, y: 0, w: 0, h: 0, box: [0, 0, 0, 0], mx: 0, my: 0, mw: 0, mask: new Uint8Array(0) };
+  const mx = Math.floor(bx0 / R), my = Math.floor(by0 / R), mw = Math.ceil(bx1 / R) - mx, mask = new Uint8Array(mw * (Math.ceil(by1 / R) - my));
+  ys.forEach(y => { const mo = (Math.floor(y / R) - my) * mw - mx; Object.keys(g[y]).forEach(xs => { mask[mo + Math.floor(+xs / R)] = 1; }); });
+  /* Grade do bitmap: a fina (K = 1) ou a da tela; [x0, x1) x [y0, y1) em pixels dela. */
+  const k = K, x0 = Math.floor(bx0 * k), x1 = Math.ceil(bx1 * k), y0 = Math.floor(by0 * k), y1 = Math.ceil(by1 * k);
+  const w = x1 - x0, h = y1 - y0, data = new Uint8ClampedArray(w * h * 4);
+  for (let Y = y0; Y < y1; Y++) {
+    const row = g[k === 1 ? Y : Math.floor((Y + 0.5) / k)]; if (!row) continue;
+    for (let X = x0; X < x1; X++) {
+      const cs = row[k === 1 ? X : Math.floor((X + 0.5) / k)]; if (!cs) continue;
+      const c = rgba(cs), i = ((Y - y0) * w + X - x0) * 4;
+      data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = c[3];
     }
-  });
-  /* De volta a px lógicos: meio px lógico é um pixel fino. */
-  const u = n => +(n / R).toFixed(2);
-  const paths = order.map(c => ({ f: c, d: rects[c].map(r => 'M' + u(r.x) + ' ' + u(r.y) + 'h' + u(r.w) + 'v' + u(r.h) + 'h-' + u(r.w) + 'z').join('') }));
-  paths.box = [u(bx0), u(by0), u(bx1 - bx0), u(by1 - by0)];
-  return paths;
+  }
+  if (!ENC) ENC = document.createElement('canvas');
+  ENC.width = w; ENC.height = h;
+  ENC.getContext('2d').putImageData(new ImageData(data, w, h), 0, 0);
+  /* De volta a px lógicos: um px lógico tem R * k pixels do bitmap. */
+  const u = R * k, box = [x0 / u, y0 / u, w / u, h / u];
+  return { href: ENC.toDataURL('image/png'), x: box[0], y: box[1], w: box[2], h: box[3], box: box, mx: mx, my: my, mw: mw, mask: mask };
 }
-/* Sprite = um <g>: classes de animação, estilo inline e os paths (memoizados pela chave do desenho).
+/* Sprite = um <g>: classes de animação, estilo inline e o bitmap (memoizado pela chave do desenho).
    SO é o mesmo sprite com contorno: móveis, pessoas e objetos soltos (telas, brilhos e fumaça ficam sem). */
-function S(key, cls, style, draw, ol) { return { k: key, cls: cls || '', style: style || '', paths: memo('art:' + key, () => { const g = {}; draw(iso(g)); if (ol) outline(g); return toPaths(g); }) }; }
+function S(key, cls, style, draw, ol) { return { k: key, cls: cls || '', style: style || '', art: memo('art:' + key + (K === 1 ? '' : '@' + K), () => { const g = {}; draw(iso(g)); if (ol) outline(g); return toImage(g); }) }; }
 const SO = (key, cls, style, draw) => S(key, cls, style, draw, true);
 /* Quadros alternados por visibilidade: n sprites, cada um visível em 1/n do ciclo. */
 function frames(n, dur, make) {
@@ -793,7 +810,7 @@ function backdrop() {
 /* Móvel solto: tiles que ocupa (bloqueiam o caminho) e z-index logo atrás da posição mais à frente de quem passa. */
 function prop(key, tiles, sprites) {
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, tx0 = 1e9, ty0 = 1e9, tx1 = -1e9, ty1 = -1e9;
-  sprites.forEach(s => { const b = s.paths.box; x0 = Math.min(x0, b[0]); y0 = Math.min(y0, b[1]); x1 = Math.max(x1, b[0] + b[2]); y1 = Math.max(y1, b[1] + b[3]); });
+  sprites.forEach(s => { const b = s.art.box; x0 = Math.min(x0, b[0]); y0 = Math.min(y0, b[1]); x1 = Math.max(x1, b[0] + b[2]); y1 = Math.max(y1, b[1] + b[3]); });
   tiles.forEach(p => { tx0 = Math.min(tx0, p[0]); ty0 = Math.min(ty0, p[1]); tx1 = Math.max(tx1, p[0] + 1); ty1 = Math.max(ty1, p[1] + 1); });
   const z = Math.round((Math.min(tx0 + ty1, tx1 + ty0) + 0.5) * 10);
   return { key: key, tiles: tiles, vb: x0 + ' ' + y0 + ' ' + (x1 - x0) + ' ' + (y1 - y0), style: '--x:' + x0 + ';--y:' + y0 + ';--w:' + (x1 - x0) + ';--h:' + (y1 - y0) + ';z-index:' + z, sprites: sprites };
@@ -805,7 +822,7 @@ function plant(key, x, y) {
   ]);
 }
 function props() {
-  return memo('props', () => {
+  return memo('props@' + K, () => {
     const SOFA = ['#5b8f99', '#3f6b73', '#335961'], CAB = ['#3d424d', '#33363e', '#2b2e36'], CUP = ['#ecedef', '#d8dbe2', '#b4b8c0'];
     const pxAt = (t, x, y, z, dx, dy, w, h, c) => t.px(Math.round(sx(x, y)) + dx, Math.round(sy(x, y, z)) + dy, w, h, c);
     return [
@@ -864,7 +881,7 @@ function props() {
   });
 }
 /* O cenário inteiro, como sai em buildView: fundo (um SVG) e móveis (um elemento cada). */
-function scenery() { return memo('scenery', () => ({ backdrop: backdrop(), props: props() })); }
+function scenery() { return memo('scenery@' + K, () => ({ backdrop: backdrop(), props: props() })); }
 
 /* Tiles onde ninguém anda: estações e móveis. O resto é corredor. */
 function blocked() {
@@ -949,10 +966,11 @@ function tripOf(scene) {
   return Object.assign(base, { kind: 'walk', td: +t.toFixed(2), arrive: +arrive.toFixed(2), points: corners, legs: legs });
 }
 
-/* Estado da cena -> tudo o que a marcação precisa. opt: { scale, traveling }.
+/* Estado da cena -> tudo o que a marcação precisa. opt: { scale, dpr, traveling }.
    traveling = true enquanto a viagem atual anda; quem monta o componente desliga depois de trip.td segundos. */
 function buildView(scene, opt) {
   opt = opt || {};
+  density(opt.scale || 3, opt.dpr || 1);
   const trip = opt.traveling ? tripOf(scene) : null;
   const stations = scene.stations.map((st, i) => {
     const g = geo(st.role), selected = scene.selected === i, active = scene.active === i;
@@ -1010,7 +1028,8 @@ export interface OfficeScene {
   tripId: number;
 }
 
-interface Sprite { k: string; cls: string; style: string; paths: { f: string; d: string }[] }
+interface Art { href: string; x: number; y: number; w: number; h: number; box: number[]; mx: number; my: number; mw: number; mask: Uint8Array }
+interface Sprite { k: string; cls: string; style: string; art: Art }
 interface Layer { cls: string; style: string; sprites: Sprite[] }
 
 export interface OfficeTrip { id: number; kind: "walk" | "plane"; td: number; legs: { cls: string; style: string; vb: string; sprites: Sprite[] }[] }
@@ -1036,29 +1055,73 @@ export interface OfficeView {
 /** Largura e altura lógicas da sala. */
 export const OFFICE_W: number = LW;
 export const OFFICE_H: number = LH;
-/** `traveling`: verdadeiro enquanto a viagem atual anda; quem monta desliga depois de `trip.td` segundos. */
-export const officeView: (scene: OfficeScene, opt: { scale: number; traveling: boolean }) => OfficeView = buildView;
+/** `traveling`: verdadeiro enquanto a viagem atual anda; quem monta desliga depois de `trip.td` segundos.
+    `dpr`: window.devicePixelRatio (os bitmaps saem na densidade da tela; ver `density`). */
+export const officeView: (scene: OfficeScene, opt: { scale: number; dpr: number; traveling: boolean }) => OfficeView = buildView;
 export const officeTrip: (scene: OfficeScene) => OfficeTrip | null = tripOf;
 
-const spritesSvg = (list: Sprite[]): string =>
-  list.map((s) => `<g class="${s.cls}" style="${s.style}">${s.paths.map((p) => `<path d="${p.d}" fill="${p.f}"/>`).join("")}</g>`).join("");
+const imageSvg = (a: Art): string => (a.href ? `<image href="${a.href}" x="${a.x}" y="${a.y}" width="${a.w}" height="${a.h}"/>` : "");
+const spritesSvg = (list: Sprite[]): string => list.map((s) => `<g class="${s.cls}" style="${s.style}">${imageSvg(s.art)}</g>`).join("");
 
-/** Camadas de uma estação como SVG, para {@html} dentro de um <svg>. */
+/* Máscara de clique: um <path> transparente com as células de px lógico pintadas por qualquer sprite da mesa
+   (uma <image> recebe clique no retângulo todo, e as mesas vizinhas se sobrepõem). Memoizada pelo conjunto de sprites. */
+const HITS = new Map<string, string>();
+function hitPath(layers: Layer[]): string {
+  const key = layers.map((l) => l.sprites.map((s) => s.k).join(",")).join("|");
+  let out = HITS.get(key);
+  if (out == null) {
+    const rows = new Map<number, Set<number>>();
+    for (const l of layers) for (const s of l.sprites) {
+      const a = s.art;
+      for (let i = 0; i < a.mask.length; i++) {
+        if (!a.mask[i]) continue;
+        const y = a.my + Math.floor(i / a.mw);
+        let row = rows.get(y);
+        if (!row) rows.set(y, (row = new Set()));
+        row.add(a.mx + (i % a.mw));
+      }
+    }
+    let d = "";
+    for (const [y, row] of rows) {
+      const xs = [...row].sort((a, b) => a - b);
+      for (let i = 0; i < xs.length; ) {
+        let w = 1;
+        while (xs[i + w] === xs[i] + w) w++;
+        d += `M${xs[i]} ${y}h${w}v1h-${w}z`;
+        i += w;
+      }
+    }
+    out = d ? `<path class="hit" d="${d}" fill="transparent"/>` : "";
+    HITS.set(key, out);
+  }
+  return out;
+}
+
+/** Camadas de uma estação como SVG, para {@html} dentro de um <svg>; por cima, a máscara de clique. */
 export function layersSvg(layers: Layer[]): string {
-  return layers.map((l) => `<g class="${l.cls}" style="${l.style}">${spritesSvg(l.sprites)}</g>`).join("");
+  return layers.map((l) => `<g class="${l.cls}" style="${l.style}">${spritesSvg(l.sprites)}</g>`).join("") + hitPath(layers);
 }
 /** Sprites soltos (trechos da viagem) como SVG. */
 export { spritesSvg };
 
-/** Cenário fixo da sala: o fundo como SVG e os móveis (cada um com a sua profundidade). Gerado uma vez só. */
-let sceneryCache: { backdrop: string; props: { style: string; vb: string; svg: string }[] } | null = null;
-export function officeScenery() {
-  if (!sceneryCache) {
+/** Cenário fixo da sala: o fundo como SVG e os móveis (cada um com a sua profundidade). Gerado uma vez só.
+    O que anima no fundo (estrelas, poeira, post-it) sai do SVG grande e vira um elemento pequeno logo acima dele:
+    assim cada piscada repinta alguns pixels, e não a sala inteira. */
+const sceneryCache = new Map<number, { backdrop: string; props: { style: string; vb: string; svg: string }[] }>();
+export function officeScenery(scale: number, dpr: number) {
+  density(scale, dpr);
+  let cached = sceneryCache.get(K);
+  if (!cached) {
     const s = scenery();
-    sceneryCache = {
-      backdrop: spritesSvg(s.backdrop),
-      props: s.props.map((p) => ({ style: p.style, vb: p.vb, svg: spritesSvg(p.sprites) })),
+    const moving = s.backdrop.filter((sp: Sprite) => sp.cls).map((sp: Sprite) => {
+      const b = sp.art.box;
+      return { style: `--x:${b[0]};--y:${b[1]};--w:${b[2]};--h:${b[3]};z-index:1`, vb: b.join(" "), svg: spritesSvg([sp]) };
+    });
+    cached = {
+      backdrop: spritesSvg(s.backdrop.filter((sp: Sprite) => !sp.cls)),
+      props: moving.concat(s.props.map((p) => ({ style: p.style, vb: p.vb, svg: spritesSvg(p.sprites) }))),
     };
+    sceneryCache.set(K, cached);
   }
-  return sceneryCache;
+  return cached;
 }
