@@ -214,6 +214,7 @@ impl SendMessage {
                 mcp_config: setup.mcp_config.clone(),
                 allowed_tools: setup.allowed_tools.clone(),
                 read_dirs: setup.read_dirs.clone(),
+                mcp_servers: setup.mcp_servers.clone(),
             };
             let mut journal = Journal::default();
             let answer = control.answer.clone();

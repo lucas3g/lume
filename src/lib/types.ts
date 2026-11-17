@@ -312,6 +312,29 @@ export interface AccountConnector {
   enabled: boolean;
 }
 
+/** Conector da conta claude.ai usado também no ChatGPT e no Gemini, pelo endereço público dele. */
+export interface ConnectorBridge {
+  name: string;
+  display_name: string;
+  endpoint: string;
+  /** Nome do servidor no ChatGPT e no Gemini (`lume-…`). */
+  server: string;
+  /** Login feito em todas as contas do ChatGPT; null quando não dá para saber. */
+  chatgpt: boolean | null;
+  /** Login feito no Antigravity; null quando não dá para saber. */
+  gemini: boolean | null;
+}
+
+/** Conectores no ChatGPT (Codex) e no Gemini (Antigravity). */
+export interface ConnectorsElsewhere {
+  chatgpt_installed: boolean;
+  gemini_installed: boolean;
+  chatgpt_accounts: number;
+  /** Por que os conectores não chegaram ao Gemini. */
+  gemini_error: string | null;
+  bridges: ConnectorBridge[];
+}
+
 /** Plugin de um marketplace do Claude Code (loja de skills). */
 export interface PluginListing {
   id: string;

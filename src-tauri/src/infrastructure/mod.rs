@@ -1,6 +1,7 @@
 //! Adaptadores: implementações concretas das portas da aplicação.
 
 pub mod antigravity_cli;
+pub mod antigravity_mcp;
 pub mod claude_cli;
 pub mod cli_output;
 pub mod clipboard;

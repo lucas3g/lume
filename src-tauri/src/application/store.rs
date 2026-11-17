@@ -112,6 +112,8 @@ mod tests {
                 settings: world.store.clone(),
                 clock: Arc::new(FixedClock(1000)),
                 icons: Arc::new(FakeIcons),
+                antigravity: Arc::new(FakeAntigravity::default()),
+                codex: Arc::new(FakeCodexMcp::default()),
             }),
         }
     }

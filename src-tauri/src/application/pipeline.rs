@@ -10,6 +10,7 @@ use super::{
     send_message::make_title,
     AppError, AppResult,
 };
+use crate::domain::mcp::server_rule;
 use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
@@ -356,6 +357,13 @@ impl ManagePipelines {
         }
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
+        // No ChatGPT ninguém aprova no meio do turno: o Relator, que comenta e muda o status da task,
+        // já sai com as pontes do Jira liberadas. Os outros papéis só leem.
+        if role == Role::Reporter {
+            for bridge in super::extensions::load_bridges(&*self.settings).iter().filter(|b| b.is_jira()) {
+                self.conversations.allow_tool(&conversation_id, &server_rule(&bridge.server_name()))?;
+            }
+        }
         // O agente do papel soma as instruções, o modelo e as skills dele às regras fixas do papel.
         // O agente é o escolhido quando a execução começou; se foi apagado depois, vale a regra padrão.
         if let Some(agent) = run.agents.get(&role)
@@ -890,7 +898,10 @@ mod tests {
 
     #[tokio::test]
     async fn reporter_creates_the_task_from_the_project_template() {
-        let (_world, uc, _vcs) = setup(false);
+        let (world, uc, _vcs) = setup(false);
+        // O Atlassian também no ChatGPT e no Gemini: só o Relator sai com ele liberado para escrever.
+        let bridges = r#"[{"name":"claude.ai Atlassian","display_name":"Atlassian","endpoint":"https://mcp.atlassian.com/v1/mcp"},{"name":"claude.ai Gmail","display_name":"Gmail","endpoint":"https://gmail.mcp.claude.com/mcp"}]"#;
+        world.store.set_text(super::super::extensions::BRIDGES_KEY, bridges).unwrap();
         let template = "https://elinfo.atlassian.net/browse/EI-5198";
         assert!(uc.save_config("p1", PipelineConfig { jira_template: Some("não é task".into()), ..Default::default() }).is_err());
         uc.save_config("p1", PipelineConfig { jira_template: Some(format!(" {template} ")), skipped: vec![Role::Triage, Role::Tester], ..Default::default() }).unwrap();
@@ -905,6 +916,10 @@ mod tests {
         let done = uc.detail(&run.id).unwrap().run;
         assert_eq!(done.status, RunStatus::Done);
         assert_eq!((done.jira_key.as_deref(), done.jira_url.as_deref()), (Some("EI-6001"), Some("https://elinfo.atlassian.net/browse/EI-6001")));
+        let stages = uc.detail(&run.id).unwrap().stages;
+        let allowed = |role: Role| world.conversation(&stages.iter().find(|s| s.role == role).unwrap().conversation_id).allowed_tools;
+        assert_eq!(allowed(Role::Reporter), ["mcp__lume-atlassian"]);
+        assert!(allowed(Role::Planner).is_empty() && allowed(Role::Implementer).is_empty());
     }
 
     #[tokio::test]

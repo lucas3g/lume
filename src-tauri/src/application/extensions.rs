@@ -2,7 +2,7 @@
 
 use super::{
     ports::{
-        AccountConnectors, AccountRepository, AgentRepository, Clock, ConnectorRepository, ConnectorSource,
+        AccountConnectors, AccountRepository, AgentRepository, AntigravityMcp, Clock, CodexMcp, ConnectorRepository, ConnectorSource,
         ConversationRepository, IconSource, IdGenerator, Settings, SkillRepository,
     },
     AppError, AppResult,
@@ -15,8 +15,17 @@ use crate::domain::extension::{
     connector_key, is_enabled_for_all, is_granted_to_agent, validate_connector_config, without_shadowed_plugins, Agent, Connector, Skill,
     SCOPE_ALL,
 };
+use crate::domain::mcp::{antigravity_allow_rules, turn_servers, Approval, Bridge, McpServer, McpTransport};
 use serde::Serialize;
 use std::sync::Arc;
+
+/// Configuração (texto JSON) com as pontes: conectores da conta claude.ai usados também no ChatGPT e no Gemini.
+pub const BRIDGES_KEY: &str = "connector_bridges";
+
+/// Pontes gravadas; texto ilegível vale como nenhuma.
+pub fn load_bridges(settings: &dyn Settings) -> Vec<Bridge> {
+    settings.text(BRIDGES_KEY).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
 
 /// Uma skill vista a partir de um escopo (todos ou um agente).
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -102,6 +111,33 @@ pub struct ManageConnectors {
     pub settings: Arc<dyn Settings>,
     pub clock: Arc<dyn Clock>,
     pub icons: Arc<dyn IconSource>,
+    pub antigravity: Arc<dyn AntigravityMcp>,
+    pub codex: Arc<dyn CodexMcp>,
+}
+
+/// Uma ponte (conector da conta claude.ai) como a tela de Conectores a mostra.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BridgeView {
+    #[serde(flatten)]
+    pub bridge: Bridge,
+    /// Nome do servidor no ChatGPT e no Gemini (`lume-…`).
+    pub server: String,
+    /// Login feito em todas as contas do ChatGPT; `None` quando não dá para saber.
+    pub chatgpt: Option<bool>,
+    /// Login feito no Antigravity; `None` quando não dá para saber.
+    pub gemini: Option<bool>,
+}
+
+/// Conectores nos outros serviços: o que está instalado e a situação de cada ponte.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct OtherServices {
+    pub chatgpt_installed: bool,
+    pub gemini_installed: bool,
+    /// Há conta do ChatGPT para usar os conectores.
+    pub chatgpt_accounts: usize,
+    /// Por que os conectores não chegaram ao Gemini (ex.: arquivo de configuração ilegível).
+    pub gemini_error: Option<String>,
+    pub bridges: Vec<BridgeView>,
 }
 
 impl ManageConnectors {
@@ -121,6 +157,7 @@ impl ManageConnectors {
         }
         let id = self.ids.new_id();
         self.connectors.insert(&id, name, config.trim())?;
+        self.sync_others();
         Ok(id)
     }
 
@@ -136,15 +173,119 @@ impl ManageConnectors {
             self.connectors.insert(&self.ids.new_id(), &name, &config)?;
             imported += 1;
         }
+        if imported > 0 {
+            self.sync_others();
+        }
         Ok(imported)
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> AppResult<()> {
-        self.connectors.set_enabled(id, enabled)
+        self.connectors.set_enabled(id, enabled)?;
+        self.sync_others();
+        Ok(())
     }
 
     pub fn remove(&self, id: &str) -> AppResult<()> {
-        self.connectors.delete(id)
+        self.connectors.delete(id)?;
+        self.sync_others();
+        Ok(())
+    }
+
+    pub fn bridges(&self) -> Vec<Bridge> {
+        load_bridges(&*self.settings)
+    }
+
+    /// Liga ou desliga o uso de um conector da conta claude.ai também no ChatGPT e no Gemini.
+    pub fn set_bridge(&self, name: &str, display_name: &str, endpoint: &str, on: bool) -> AppResult<()> {
+        let endpoint = endpoint.trim();
+        if on && !endpoint.starts_with("https://") {
+            return Err(AppError("Este conector não tem um endereço público para usar fora do Claude.".into()));
+        }
+        let mut list: Vec<Bridge> = self.bridges().into_iter().filter(|b| b.name != name).collect();
+        if on {
+            list.push(Bridge { name: name.to_owned(), display_name: display_name.trim().to_owned(), endpoint: endpoint.to_owned() });
+        }
+        let text = serde_json::to_string(&list).map_err(|e| AppError(e.to_string()))?;
+        self.settings.set_text(BRIDGES_KEY, &text)?;
+        self.sync_others();
+        Ok(())
+    }
+
+    /// Servidores que vão para o arquivo do Antigravity (a aprovação de cada turno não se aplica lá).
+    fn mirrored(&self) -> AppResult<(Vec<McpServer>, Vec<Bridge>)> {
+        let bridges = self.bridges();
+        Ok((turn_servers(&self.connectors.list()?, &bridges, &[], "manual"), bridges))
+    }
+
+    /// Leva os conectores do Lume e as pontes ao Antigravity. O Codex os recebe a cada turno.
+    pub fn sync_antigravity(&self) -> AppResult<()> {
+        let (servers, bridges) = self.mirrored()?;
+        self.antigravity.sync(&servers, &antigravity_allow_rules(&servers, &bridges))
+    }
+
+    /// Sincroniza sem falhar a operação que a chamou: o problema aparece na tela de Conectores.
+    fn sync_others(&self) {
+        if let Err(e) = self.sync_antigravity() {
+            eprintln!("[conectores] Gemini: {e}");
+        }
+    }
+
+    fn bridge_server(&self, name: &str) -> AppResult<McpServer> {
+        let bridge = self.bridges().into_iter().find(|b| b.name == name).ok_or_else(|| AppError("Ligue o conector no ChatGPT e no Gemini antes de entrar.".into()))?;
+        Ok(McpServer {
+            name: bridge.server_name(),
+            transport: McpTransport::Http { url: bridge.endpoint, headers: Default::default() },
+            approval: Approval::ReadOnly,
+        })
+    }
+
+    fn chatgpt_profiles(&self) -> AppResult<Vec<Option<String>>> {
+        Ok(self.accounts.all()?.into_iter().filter(|a| a.provider == Provider::ChatGpt && a.enabled).map(|a| a.config_dir).collect())
+    }
+
+    /// Situação dos conectores no ChatGPT e no Gemini, para a tela de Conectores.
+    pub async fn other_services(&self) -> AppResult<OtherServices> {
+        let profiles = self.chatgpt_profiles()?;
+        let gemini_error = self.sync_antigravity().err().map(|e| e.0);
+        let mut bridges = Vec::new();
+        for bridge in self.bridges() {
+            let server = self.bridge_server(&bridge.name)?;
+            let mut chatgpt = if profiles.is_empty() { None } else { Some(true) };
+            for dir in &profiles {
+                match self.codex.linked(dir.as_deref(), &server).await {
+                    Some(false) => chatgpt = Some(false),
+                    None if chatgpt == Some(true) => chatgpt = None,
+                    _ => {}
+                }
+            }
+            let gemini = self.antigravity.linked(&server);
+            bridges.push(BridgeView { server: server.name, bridge, chatgpt, gemini });
+        }
+        Ok(OtherServices {
+            chatgpt_installed: self.codex.installed(),
+            gemini_installed: self.antigravity.installed(),
+            chatgpt_accounts: profiles.len(),
+            gemini_error,
+            bridges,
+        })
+    }
+
+    /// Faz o login da ponte no Codex, em cada conta do ChatGPT que ainda não tem.
+    pub async fn login_chatgpt(&self, name: &str) -> AppResult<()> {
+        if !self.codex.installed() {
+            return Err(AppError("O Codex não está instalado neste computador.".into()));
+        }
+        let server = self.bridge_server(name)?;
+        let profiles = self.chatgpt_profiles()?;
+        if profiles.is_empty() {
+            return Err(AppError("Adicione uma conta do ChatGPT em Contas antes de entrar.".into()));
+        }
+        for dir in profiles {
+            if self.codex.linked(dir.as_deref(), &server).await != Some(true) {
+                self.codex.login(dir.as_deref(), &server).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Conectores que o Claude Code carrega para a conta que atende a próxima mensagem.
@@ -245,7 +386,42 @@ mod tests {
             settings: world.store.clone(),
             clock: Arc::new(FixedClock(1000)),
             icons: Arc::new(FakeIcons),
+            antigravity: Arc::new(FakeAntigravity::default()),
+            codex: Arc::new(FakeCodexMcp::default()),
         }
+    }
+
+    #[tokio::test]
+    async fn account_connectors_reach_chatgpt_and_gemini_through_bridges() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let mut uc = connectors_use_case(&world, FixedConnectors(vec![]));
+        let gemini = Arc::new(FakeAntigravity::default());
+        uc.antigravity = gemini.clone();
+        let synced_last = || gemini.synced.lock().unwrap().last().cloned().unwrap();
+        assert!(uc.set_bridge("claude.ai Local", "Local", "npx algo", true).is_err(), "sem endereço público não há ponte");
+        let id = uc.add("Arquivos", r#"{"command":"npx","args":["fs"]}"#).unwrap();
+        uc.set_enabled(&id, true).unwrap();
+        uc.set_bridge("claude.ai Atlassian", "Atlassian", "https://mcp.atlassian.com/v1/mcp", true).unwrap();
+        assert_eq!(uc.bridges().len(), 1);
+
+        // O Gemini recebe os conectores do Lume (liberados) e a ponte (só leitura do Jira).
+        let (servers, rules) = synced_last();
+        assert_eq!(servers, ["lume-arquivos", "lume-atlassian"]);
+        assert!(rules.contains(&"mcp(lume-arquivos/*)".to_owned()) && rules.contains(&"mcp(lume-atlassian/getJiraIssue)".to_owned()));
+
+        // Sem conta do ChatGPT não há onde entrar; com duas, entra nas duas.
+        assert!(uc.login_chatgpt("claude.ai Atlassian").await.is_err());
+        for id in ["g1", "g2"] {
+            AccountRepository::insert(&*world.store, id, id, Provider::ChatGpt, &crate::domain::account::Identity::default(), Some(&format!("/perfis/{id}"))).unwrap();
+        }
+        let view = uc.other_services().await.unwrap();
+        assert_eq!((view.chatgpt_accounts, view.bridges[0].chatgpt, view.bridges[0].server.as_str()), (2, Some(false), "lume-atlassian"));
+        uc.login_chatgpt("claude.ai Atlassian").await.unwrap();
+        assert_eq!(uc.other_services().await.unwrap().bridges[0].chatgpt, Some(true));
+
+        uc.set_bridge("claude.ai Atlassian", "Atlassian", "", false).unwrap();
+        assert!(uc.bridges().is_empty());
+        assert_eq!(synced_last().0, ["lume-arquivos"]);
     }
 
     #[test]

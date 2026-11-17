@@ -210,6 +210,47 @@ impl UsageProbe for FakeUsage {
 }
 
 /// Conectores "já configurados em outro aplicativo".
+/// Antigravity de mentira: guarda o que seria gravado nos arquivos dele.
+#[derive(Default)]
+pub struct FakeAntigravity {
+    pub synced: Mutex<Vec<(Vec<String>, Vec<String>)>>,
+}
+
+impl crate::application::ports::AntigravityMcp for FakeAntigravity {
+    fn installed(&self) -> bool {
+        true
+    }
+    fn sync(&self, servers: &[crate::domain::mcp::McpServer], allow: &[String]) -> AppResult<()> {
+        self.synced.lock().unwrap().push((servers.iter().map(|s| s.name.clone()).collect(), allow.to_vec()));
+        Ok(())
+    }
+    fn linked(&self, _server: &crate::domain::mcp::McpServer) -> Option<bool> {
+        Some(false)
+    }
+}
+
+/// Codex de mentira: os perfis com login e os logins pedidos.
+#[derive(Default)]
+pub struct FakeCodexMcp {
+    pub linked: Mutex<Vec<Option<String>>>,
+    pub logins: Mutex<Vec<Option<String>>>,
+}
+
+#[async_trait]
+impl crate::application::ports::CodexMcp for FakeCodexMcp {
+    fn installed(&self) -> bool {
+        true
+    }
+    async fn login(&self, config_dir: Option<&str>, _server: &crate::domain::mcp::McpServer) -> AppResult<()> {
+        self.logins.lock().unwrap().push(config_dir.map(Into::into));
+        self.linked.lock().unwrap().push(config_dir.map(Into::into));
+        Ok(())
+    }
+    async fn linked(&self, config_dir: Option<&str>, _server: &crate::domain::mcp::McpServer) -> Option<bool> {
+        Some(self.linked.lock().unwrap().contains(&config_dir.map(Into::into)))
+    }
+}
+
 pub struct FixedConnectors(pub Vec<(String, String)>);
 
 impl ConnectorSource for FixedConnectors {

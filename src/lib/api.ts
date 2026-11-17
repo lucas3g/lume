@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
-  Account, AccountConnector, Agent, JiraIssueList, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
+  Account, AccountConnector, Agent, ConnectorsElsewhere, JiraIssueList, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
   MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
@@ -151,6 +151,10 @@ export const api = {
   connectorIcon: (endpoint: string) => invoke<string | null>("connector_icon", { endpoint }),
   setServerEnabled: (name: string, enabled: boolean) => invoke<void>("set_server_enabled", { name, enabled }),
   listConnectors: () => invoke<Connector[]>("list_connectors"),
+  connectorsElsewhere: () => invoke<ConnectorsElsewhere>("connectors_elsewhere"),
+  setConnectorBridge: (c: { name: string; display_name: string; endpoint: string }, on: boolean) =>
+    invoke<void>("set_connector_bridge", { name: c.name, displayName: c.display_name, endpoint: c.endpoint, on }),
+  loginConnectorChatgpt: (name: string) => invoke<void>("login_connector_chatgpt", { name }),
   addConnector: (name: string, config: string) => invoke<void>("add_connector", { name, config }),
   importDesktopConnectors: (taken: string[]) => invoke<number>("import_desktop_connectors", { taken }),
   setConnectorEnabled: (id: string, enabled: boolean) => invoke<void>("set_connector_enabled", { id, enabled }),

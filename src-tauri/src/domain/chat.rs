@@ -190,6 +190,8 @@ pub struct TurnRequest {
     pub allowed_tools: Vec<String>,
     /// Pastas que o assistente pode ler além da de trabalho (ex.: o conhecimento do projeto).
     pub read_dirs: Vec<String>,
+    /// Conectores para o ChatGPT (o Codex os recebe a cada turno); o Claude usa `mcp_config`.
+    pub mcp_servers: Vec<crate::domain::mcp::McpServer>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

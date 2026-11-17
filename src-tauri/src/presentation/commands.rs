@@ -2,6 +2,7 @@
 
 use super::{windows, Bots, Container};
 use crate::application::{
+    extensions::OtherServices,
     extensions::SkillView,
     flags,
     pipeline::{RunDetail, StartInput},
@@ -582,6 +583,24 @@ pub fn connector_icon(app: App<'_>, endpoint: String) -> AppResult<Option<String
 #[tauri::command]
 pub fn set_server_enabled(app: App<'_>, name: String, enabled: bool) -> AppResult<()> {
     app.connectors.set_server_enabled(&name, enabled)
+}
+
+/// Conectores no ChatGPT e no Gemini: o que está instalado e a situação de cada ponte.
+#[tauri::command]
+pub async fn connectors_elsewhere(app: App<'_>) -> AppResult<OtherServices> {
+    app.connectors.other_services().await
+}
+
+/// Liga ou desliga o uso de um conector da conta claude.ai também no ChatGPT e no Gemini.
+#[tauri::command(async)]
+pub fn set_connector_bridge(app: App<'_>, name: String, display_name: String, endpoint: String, on: bool) -> AppResult<()> {
+    app.connectors.set_bridge(&name, &display_name, &endpoint, on)
+}
+
+/// Entra no conector pelo ChatGPT (Codex), em cada conta do ChatGPT que ainda não entrou.
+#[tauri::command]
+pub async fn login_connector_chatgpt(app: App<'_>, name: String) -> AppResult<()> {
+    app.connectors.login_chatgpt(&name).await
 }
 
 #[tauri::command]

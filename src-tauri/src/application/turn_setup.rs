@@ -13,6 +13,7 @@ use super::{
 use crate::domain::{
     chat::{transcript_prompt, Conversation},
     extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
+    mcp::{turn_servers, McpServer},
     history::context_prompt,
     project::project_rules,
 };
@@ -59,6 +60,8 @@ pub struct TurnSetup {
     pub denied_tools: Vec<String>,
     pub mcp_config: Option<String>,
     pub allowed_tools: Vec<String>,
+    /// Conectores para o ChatGPT: os do Lume e as pontes para os conectores da conta claude.ai.
+    pub mcp_servers: Vec<McpServer>,
 }
 
 pub struct PrepareTurn {
@@ -100,7 +103,9 @@ impl PrepareTurn {
             None => None,
         };
         let denied = denied_skills(&self.skills.catalog()?, &self.skills.rules(SCOPE_ALL)?, agent_rules.as_ref());
-        let (mcp_config, connector_tools) = mcp_setup(&self.connectors.list()?);
+        let connectors = self.connectors.list()?;
+        let (mcp_config, connector_tools) = mcp_setup(&connectors);
+        let mcp_servers = turn_servers(&connectors, &super::extensions::load_bridges(&*self.settings), &conversation.allowed_tools, &conversation.permission_mode);
         let denied_tools = denied_server_rules(&self.settings.flags_with_prefix(SERVER_OFF_PREFIX)?);
         let project = match &conversation.project_id {
             Some(id) => self.projects.get(id)?,
@@ -162,6 +167,7 @@ impl PrepareTurn {
             denied_tools,
             mcp_config,
             allowed_tools,
+            mcp_servers,
         })
     }
 }

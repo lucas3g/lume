@@ -315,6 +315,7 @@ mod tests {
             mcp_config: None,
             allowed_tools: vec![],
             read_dirs: vec![],
+            mcp_servers: vec![],
         }
     }
 

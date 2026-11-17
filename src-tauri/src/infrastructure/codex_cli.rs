@@ -6,12 +6,13 @@ use super::{
     providers::{cli_command, failure, find_executable, now_seconds, Prompt},
 };
 use crate::application::{
-    ports::{AccountGateway, ChatEngine, TurnListener, UsageProbe},
+    ports::{AccountGateway, ChatEngine, CodexMcp, TurnListener, UsageProbe},
     AppError, AppResult, TurnControl,
 };
 use crate::domain::{
     account::{Identity, Provider},
     chat::{RateInfo, TurnEnd, TurnEvent, TurnRequest},
+    mcp::{codex_overrides, McpServer},
 };
 use super::cli_output::{failure_detail, run_login};
 use async_trait::async_trait;
@@ -155,6 +156,60 @@ impl AccountGateway for CodexAccounts {
     }
 }
 
+/// Tempo de `codex mcp list` (só lê a configuração e os logins guardados).
+const MCP_LIST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Login dos servidores remotos que o Lume leva ao Codex. O servidor não fica no config.toml:
+/// vai por `--config` também aqui, para o Codex saber o endereço.
+pub struct CodexMcpLogins;
+
+fn server_args(server: &McpServer) -> Vec<String> {
+    codex_overrides(std::slice::from_ref(server)).into_iter().flat_map(|o| ["--config".to_owned(), o]).collect()
+}
+
+/// Situação de login do servidor na saída de `codex mcp list --json`.
+pub(crate) fn parse_mcp_auth(text: &str, name: &str) -> Option<bool> {
+    let v: Value = serde_json::from_str(text.trim()).ok()?;
+    let list = v.as_array().or_else(|| v["servers"].as_array())?;
+    let entry = list.iter().find(|s| s["name"] == name)?;
+    let auth = entry["auth_status"].as_str().or(entry["auth"].as_str())?.to_lowercase().replace([' ', '-'], "_");
+    match auth.as_str() {
+        "not_logged_in" | "notloggedin" => Some(false),
+        "o_auth" | "oauth" | "bearer_token" | "bearertoken" | "logged_in" => Some(true),
+        _ => None,
+    }
+}
+
+#[async_trait]
+impl CodexMcp for CodexMcpLogins {
+    fn installed(&self) -> bool {
+        find_cli().is_some()
+    }
+
+    async fn login(&self, config_dir: Option<&str>, server: &McpServer) -> AppResult<()> {
+        let cli = find_cli().ok_or_else(missing_cli)?;
+        let mut cmd = command(&cli, config_dir);
+        cmd.args(server_args(server)).args(["mcp", "login", &server.name]);
+        // Como no login da conta, o Codex abre o navegador sozinho.
+        let output = tokio::time::timeout(LOGIN_TIMEOUT, run_login(cmd, false, None))
+            .await
+            .map_err(|_| AppError("O login não foi concluído em 5 minutos.".into()))?
+            .map_err(|e| AppError(format!("Não foi possível abrir o login: {e}")))?;
+        if output.status.success() || self.linked(config_dir, server).await == Some(true) {
+            return Ok(());
+        }
+        Err(AppError(format!("O login no ChatGPT não foi concluído. {}", failure_detail(&output))))
+    }
+
+    async fn linked(&self, config_dir: Option<&str>, server: &McpServer) -> Option<bool> {
+        let cli = find_cli()?;
+        let mut cmd = command(&cli, config_dir);
+        cmd.args(server_args(server)).args(["mcp", "list", "--json"]).stdin(Stdio::null());
+        let output = tokio::time::timeout(MCP_LIST_TIMEOUT, cmd.output()).await.ok()?.ok()?;
+        parse_mcp_auth(&String::from_utf8_lossy(&output.stdout), &server.name)
+    }
+}
+
 /// O que o Codex pode fazer sozinho no turno. Fora do terminal ele não pergunta nada:
 /// o que passa do permitido é recusado pelo próprio CLI.
 fn sandbox(request: &TurnRequest) -> &'static str {
@@ -184,6 +239,10 @@ fn exec_args(request: &TurnRequest, images: &[PathBuf]) -> Vec<String> {
     }
     if EFFORTS.contains(&request.effort.as_str()) {
         args.extend(["--config".to_owned(), format!("model_reasoning_effort=\"{}\"", request.effort)]);
+    }
+    // Conectores do Lume e pontes para os da conta claude.ai: valem só neste turno, sem mexer no config.toml.
+    for value in codex_overrides(&request.mcp_servers) {
+        args.extend(["--config".to_owned(), value]);
     }
     if let Some(session) = &request.resume {
         args.extend(["resume".to_owned(), session.clone()]);
@@ -501,6 +560,31 @@ mod tests {
         let other = [r#"{"type":"error","message":"stream disconnected"}"#, r#"{"type":"turn.failed","error":{"message":"modelo inexistente"}}"#];
         assert_eq!(events(&other).1.into_end("", 0), TurnEnd::Failed("modelo inexistente".into()));
         assert!(matches!(events(&[]).1.into_end("Not logged in. Run codex login.", 0), TurnEnd::AuthError(_)));
+    }
+
+    #[test]
+    fn reads_the_login_of_a_server() {
+        let list = r#"[{"name":"lume-atlassian","auth_status":"not_logged_in"},{"name":"lume-gh","auth_status":"o_auth"},{"name":"x","auth_status":"unsupported"}]"#;
+        assert_eq!(parse_mcp_auth(list, "lume-atlassian"), Some(false));
+        assert_eq!(parse_mcp_auth(list, "lume-gh"), Some(true));
+        assert_eq!(parse_mcp_auth(list, "x"), None);
+        assert_eq!(parse_mcp_auth(list, "outro"), None);
+        assert_eq!(parse_mcp_auth("não é json", "x"), None);
+    }
+
+    #[test]
+    fn connectors_go_as_config_overrides() {
+        use crate::domain::mcp::{Approval, McpTransport};
+        let mut request = sample_request(Provider::ChatGpt);
+        request.mcp_servers = vec![McpServer {
+            name: "lume-atlassian".into(),
+            transport: McpTransport::Http { url: "https://mcp.atlassian.com/v1/mcp".into(), headers: Default::default() },
+            approval: Approval::ReadOnly,
+        }];
+        let args = exec_args(&request, &[]);
+        assert!(args.windows(2).any(|w| w == ["--config", r#"mcp_servers.lume-atlassian.url="https://mcp.atlassian.com/v1/mcp""#]));
+        assert!(args.windows(2).any(|w| w == ["--config", r#"mcp_servers.lume-atlassian.default_tools_approval_mode="writes""#]));
+        assert_eq!(args.last().map(String::as_str), Some("-"));
     }
 
     #[test]

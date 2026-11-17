@@ -5,6 +5,7 @@ pub mod chat;
 pub mod extension;
 pub mod history;
 pub mod jira;
+pub mod mcp;
 pub mod pipeline;
 pub mod project;
 pub mod schedule;

@@ -7,6 +7,7 @@
   import { activeAccount } from "../state/accounts.svelte";
   import { connectors, isLinked } from "../state/connectors.svelte";
   import ConnectorCatalog from "../components/store/ConnectorCatalog.svelte";
+  import ElsewhereCard from "../components/store/ElsewhereCard.svelte";
   import Toggle from "../components/Toggle.svelte";
   import type { AccountConnector, Connector } from "../types";
 
@@ -330,6 +331,8 @@
       </section>
 
       <p class="muted small">Vincular abre o login do serviço no navegador. As ferramentas dos conectores pedem sua aprovação na conversa, como as ações do agente.</p>
+
+      {#if connectors.loaded}<ElsewhereCard {account} lumeOn={mine.filter((c) => c.enabled).length} />{/if}
     {/if}
   </div>
 </div>

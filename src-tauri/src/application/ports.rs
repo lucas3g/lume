@@ -6,6 +6,7 @@ use crate::domain::{
     account::{Account, Identity, Provider, UsageLimit},
     chat::{Attachment, Conversation, Message, RateInfo, Switch, TurnEnd, TurnEvent, TurnRequest},
     extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
+    mcp::McpServer,
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
     pipeline::{PipelineRun, StageRun},
     project::{MemoryFile, Project, ProjectFile},
@@ -213,6 +214,27 @@ pub trait AccountConnectors: Send + Sync {
     fn list(&self, config_dir: Option<&str>) -> AppResult<Vec<AccountConnector>>;
     fn login(&self, config_dir: Option<&str>, name: &str) -> AppResult<()>;
     fn logout(&self, config_dir: Option<&str>, name: &str) -> AppResult<()>;
+}
+
+/// Conectores no Antigravity (Gemini), que só lê arquivos globais: o Lume mescla os dele ali.
+pub trait AntigravityMcp: Send + Sync {
+    /// O Antigravity está neste computador.
+    fn installed(&self) -> bool;
+    /// Grava os servidores do Lume e as regras que liberam as ferramentas deles.
+    fn sync(&self, servers: &[McpServer], allow: &[String]) -> AppResult<()>;
+    /// Se o servidor remoto já tem login no Antigravity; `None` quando não dá para saber.
+    fn linked(&self, server: &McpServer) -> Option<bool>;
+}
+
+/// Login dos servidores remotos no Codex (ChatGPT), por perfil de conta.
+#[async_trait]
+pub trait CodexMcp: Send + Sync {
+    /// O Codex está neste computador.
+    fn installed(&self) -> bool;
+    /// Abre o login do servidor no navegador e espera a conclusão.
+    async fn login(&self, config_dir: Option<&str>, server: &McpServer) -> AppResult<()>;
+    /// Se o servidor já tem login nesse perfil; `None` quando não dá para saber.
+    async fn linked(&self, config_dir: Option<&str>, server: &McpServer) -> Option<bool>;
 }
 
 /// Conectores já configurados em outro aplicativo deste computador: (nome, configuração JSON).

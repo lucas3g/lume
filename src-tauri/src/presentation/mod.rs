@@ -28,7 +28,8 @@ use crate::application::{
 };
 use crate::infrastructure::{
     antigravity_cli::{AntigravityAccounts, AntigravityEngine, AntigravityUsage},
-    codex_cli::{CodexAccounts, CodexEngine, CodexUsage},
+    antigravity_mcp::AntigravityFiles,
+    codex_cli::{CodexAccounts, CodexEngine, CodexMcpLogins, CodexUsage},
     providers::ByProvider,
     claude_cli::{
         accounts::ClaudeCliAccounts, connectors::ClaudeCliConnectors, engine::ClaudeCliEngine, find_cli,
@@ -117,6 +118,8 @@ impl Container {
             settings: store.clone(),
             clock: clock.clone(),
             icons: Arc::new(FaviconFetcher::new(data_dir.join("icons"))),
+            antigravity: Arc::new(AntigravityFiles::from_home()),
+            codex: Arc::new(CodexMcpLogins),
         });
         let files: Arc<dyn FileLoader> = Arc::new(FsFileLoader);
         // Cada tipo de conta é atendido pelo CLI do seu serviço.
@@ -314,6 +317,14 @@ impl Container {
 /// Tarefas de inicialização que não devem atrasar a abertura da janela.
 pub fn start_background_work(container: Arc<Container>) {
     let _ = container.pipelines.recover();
+    // Os conectores do Lume chegam ao Gemini pelo arquivo dele: confere ao abrir o app (o
+    // Antigravity pode ter sido instalado ou o arquivo mudado por fora).
+    let c = container.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = c.connectors.sync_antigravity() {
+            eprintln!("[conectores] Gemini: {e}");
+        }
+    });
     let c = container.clone();
     tauri::async_runtime::spawn(async move {
         let _ = c.accounts.ensure_default().await;
