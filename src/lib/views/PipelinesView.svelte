@@ -6,6 +6,7 @@
   import PipelineModelsCard from "../components/pipeline/PipelineModelsCard.svelte";
   import JiraTaskPicker, { ago, typeTone, type PickedTask } from "../components/pipeline/JiraTaskPicker.svelte";
   import { jira } from "../state/jira.svelte";
+  import { activeAccount } from "../state/accounts.svelte";
   import { formatWhen } from "../format";
   import { RUN_STATUS } from "../pipeline";
   import { dayClock } from "../state/clock.svelte";
@@ -65,8 +66,9 @@
 
   onMount(() => {
     void loadPipelines();
-    // A lista do Jira leva alguns segundos: já vai sendo carregada para estar pronta ao abrir o seletor.
-    void jira.ensure();
+    // A lista guardada da conta aparece na hora; só a primeira vez consulta o Jira por trás, para
+    // estar pronta ao abrir o seletor (que atualiza a lista velha).
+    void jira.prefetch(activeAccount()?.id ?? null);
   });
 
   // Projeto padrão: o primeiro com pasta.

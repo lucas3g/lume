@@ -675,6 +675,12 @@ pub fn task_ref(text: &str) -> Option<(String, Option<String>)> {
     Some((key, Some(site.to_owned())))
 }
 
+/// Endereço validado de um site do Jira (http ou https, sem caminho), sem a barra do fim.
+pub fn jira_site(site: &str) -> Option<String> {
+    let site = site.trim().trim_end_matches('/');
+    task_ref(&format!("{site}/browse/A-1"))?.1
+}
+
 /// Link de uma task no site do Jira.
 pub fn task_url(site: &str, key: &str) -> String {
     format!("{site}/browse/{key}")

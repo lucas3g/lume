@@ -445,6 +445,8 @@ export interface JiraIssue {
 }
 
 export interface JiraIssueList {
+  /** Conta do Claude cujo conector respondeu. */
+  account_id: string | null;
   /** Ex.: https://empresa.atlassian.net */
   site: string | null;
   issues: JiraIssue[];

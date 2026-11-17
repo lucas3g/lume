@@ -14,7 +14,7 @@ use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, created_task, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
         suggested_commit, fix_request, fixing_review, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -224,11 +224,8 @@ impl ManagePipelines {
         let stored = self.stored_config(&project.id);
         let (skipped, jira_template, efforts) = (stored.skipped, stored.jira_template, stored.efforts);
         let jira_url = jira_key.as_deref().and_then(|key| {
-            self.link_for(jira_template.as_deref(), key).or_else(|| {
-                let site = input.jira_site.as_deref()?.trim_end_matches('/');
-                let (_, site) = task_ref(&format!("{site}/browse/{key}"))?;
-                Some(task_url(&site?, key))
-            })
+            self.link_for(jira_template.as_deref(), key)
+                .or_else(|| Some(task_url(&jira_site(input.jira_site.as_deref()?)?, key)))
         });
         let agents = self
             .role_agents(&project.id)?

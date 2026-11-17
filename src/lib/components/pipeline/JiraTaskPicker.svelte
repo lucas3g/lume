@@ -61,6 +61,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { jira } from "../../state/jira.svelte";
+  import { activeAccount } from "../../state/accounts.svelte";
 
   interface Props {
     open: boolean;
@@ -104,9 +105,10 @@
       query = "";
       project = "";
       jira.clearSearch();
+      jira.useAccount(activeAccount()?.id ?? null);
       filter = jira.issues.some((i) => i.mine) ? "mine" : "all";
       now = Date.now();
-      void jira.ensure();
+      void jira.ensure(activeAccount()?.id ?? null);
       void tick().then(() => input?.focus());
     }
     if (!isOpen && dialog?.open) dialog.close();
@@ -136,7 +138,9 @@
     if (f === "all") return true;
     return i.category === f;
   }
-  const searched = $derived(source.filter(matches));
+  // A busca em todo o Jira já filtrou pelo texto (inclusive descrição e comentários): o filtro local
+  // por título, chave e projeto esconderia resultados certos.
+  const searched = $derived(inSearch ? source : source.filter(matches));
   const counts = $derived(Object.fromEntries(FILTERS.map((f) => [f.id, searched.filter((i) => passes(i, f.id)).length])) as Record<Filter, number>);
   const visible = $derived(inSearch ? searched : searched.filter((i) => passes(i, filter)));
   const groups = $derived(GROUPS.map((g) => ({ ...g, items: visible.filter((i) => i.category === g.id) })).filter((g) => g.items.length));
