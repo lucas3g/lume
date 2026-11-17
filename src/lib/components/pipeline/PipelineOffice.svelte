@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import "../../office/office.css";
-  import { backdropSvg, layersSvg, OFFICE_H, OFFICE_W, officeTrip, officeView, type OfficeScene } from "../../office/scene";
+  import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, spritesSvg, type OfficeScene } from "../../office/scene";
   import { passesByRole, passLabel, STATIONS } from "../../pipeline";
   import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
-  /** Mesma interface da trilha (PipelineTrack): a execução aberta vista como um escritório em pixel art. */
+  /** Mesma interface da trilha (PipelineTrack): a execução aberta vista como um escritório isométrico em pixel art,
+      com cada papel na sua mesa e quem termina levando a pasta a pé até a mesa do próximo. */
   interface Props {
     detail: PipelineDetail;
     /** Mesa aberta no painel. */
@@ -70,7 +71,7 @@
     // A duração depende da distância entre as mesas: calculada pela própria cena.
     queueMicrotask(() => {
       const trip = officeTrip(scene);
-      settle = setTimeout(() => (traveling = false), (trip?.td ?? 0) * 1000 + 120);
+      settle = setTimeout(() => (traveling = false), (trip?.td ?? 0) * 1000);
     });
   });
   onMount(() => () => clearTimeout(settle));
@@ -99,13 +100,16 @@
   let width = $state(0);
   const scale = $derived(Math.max(1, Math.min(4, Math.floor(width / OFFICE_W))));
   const view = $derived(officeView(scene, { scale, traveling }));
-  const backdrop = backdropSvg();
+  const scenery = officeScenery();
   const meta = (text: string, role: string) => [text, times[role]].filter(Boolean).join(" · ");
 </script>
 
 <div class="office" bind:clientWidth={width}>
   <div class="office-room" style={view.roomStyle}>
-    <svg class="bg" viewBox="0 0 {OFFICE_W} {OFFICE_H}" aria-hidden="true">{@html backdrop}</svg>
+    <svg class="bg" viewBox="0 0 {OFFICE_W} {OFFICE_H}" aria-hidden="true">{@html scenery.backdrop}</svg>
+    {#each scenery.props as prop, i (i)}
+      <div class="it" style={prop.style}><svg viewBox={prop.vb} aria-hidden="true">{@html prop.svg}</svg></div>
+    {/each}
     <ol class="row">
       {#each view.stations as v (v.role)}
         <li class={v.cls} style={v.style}>
@@ -116,9 +120,9 @@
             aria-pressed={v.pressed}
             onclick={() => onselect(v.role as PipelineRole)}
           >
-            <svg class="spr" viewBox="0 0 48 60" aria-hidden="true">{@html layersSvg(v.layers)}</svg>
-            <span class="tag"><span class="name">{v.label}</span><span class="pass">{v.passText}</span></span>
+            <svg viewBox={v.vb} aria-hidden="true">{@html layersSvg(v.layers)}</svg>
           </button>
+          <span class="tag"><span class="name">{v.label}</span><span class="pass">{v.passText}</span></span>
           {#if v.balloon}
             <div class={v.balloon.cls} style={v.balloon.style}>
               <span class="act">{v.balloon.activity}</span>
@@ -128,13 +132,15 @@
         </li>
       {/each}
     </ol>
-    {#if view.trip}
-      {#key view.trip.id}
-        <div class={view.trip.cls} style={view.trip.style} aria-hidden="true">
-          <svg class="trip-spr" viewBox={view.trip.vb}>{@html layersSvg(view.trip.layers)}</svg>
-        </div>
-      {/key}
-    {/if}
+    <div class="trip" aria-hidden="true">
+      {#if view.trip}
+        {#key view.trip.id}
+          {#each view.trip.legs as leg, i (i)}
+            <div class={leg.cls} style={leg.style}><svg viewBox={leg.vb}>{@html spritesSvg(leg.sprites)}</svg></div>
+          {/each}
+        {/key}
+      {/if}
+    </div>
   </div>
 </div>
 
