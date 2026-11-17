@@ -49,14 +49,20 @@ function geo(role) {
 
 /* Paleta: uma letra por cor nos mapas de pixels. S, s, H, h, C, c e P vêm da pessoa (PEOPLE). */
 const PAL = { K: '#101114', G: '#d8dbe2', g: '#8b909a', W: '#ecedef', w: '#b4b8c0', e: '#1a1b20', k: '#3a3e48', A: '#d9a441', a: '#e3ba6a', q: '#9c7226', N: '#58b88a', n: '#86d3a6', R: '#d9645a', r: '#efa49b', B: '#5b6ad9', b: '#a6b0f7', P: '#d8dbe2' };
-const WOOD = ['#8f7050', '#6f553c', '#5a4431'], WOOD_D = ['#6f553c', '#5a4330', '#48362a'];
+const WOOD = ['#8f7050', '#6f553c', '#5a4431'], WOOD_D = ['#6f553c', '#5a4330', '#48362a'], WOODS = new Set([WOOD[0], WOOD_D[0]]);
 const STEEL = ['#3d424d', '#2b2e36', '#1f2127'], LIGHT = ['#d8dbe2', '#b4b8c0', '#8b909a'], AMBER = ['#e3ba6a', '#d9a441', '#9c7226'];
 const CASE = ['#3d424d', '#2b2e36', '#1f2127'], SCREEN = '#12151d';
 
 /* Pintura: grade esparsa de pixels -> bitmap (toImage; a ordem de pintura se resolve na grade).
    A grade interna tem R pixels finos por px lógico: as coordenadas da cena seguem em px lógicos, mas faces,
-   bordas e contornos saem com o dobro da definição, e os mapas de caracteres passam pelo Scale2x. */
-const R = 2;
+   bordas e contornos saem com mais definição, e os mapas de caracteres passam pelo Scale2x (uma vez em R = 2,
+   duas em R = 4). R depende da densidade da tela (ver density): 4 onde há pixels de tela para isso (retina, escala
+   alta), 2 nas telas comuns, onde a grade mais fina só seria jogada fora ao reduzir.
+   Os desenhos à mão (pessoas, texturas) seguem na grade de 2 por px lógico: em R = 4 as pessoas são ampliadas
+   pelo Scale2x e as texturas recebem as coordenadas nessa grade, então o pontilhado não muda de tamanho. */
+let R = 2;
+/* Pixel fino -> grade de 2 por px lógico (a dos desenhos à mão). */
+const half = v => Math.floor(v * 2 / R);
 function paint(g, x, y, w, h, c) {
   for (let j = y; j < y + h; j++) { const row = g[j] || (g[j] = {}); for (let i = x; i < x + w; i++) row[i] = c; }
 }
@@ -85,7 +91,7 @@ function scale2x(src) {
 function stamp(g, x, y, lines, pal, flip) {
   const w = Math.max.apply(null, lines.map(l => l.length));
   const src = lines.map(ln => { const a = []; for (let i = 0; i < w; i++) a.push((flip ? ln[ln.length - 1 - i] : ln[i]) || '.'); return a; });
-  const up = R === 2 ? scale2x(src) : src, x0 = Math.round(x * R), y0 = Math.round(y * R);
+  const up = R === 4 ? scale2x(scale2x(src)) : scale2x(src), x0 = Math.round(x * R), y0 = Math.round(y * R);
   for (let j = 0; j < up.length; j++) for (let i = 0; i < up[j].length; i++) {
     const ch = up[j][i]; if (ch === '.') continue;
     const c = (pal && pal[ch]) || PAL[ch]; if (c) paint(g, x0 + i, y0 + j, 1, 1, c);
@@ -93,16 +99,16 @@ function stamp(g, x, y, lines, pal, flip) {
 }
 /* Contorno seletivo: cada pixel vazio encostado no desenho ganha a cor vizinha bem escurecida (sombras e
    brilhos translúcidos não contam). Separa os objetos uns dos outros, como na pixel art desenhada à mão. */
+/* A espessura fica em meio px lógico em qualquer R: em R = 4 o contorno cresce mais uma volta com a mesma cor. */
 function outline(g) {
-  const add = [];
-  Object.keys(g).forEach(ys => {
-    const y = +ys, row = g[y];
-    Object.keys(row).forEach(xs => {
-      const x = +xs, c = row[x]; if (c.length > 7) return;
-      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(d => { const nx = x + d[0], ny = y + d[1]; if (!(g[ny] && g[ny][nx])) add.push([nx, ny, shade(c, 0.72)]); });
-    });
-  });
-  add.forEach(a => { if (!(g[a[1]] && g[a[1]][a[0]])) paint(g, a[0], a[1], 1, 1, a[2]); });
+  let front = [];
+  Object.keys(g).forEach(ys => { const y = +ys, row = g[y]; Object.keys(row).forEach(xs => { const c = row[xs]; if (c.length <= 7) front.push([+xs, y, shade(c, 0.72)]); }); });
+  for (let pass = 0; pass < R / 2; pass++) {
+    const add = [];
+    front.forEach(f => [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(d => { const nx = f[0] + d[0], ny = f[1] + d[1]; if (!(g[ny] && g[ny][nx])) add.push([nx, ny, f[2]]); }));
+    front = [];
+    add.forEach(a => { if (!(g[a[1]] && g[a[1]][a[0]])) { paint(g, a[0], a[1], 1, 1, a[2]); front.push(a); } });
+  }
 }
 /* Polígono convexo (pontos em px lógicos) amostrado no centro do pixel fino: arestas 2:1 saem em degraus de 2 px finos. */
 function poly(g, pts, c) {
@@ -116,9 +122,20 @@ function poly(g, pts, c) {
       const cr = (b[0] - a[0]) * (y + 0.5 - a[1]) - (b[1] - a[1]) * (x + 0.5 - a[0]);
       if (cr > 1e-9) pos++; else if (cr < -1e-9) neg++;
     }
-    if (!pos || !neg) paint(g, x, y, 1, 1, c);
+    if (!pos || !neg) paint(g, x, y, 1, 1, typeof c === 'function' ? c(x, y) : c);
   }
 }
+/* Pontilhado ordenado (Bayer 4x4) na grade fina: degradês viram degraus de cor alternados, como na pixel art à mão. */
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const bayer = (X, Y) => (BAYER[(Y & 3) * 4 + (X & 3)] + 0.5) / 16;
+/* Nível t (0..1) em `steps` degraus com pontilhado entre eles. */
+const dith = (t, steps, X, Y) => { const q = Math.max(0, t) * steps, n = Math.floor(q); return Math.min(steps, n + (q - n > bayer(X, Y) ? 1 : 0)) / steps; };
+/* Ruído fixo por pixel fino (salpicos, desgaste). */
+const hash = (X, Y) => { let h = (X * 374761393 + Y * 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+const fr = v => v - Math.floor(v);
+/* Cor com sombra/luz em passos (memoizada: as texturas chamam por pixel). */
+const TONE = {};
+const tone = (c, t) => { if (!t) return c; const k = c + t; return TONE[k] || (TONE[k] = t > 0 ? lit(c, t) : shade(c, -t)); };
 /* Recorta um polígono convexo (em tiles) ao quadrado do piso, aresta por aresta (Sutherland-Hodgman). */
 function clipFloor(pts) {
   [[0, 0, 1], [0, GRID, -1], [1, 0, 1], [1, GRID, -1]].forEach(e => {
@@ -135,27 +152,47 @@ function clipFloor(pts) {
 /* Caixa de ferramentas isométrica sobre uma grade: faces, caixas e carimbos. Cores de caixa: [topo, face SW, face SE]. */
 function iso(g) {
   const quad = (p, c) => poly(g, p, c);
-  const top = (x0, y0, x1, y1, z, c) => quad([[sx(x0, y0), sy(x0, y0, z)], [sx(x1, y0), sy(x1, y0, z)], [sx(x1, y1), sy(x1, y1, z)], [sx(x0, y1), sy(x0, y1, z)]], c);
-  const faceY = (y, x0, x1, z0, z1, c) => quad([[sx(x0, y), sy(x0, y, z1)], [sx(x1, y), sy(x1, y, z1)], [sx(x1, y), sy(x1, y, z0)], [sx(x0, y), sy(x0, y, z0)]], c);
-  const faceX = (x, y0, y1, z0, z1, c) => quad([[sx(x, y1), sy(x, y1, z1)], [sx(x, y0), sy(x, y0, z1)], [sx(x, y0), sy(x, y0, z0)], [sx(x, y1), sy(x, y1, z0)]], c);
+  /* A cor pode ser uma textura: (a, b, X, Y) -> cor, com (a, b) as coordenadas do plano no centro do pixel fino
+     (X, Y): no tampo (tx, ty); na face Y (tx, z); na face X (ty, z). */
+  const L = v => (v + 0.5) / R;
+  const top = (x0, y0, x1, y1, z, c) => quad([[sx(x0, y0), sy(x0, y0, z)], [sx(x1, y0), sy(x1, y0, z)], [sx(x1, y1), sy(x1, y1, z)], [sx(x0, y1), sy(x0, y1, z)]],
+    typeof c === 'function' ? (X, Y) => { const a = (L(X) - OX) / HW, b = (L(Y) + z - OY) / HH; return c((a + b) / 2, (b - a) / 2, half(X), half(Y)); } : c);
+  const faceY = (y, x0, x1, z0, z1, c) => quad([[sx(x0, y), sy(x0, y, z1)], [sx(x1, y), sy(x1, y, z1)], [sx(x1, y), sy(x1, y, z0)], [sx(x0, y), sy(x0, y, z0)]],
+    typeof c === 'function' ? (X, Y) => { const tx = (L(X) - OX) / HW + y; return c(tx, OY + (tx + y) * HH - L(Y), half(X), half(Y)); } : c);
+  const faceX = (x, y0, y1, z0, z1, c) => quad([[sx(x, y1), sy(x, y1, z1)], [sx(x, y0), sy(x, y0, z1)], [sx(x, y0), sy(x, y0, z0)], [sx(x, y1), sy(x, y1, z0)]],
+    typeof c === 'function' ? (X, Y) => { const ty = x - (L(X) - OX) / HW; return c(ty, OY + (x + ty) * HH - L(Y), half(X), half(Y)); } : c);
   /* Luz de borda: a fileira de pixels finos do tampo junto às arestas da frente fica mais clara, e a quina
      vertical entre as duas faces ganha um fio de luz. Só repinta pixels que ainda têm a cor da face. */
-  const rim = (a, b, c, to) => {
+  /* has(cor): a cor pertence à face (a base e os tons da textura dela). */
+  const rim = (a, b, has, to) => {
     const ax = a[0] * R, ay = a[1] * R, bx = b[0] * R, by = b[1] * R;
     for (let x = Math.floor(Math.min(ax, bx)); x < Math.ceil(Math.max(ax, bx)); x++) {
       const t = (x + 0.5 - ax) / (bx - ax || 1), ye = ay + (by - ay) * t, y = Math.ceil(ye - 0.5) - 1, row = g[y];
-      if (row && row[x] === c) row[x] = to;
+      if (row && row[x] && has(row[x])) row[x] = to;
     }
   };
+  /* Texturas de caixa opaca: as faces verticais escurecem perto do chão (oclusão, em degraus pontilhados) e a
+     madeira ganha veio ao longo do lado mais comprido. Cada textura guarda os tons que pintou, para a luz de borda. */
+  const toned = (base, fn) => { const set = new Set([base]); return { set: set, fn: (a, b, X, Y) => { const o = fn(a, b, X, Y); set.add(o); return o; } }; };
   const box = (x0, y0, x1, y1, z0, z1, c) => {
     /* Sombra de contato no chão, puxada para a frente (a luz vem do fundo da sala). */
     if (z0 === 0 && x1 - x0 >= 0.3 && y1 - y0 >= 0.3) top(x0 + 0.04, y0 + 0.04, x1 + 0.14, y1 + 0.14, 0, '#05060a5c');
-    faceY(y1, x0, x1, z0, z1, c[1]); faceX(x1, y0, y1, z0, z1, c[2]); top(x0, y0, x1, y1, z1, c[0]);
-    if (c[0].length > 7) return;
+    if (c[0].length > 7) { faceY(y1, x0, x1, z0, z1, c[1]); faceX(x1, y0, y1, z0, z1, c[2]); top(x0, y0, x1, y1, z1, c[0]); return; }
+    const tall = z1 - z0 >= 4, ao = z0 === 0 ? 0.2 : 0.1;
+    const side = base => toned(base, (a, z, X, Y) => (tall ? tone(base, -ao * dith(1 - (z - z0) / (z1 - z0), 3, X, Y)) : base));
+    const wood = WOODS.has(c[0]), long = x1 - x0 >= y1 - y0, seed = (x0 * 7.3 + y0 * 3.1) % 5;
+    const sY = side(c[1]), sX = side(c[2]);
+    const tp = toned(c[0], (tx, ty, X, Y) => {
+      if (!wood) return c[0];
+      const al = long ? tx : ty, pp = long ? ty : tx, n = pp * 9 + 0.45 * Math.sin(al * 4.2 + pp * 11 + seed);
+      return fr(n) < 0.16 ? tone(c[0], -0.13) : fr(n) > 0.86 && hash(X, Y) < 0.5 ? tone(c[0], 0.06) : c[0];
+    });
+    faceY(y1, x0, x1, z0, z1, sY.fn); faceX(x1, y0, y1, z0, z1, sX.fn); top(x0, y0, x1, y1, z1, tp.fn);
     const P = [sx(x0, y1), sy(x0, y1, z1)], Q = [sx(x1, y1), sy(x1, y1, z1)], T = [sx(x1, y0), sy(x1, y0, z1)], hi = lit(c[0], 0.38);
-    rim(P, Q, c[0], hi); rim(Q, T, c[0], hi);
-    const qx = Math.round(Q[0] * R) - 1, s1 = lit(c[1], 0.16);
-    for (let y = Math.round(Q[1] * R); y < Math.round(sy(x1, y1, z0) * R); y++) if (g[y] && g[y][qx] === c[1]) g[y][qx] = s1;
+    const onTop = col => tp.set.has(col);
+    rim(P, Q, onTop, hi); rim(Q, T, onTop, hi);
+    const qx = Math.round(Q[0] * R) - 1;
+    for (let y = Math.round(Q[1] * R); y < Math.round(sy(x1, y1, z0) * R); y++) if (g[y] && sY.set.has(g[y][qx])) g[y][qx] = lit(g[y][qx], 0.16);
   };
   /* Poça de luz num plano horizontal: anéis de uma elipse isométrica, mais opacos no centro (degraus, sem degradê). */
   const glow = (tx, ty, z, r, c, a) => {
@@ -172,7 +209,12 @@ function iso(g) {
   /* Carimbo ancorado num ponto do chão: (tx, ty, z) vira o centro da base do mapa. */
   const at = (tx, ty, z, lines, pal, flip) => stamp(g, Math.round(sx(tx, ty) - lines[0].length / 2), Math.round(sy(tx, ty, z)) - lines.length, lines, pal, flip);
   /* Tela fina (canvas) copiada para a grade com origem em (ox, oy) pixels finos; flip espelha em x. */
-  const fine = (ox, oy, cv, flip) => Object.keys(cv.m).forEach(y => Object.keys(cv.m[y]).forEach(x => paint(g, flip ? ox - +x - 1 : ox + +x, oy + +y, 1, 1, cv.m[y][x])));
+  /* (ox, oy) em pixels finos da grade; o desenho está na grade de 2 por px lógico e, em R = 4, sai ampliado pelo Scale2x. */
+  const fine = (ox, oy, cv, flip, vol) => {
+    if (vol) volume(cv, flip);
+    const m = R === 4 ? upscale(cv.m) : cv.m;
+    Object.keys(m).forEach(y => Object.keys(m[y]).forEach(x => paint(g, flip ? ox - +x - 1 : ox + +x, oy + +y, 1, 1, m[y][x])));
+  };
   const px = (x, y, w, h, c) => paint(g, Math.round(x * R), Math.round(y * R), Math.round(w * R), Math.round(h * R), c);
   return { top: top, faceY: faceY, faceX: faceX, box: box, glow: glow, fine: fine, at: at, map: (x, y, lines, pal, flip) => stamp(g, x, y, lines, pal, flip), px: px };
 }
@@ -201,19 +243,18 @@ let ENC = null;
    navegador amplia sem suavizar. Fracionária (1,5 numa tela 1x na escala 3), ampliar faria o WebKit arredondar
    diferente a cada repintura parcial e o piso "tremeria" perto das animações; então o bitmap já sai na grade da
    tela (cada coluna de tela pega o pixel fino do seu centro) e é desenhado 1:1. K = 1 marca o caso inteiro. */
-let K = 1;
+let K = 1, TAG = '2@1';
 /* Ao trocar de densidade (outro monitor, zoom, escala) os bitmaps da anterior saem da memória: só uma fica guardada. */
 function density(scale, dpr) {
-  const k = (scale * dpr) / R, next = Math.abs(k - Math.round(k)) < 1e-6 ? 1 : k;
-  if (next === K) return;
-  const tag = '@' + K;
+  const r = scale * dpr >= 4 ? 4 : 2, k = (scale * dpr) / r, next = Math.abs(k - Math.round(k)) < 1e-6 ? 1 : k, tag = r + '@' + next;
+  if (tag === TAG) return;
   Object.keys(MEMO).forEach(key => {
-    if (!key.endsWith(tag)) return;
+    if (!key.endsWith('@' + TAG)) return;
     if (key.startsWith('art:') && MEMO[key].href) URL.revokeObjectURL(MEMO[key].href);
     delete MEMO[key];
   });
   sceneryCache.clear();
-  K = next;
+  R = r; K = next; TAG = tag;
 }
 /* PNG -> blob: URL. Curta (a marcação de cada mesa não carrega KB de base64 a cada troca de estado) e a mesma
    URL para o mesmo desenho: o navegador reaproveita a imagem já decodificada quando a mesa é refeita. */
@@ -250,7 +291,7 @@ function toImage(g) {
 }
 /* Sprite = um <g>: classes de animação, estilo inline e o bitmap (memoizado pela chave do desenho).
    SO é o mesmo sprite com contorno: móveis, pessoas e objetos soltos (telas, brilhos e fumaça ficam sem). */
-function S(key, cls, style, draw, ol) { return { k: key, cls: cls || '', style: style || '', art: memo('art:' + key + '@' + K, () => { const g = {}; draw(iso(g)); if (ol) outline(g); return toImage(g); }) }; }
+function S(key, cls, style, draw, ol) { return { k: key, cls: cls || '', style: style || '', art: memo('art:' + key + '@' + TAG, () => { const g = {}; draw(iso(g)); if (ol) outline(g); return toImage(g); }) }; }
 const SO = (key, cls, style, draw) => S(key, cls, style, draw, true);
 /* Quadros alternados por visibilidade: n sprites, cada um visível em 1/n do ciclo. */
 function frames(n, dur, make) {
@@ -365,6 +406,38 @@ const PEOPLE = {
 };
 const EYE = '#1a1b20', WHITE = '#f4f5f7';
 
+/* Tela fina ampliada 2x pelo Scale2x (cores como símbolos): as curvas e diagonais ganham degraus finos. */
+function upscale(m) {
+  const ys = Object.keys(m).map(Number);
+  if (!ys.length) return {};
+  let x0 = 1e9, x1 = -1e9;
+  ys.forEach(y => Object.keys(m[y]).forEach(xs => { x0 = Math.min(x0, +xs); x1 = Math.max(x1, +xs); }));
+  const y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), src = [];
+  for (let y = y0; y <= y1; y++) { const r = []; for (let x = x0; x <= x1; x++) r.push((m[y] && m[y][x]) || '.'); src.push(r); }
+  const up = scale2x(src), out = {};
+  up.forEach((r, j) => r.forEach((c, i) => { if (c !== '.') (out[y0 * 2 + j] || (out[y0 * 2 + j] = {}))[x0 * 2 + i] = c; }));
+  return out;
+}
+/* Volume: a luz vem do alto à esquerda da tela. Cada pixel opaco na borda do desenho virada para a luz clareia e
+   o da borda oposta escurece (duas fileiras, a segunda mais fraca); o resto escurece um pouco de cima para baixo.
+   flip: o desenho vai espelhado, então a luz troca de lado no espaço local. */
+function volume(cv, flip) {
+  const m = cv.m, L = flip ? 1 : -1, ys = Object.keys(m).map(Number);
+  if (!ys.length) return;
+  const y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), out = [];
+  const has = (x, y) => !!(m[y] && m[y][x]);
+  ys.forEach(y => Object.keys(m[y]).forEach(xs => {
+    const x = +xs, c = m[y][x]; if (c.length > 7) return;
+    let d = 0;
+    if (!has(x + L, y) || !has(x, y - 1)) d += 0.14;
+    else if (!has(x + 2 * L, y)) d += 0.06;
+    if (!has(x - L, y) || !has(x, y + 1)) d -= 0.2;
+    else if (!has(x - 2 * L, y)) d -= 0.09;
+    d -= 0.1 * dith((y - y0) / Math.max(1, y1 - y0), 2, x, y);
+    if (d) out.push([x, y, tone(c, Math.round(d * 100) / 100)]);
+  }));
+  out.forEach(o => { m[o[1]][o[0]] = o[2]; });
+}
 /* Tela fina: pixels soltos em coordenadas locais (origem no quadril), copiados depois para a grade com espelho. */
 function canvas() {
   const m = {};
@@ -552,19 +625,24 @@ const LEG_FR = [STEP, ['..PP..PP..', '..PP..PP..', '..PP..WW..', '..WW......'], 
 
 function walkerSprites(role, back, carry, frame) {
   const p = PEOPLE[role], still = frame != null, out = [], id = role + (back ? '-b' : '-f');
-  const legs = i => SO('wk-legs-' + role + i, '', '', t => { t.map(1, 13, HIPS, p.pal); t.map(1, 16, LEG_FR[i], p.pal); });
+  const legs = i => SO('wk-legs-' + role + i, '', '', t => {
+    /* Sombra no chão, embaixo dos pés (translúcida: o contorno não a pega). */
+    const sh = canvas(); sh.ell(12, 39.6, 7, 1.7, '#05060a66'); sh.ell(12, 39.6, 4.5, 1.1, '#05060a80'); t.fine(0, 0, sh, false);
+    t.map(1, 13, HIPS, p.pal); t.map(1, 16, LEG_FR[i], p.pal);
+  });
   if (still) out.push(legs(frame)); else frames(4, 0.44, legs).forEach(s => out.push(s));
   const fold = carry && !back;
   out.push(SO('wk-up-' + id + (fold ? '-c' : ''), still ? '' : 'a-walkbob', '', t => {
     const cv = canvas();
     drawTorso(cv, back ? Object.assign({}, p, { shirt: '' }) : p, 12, 16, 27);
     drawHead(cv, p, 12, 8, back);
-    if (!back) drawEyes(cv, p, 12, 8, false);
     if (fold) {
       drawArm(cv, p, [[4, 18], [3, 23], [6, 23]]); drawArm(cv, p, [[19, 18], [20, 23], [17, 23]]);
       cv.rect(5, 20, 18, 25, '#d9a441'); cv.rect(5, 19, 9, 19, '#e3ba6a'); cv.rect(7, 21, 16, 22, WHITE); cv.rect(5, 25, 18, 25, '#9c7226');
       cv.ell(6, 23, 1.8, 1.7, p.pal.S); cv.ell(17, 23, 1.8, 1.7, p.pal.S);
     } else { drawArm(cv, p, [[4, 18], [3, 23], [3, 27]]); drawArm(cv, p, [[19, 18], [20, 23], [20, 27]]); }
+    if (!p.art) volume(cv, false);
+    if (!back) drawEyes(cv, p, 12, 8, false);
     t.fine(0, 0, cv, false);
   }));
   return out;
@@ -574,11 +652,11 @@ function walkerSprites(role, back, carry, frame) {
    hands vai depois (braços que descansam no tampo). cls é a animação da camada do corpo. */
 function seatedParts(role, v, i) {
   const p = PEOPLE[role], g = geo(role), id = '-' + role;
-  const put = draw => t => { const cv = canvas(); draw(cv); t.fine(g.seat[0] * R, g.seat[1] * R, cv, g.se); };
+  const put = (draw, flat) => t => { const cv = canvas(); draw(cv); t.fine(g.seat[0] * R, g.seat[1] * R, cv, g.se, !flat && !p.art); };
   const arm = pts => put(cv => drawArm(cv, p, pts));
   const body = [SO('torso' + id, '', '', put(cv => { drawTorso(cv, p, 0, -14, 8); drawHead(cv, p, HEAD_C[0], HEAD_C[1], false); }))];
   const hands = [];
-  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, p, HEAD_C[0], HEAD_C[1], happy))));
+  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, p, HEAD_C[0], HEAD_C[1], happy), true)));
   /* Na mesa de aprovação não há caneca (o canto é do vaso). */
   const desk = role !== 'approval', sip = desk && v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
   if (desk) hands.push(mug(role, sip ? 'a-sipA' : '', d));
@@ -650,7 +728,8 @@ function drawMonitor(k) {
   k.box(0.3, 1.46, 0.38, 1.54, 11, 13, STEEL);
   k.box(0.24, 1.08, 0.4, 1.92, 13, 23, CASE);
 }
-const drawScreen = (k, c) => k.side(0.4, 1.14, 1.86, 14, 22, c);
+/* Tela: a apagada ganha um reflexo diagonal em faixa (o vidro), em pixels finos. */
+const drawScreen = (k, c) => k.side(0.4, 1.14, 1.86, 14, 22, c === SCREEN || c === '#0b0c0f' ? (a, z, X, Y) => { const d = (X + Y * 2) % 30; return d < 2 || d === 4 ? tone(c, .07) : c; } : c);
 function drawCode(k, n, term) {
   drawScreen(k, SCREEN);
   for (let j = 0; j < 3; j++) {
@@ -720,6 +799,8 @@ function deskSprites(role) {
     }
     drawMonitor(k);
     k.box(1.0, 1.1, 1.58, 1.3, 10, 11, ['#5a5f69', '#3d424d', '#2b2e36']);
+    /* Teclas: grade de pixels claros com o vão escuro entre elas. */
+    k.top(1.04, 1.13, 1.54, 1.27, 11, (a, b, X, Y) => ((X + (Y >> 1)) % 3 === 0 || Y % 2 ? '#4a4f59' : '#7a808b'));
     k.box(1.66, 1.14, 1.76, 1.24, 10, 11, ['#8b909a', '#5a5f69', '#3d424d']);
     if (role === 'triage') { k.top(1.4, 1.52, 1.9, 1.92, 10.02, '#d8dbe2'); k.top(1.48, 1.62, 1.8, 1.67, 10.03, PAL.g); k.top(1.48, 1.76, 1.7, 1.81, 10.03, PAL.g); }
     else if (role === 'planner') k.at(1.62, 1.74, 10, CLIP);
@@ -783,27 +864,58 @@ function stationLayers(st, c) {
 /* Cenário fixo, memoizado: piso, paredes, janelas e tapetes (viewBox 0 0 360 186) e os móveis soltos,
    cada um com o seu z-index pela área que ocupa no chão. */
 const LEAVES = ['.....n.....', '....nN.....', '..N.nN..n..', '..NN.N.nN..', '...NNN.NN..', 'n...NNNN...', 'Nn..NNN..n.', '.NN.NNN.nN.', '..NNNNNNN..', '...NNNNN...', '....NNN....'];
-const LEAF_PAL = { N: '#2f6b4f', n: '#4a9a6f' };
+const LEAF_PAL = { N: '#2f6b4f', n: '#4a9a6f', l: '#7cc896', d: '#1f4a37' };
+/* Folhas com brilho na ponta de cima e sombra na base de cada tufo. */
+LEAVES.forEach((ln, j) => { LEAVES[j] = ln.split('').map((ch, i) => (ch === 'n' && (j === 0 || LEAVES[j - 1][i] === '.') ? 'l' : ch === 'N' && j + 1 < LEAVES.length && LEAVES[j + 1][i] === '.' ? 'd' : ch)).join(''); });
 const SKY = [[17, 19.5, '#1f2547'], [15, 17, '#2c3468'], [13, 15, '#434c96'], [11.5, 13, '#6b63a8'], [10.5, 11.5, '#b0708a'], [9.5, 10.5, '#d9a441']];
 function backdrop() {
   const G = GRID, FRAME = '#3a3e48', out = [];
   /* Janela numa parede: f = face da parede (faceY para a da direita, faceX para a da esquerda), entre p0 e p1. */
   const win = (f, p0, p1) => {
     f(p0, p1, 7.5, 21.5, FRAME);
-    SKY.forEach(b => f(p0 + .12, p1 - .12, b[0], b[1], b[2]));
-    [[.25, .5, 13], [.6, .8, 15.5], [.95, 1.3, 12], [1.4, 1.52, 14]].forEach(s => f(p0 + s[0], p0 + s[1], 9.5, s[2], '#14151a'));
+    /* Céu: as faixas do pôr do sol se misturam em pontilhado, com algumas estrelas no alto. */
+    f(p0 + .12, p1 - .12, 9.5, 19.5, (u, z, X, Y) => {
+      if (z > 14.5 && hash(X, Y) < .012) return '#d8dbe2';
+      const zz = z + (bayer(X, Y) - .5) * 1.4, b = SKY.find(q => zz >= q[0] && zz < q[1]) || (zz >= 17 ? SKY[0] : SKY[SKY.length - 1]);
+      return b[2];
+    });
+    /* Prédios com janelas acesas aqui e ali. */
+    const bld = (X, Y) => ((X & 3) === 1 && (Y & 3) === 1 && hash(X >> 2, Y >> 2) < .3 ? '#e3ba6a' : (X & 3) === 1 && (Y & 3) === 1 && hash(X >> 2, Y >> 2) < .4 ? '#5a5f69' : '#14151a');
+    [[.25, .5, 13], [.6, .8, 15.5], [.95, 1.3, 12], [1.4, 1.52, 14]].forEach(s => f(p0 + s[0], p0 + s[1], 9.5, s[2], (u, z, X, Y) => (z > s[2] - .6 ? '#23252b' : bld(X, Y))));
     f((p0 + p1) / 2 - .04, (p0 + p1) / 2 + .04, 9.5, 19.5, FRAME); f(p0 + .12, p1 - .12, 14.4, 15, FRAME);
     f(p0 - .06, p1 + .06, 6.5, 7.5, '#4a4e57');
   };
   out.push(S('bg-room', '', '', t => {
     const wallR = (x0, x1, z0, z1, c) => t.faceY(0, x0, x1, z0, z1, c), wallL = (y0, y1, z0, z1, c) => t.faceX(0, y0, y1, z0, z1, c);
     t.faceY(G, 0, G, -4, 0, '#1b1d23'); t.faceX(G, 0, G, -4, 0, '#141519');
-    t.top(0, 0, G, G, 0, '#24272f');
-    for (let x = 0; x < G; x++) for (let y = 0; y < G; y++) t.top(x + .05, y + .05, x + .95, y + .95, 0, (x + y) % 2 ? '#2c2f39' : '#31343f');
-    t.top(.6, 9.7, 3.6, 12.6, 0, '#3d447a'); t.top(.72, 9.82, 3.48, 12.48, 0, '#2d3254'); t.top(1, 10.1, 3.2, 12.2, 0, '#343a62'); t.top(1.12, 10.22, 3.08, 12.08, 0, '#2d3254');
-    t.top(3.7, .1, 6.3, 2.9, 0, '#3a3f6e'); t.top(3.82, .22, 6.18, 2.78, 0, '#30355c');
-    t.top(10.3, 5.2, 12.7, 8.8, 0, '#2f4a45'); t.top(10.42, 5.32, 12.58, 8.68, 0, '#27403b');
-    wallR(0, G, 0, WALL, '#272a33'); wallL(0, G, 0, WALL, '#20232a');
+    /* Piso: a sala escurece em degraus pontilhados para a frente (a luz vem das janelas do fundo); cada ladrilho
+       tem chanfro claro nas bordas do fundo, sombra nas da frente e alguns salpicos de desgaste. */
+    const far = (tx, ty, X, Y) => -0.2 * dith((tx + ty) / (2 * G), 4, X, Y);
+    const r2 = v => Math.round(v * 100) / 100;
+    const floor = base => (tx, ty, X, Y) => {
+      const fx = fr(tx), fy = fr(ty), h = hash(X, Y);
+      let d = far(tx, ty, X, Y);
+      if (fx < .1 || fy < .1) d += .07; else if (fx > .9 || fy > .9) d -= .08;
+      if (h < .014) d += .06; else if (h > .992) d -= .07;
+      return tone(base, r2(d));
+    };
+    t.top(0, 0, G, G, 0, (tx, ty, X, Y) => tone('#24272f', r2(far(tx, ty, X, Y))));
+    for (let x = 0; x < G; x++) for (let y = 0; y < G; y++) t.top(x + .05, y + .05, x + .95, y + .95, 0, floor((x + y) % 2 ? '#2c2f39' : '#31343f'));
+    /* Tapetes: trama em xadrez fino e a sombra da sala por cima. */
+    const rug = base => (tx, ty, X, Y) => tone(base, r2(far(tx, ty, X, Y) * .6 + ((X + Y) & 1 ? .035 : 0)));
+    t.top(.6, 9.7, 3.6, 12.6, 0, rug('#3d447a')); t.top(.72, 9.82, 3.48, 12.48, 0, rug('#2d3254')); t.top(1, 10.1, 3.2, 12.2, 0, rug('#343a62')); t.top(1.12, 10.22, 3.08, 12.08, 0, rug('#2d3254'));
+    t.top(3.7, .1, 6.3, 2.9, 0, rug('#3a3f6e')); t.top(3.82, .22, 6.18, 2.78, 0, rug('#30355c'));
+    t.top(10.3, 5.2, 12.7, 8.8, 0, rug('#2f4a45')); t.top(10.42, 5.32, 12.58, 8.68, 0, rug('#27403b'));
+    /* Paredes: painéis de um tile com junta, sombra pontilhada junto ao rodapé e um pouco de luz do neon no alto. */
+    const wall = base => (u, z, X, Y) => {
+      let d = 0;
+      if (z < 7) d -= .16 * dith(1 - z / 7, 3, X, Y);
+      else if (z > WALL - 9) d += .07 * dith((z - WALL + 9) / 9, 3, X, Y);
+      const f = fr(u);
+      if (f < 1 / 24) d -= .2; else if (f < 2 / 24) d += .05;
+      return tone(base, r2(d));
+    };
+    wallR(0, G, 0, WALL, wall('#272a33')); wallL(0, G, 0, WALL, wall('#20232a'));
     wallR(0, G, WALL, WALL + 1, '#3d424d'); wallL(0, G, WALL, WALL + 1, '#33363e');
     wallR(0, G, 0, 2, '#1d1f25'); wallL(0, G, 0, 2, '#191b20');
     /* Fitas de neon no alto das paredes, com o brilho rebatido na parede logo abaixo. */
@@ -822,6 +934,9 @@ function backdrop() {
     [[4.2, 5.8], [6.3, 7.9], [10.2, 11.8]].forEach(w => { t.top(w[0], .1, w[1], 2.6, 0, '#a6b0f710'); t.top(w[0] + .2, .1, w[1] - .2, 1.6, 0, '#a6b0f714'); });
     [[6.2, 7.8], [10.3, 11.9]].forEach(w => { t.top(.1, w[0], 2.6, w[1], 0, '#a6b0f70c'); t.top(.1, w[0] + .2, 1.6, w[1] - .2, 0, '#a6b0f710'); });
     t.glow(.6, 12.4, 0, 2.6, '#ffc861', .2);
+    /* O neon das paredes rebate no chão, numa faixa que some em pontilhado. */
+    t.top(.2, 0, GRID - .2, .9, 0, (tx, ty, X, Y) => (dith(1 - ty / .9, 3, X, Y) ? '#4fe3e0' + ['00', '0c', '14', '1e'][dith(1 - ty / .9, 3, X, Y) * 3] : '#00000000'));
+    t.top(0, .2, .9, GRID - .2, 0, (tx, ty, X, Y) => (dith(1 - tx / .9, 3, X, Y) ? '#e05fd0' + ['00', '0c', '14', '1e'][dith(1 - tx / .9, 3, X, Y) * 3] : '#00000000'));
     t.glow(1.3, .9, 0, 1.6, '#ffc861', .1);
   }));
   out.push(S('bg-note', 'a-flick', 'animation-duration:1.6s', t => t.faceX(0, 4.8, 5.1, 12.5, 14.5, PAL.n)));
@@ -844,7 +959,7 @@ function plant(key, x, y) {
   ]);
 }
 function props() {
-  return memo('props@' + K, () => {
+  return memo('props@' + TAG, () => {
     const SOFA = ['#5b8f99', '#3f6b73', '#335961'], CAB = ['#3d424d', '#33363e', '#2b2e36'], CUP = ['#ecedef', '#d8dbe2', '#b4b8c0'];
     const pxAt = (t, x, y, z, dx, dy, w, h, c) => t.px(Math.round(sx(x, y)) + dx, Math.round(sy(x, y, z)) + dy, w, h, c);
     return [
@@ -903,7 +1018,7 @@ function props() {
   });
 }
 /* O cenário inteiro, como sai em buildView: fundo (um SVG) e móveis (um elemento cada). */
-function scenery() { return memo('scenery@' + K, () => ({ backdrop: backdrop(), props: props() })); }
+function scenery() { return memo('scenery@' + TAG, () => ({ backdrop: backdrop(), props: props() })); }
 
 /* Tiles onde ninguém anda: estações e móveis. O resto é corredor. */
 function blocked() {
@@ -1171,10 +1286,10 @@ export { spritesSvg };
 /** Cenário fixo da sala: o fundo como SVG e os móveis (cada um com a sua profundidade). Gerado uma vez só.
     O que anima no fundo (estrelas, poeira, post-it) sai do SVG grande e vira um elemento pequeno logo acima dele:
     assim cada piscada repinta alguns pixels, e não a sala inteira. */
-const sceneryCache = new Map<number, { backdrop: string; props: { style: string; vb: string; svg: string }[] }>();
+const sceneryCache = new Map<string, { backdrop: string; props: { style: string; vb: string; svg: string }[] }>();
 export function officeScenery(scale: number, dpr: number) {
   density(scale, dpr);
-  let cached = sceneryCache.get(K);
+  let cached = sceneryCache.get(TAG);
   if (!cached) {
     const s = scenery();
     const moving = s.backdrop.filter((sp: Sprite) => sp.cls).map((sp: Sprite) => {
@@ -1185,7 +1300,7 @@ export function officeScenery(scale: number, dpr: number) {
       backdrop: spritesSvg(s.backdrop.filter((sp: Sprite) => !sp.cls)),
       props: moving.concat(s.props.map((p) => ({ style: p.style, vb: p.vb, svg: spritesSvg(p.sprites) }))),
     };
-    sceneryCache.set(K, cached);
+    sceneryCache.set(TAG, cached);
   }
   return cached;
 }
