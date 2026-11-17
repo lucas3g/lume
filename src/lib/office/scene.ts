@@ -2,7 +2,7 @@
 /* Cena do escritório isométrico da esteira de bots, vinda do protótipo no Claude Design (v2).
    Grade lógica 360x186 px escalada por inteiro (--s), desenhada por dentro com 2x2 pixels finos por px lógico
    (contorno, luz de borda, sombras e poças de luz). Sprites são mapas de caracteres ampliados pelo Scale2x e
-   convertidos em um <path> de retângulos por cor; a animação fica toda no CSS (steps()) de office.css.
+   convertidos em um bitmap (PNG) desenhado como <image> sem suavizar; a animação fica toda no CSS (steps()) de office.css.
    Funções puras: estado da cena -> modelo de desenho. Os tipos públicos ficam no fim do arquivo. */
 const LW = 360, LH = 186, HW = 12, HH = 6, OX = 180, OY = 26, GRID = 13, WALL = 24, SPEED = 3.2, HAND = 0.6;
 const ORDER = ['triage', 'planner', 'approval', 'implementer', 'reviewer', 'tester', 'code_review', 'reporter'];
@@ -53,7 +53,7 @@ const WOOD = ['#8f7050', '#6f553c', '#5a4431'], WOOD_D = ['#6f553c', '#5a4330', 
 const STEEL = ['#3d424d', '#2b2e36', '#1f2127'], LIGHT = ['#d8dbe2', '#b4b8c0', '#8b909a'], AMBER = ['#e3ba6a', '#d9a441', '#9c7226'];
 const CASE = ['#3d424d', '#2b2e36', '#1f2127'], SCREEN = '#12151d';
 
-/* Pintura: grade esparsa de pixels -> um <path> de retângulos por cor (a ordem de pintura se resolve na grade).
+/* Pintura: grade esparsa de pixels -> bitmap (toImage; a ordem de pintura se resolve na grade).
    A grade interna tem R pixels finos por px lógico: as coordenadas da cena seguem em px lógicos, mas faces,
    bordas e contornos saem com o dobro da definição, e os mapas de caracteres passam pelo Scale2x. */
 const R = 2;
@@ -195,19 +195,39 @@ function kit(t, g) {
    um quadro de animação é copiar um bitmap em vez de rasterizar milhares de retângulos de <path>.
    mask: as células de px lógico ocupadas, a partir de (mx, my) com largura mw (máscara de clique da mesa). */
 const RGBA = {};
-const rgba = c => RGBA[c] || (RGBA[c] = [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16), c.length > 7 ? parseInt(c.slice(7, 9), 16) : 255]);
+const rgba = c => RGBA[c] || (RGBA[c] = rgb(c).concat(c.length > 7 ? parseInt(c.slice(7, 9), 16) : 255));
 let ENC = null;
 /* Densidade: pixels de tela por pixel fino (escala x devicePixelRatio / R). Inteira, o bitmap fica na grade fina e o
    navegador amplia sem suavizar. Fracionária (1,5 numa tela 1x na escala 3), ampliar faria o WebKit arredondar
    diferente a cada repintura parcial e o piso "tremeria" perto das animações; então o bitmap já sai na grade da
    tela (cada coluna de tela pega o pixel fino do seu centro) e é desenhado 1:1. K = 1 marca o caso inteiro. */
 let K = 1;
-function density(scale, dpr) { const k = (scale * dpr) / R; K = Math.abs(k - Math.round(k)) < 1e-6 ? 1 : k; }
+/* Ao trocar de densidade (outro monitor, zoom, escala) os bitmaps da anterior saem da memória: só uma fica guardada. */
+function density(scale, dpr) {
+  const k = (scale * dpr) / R, next = Math.abs(k - Math.round(k)) < 1e-6 ? 1 : k;
+  if (next === K) return;
+  const tag = '@' + K;
+  Object.keys(MEMO).forEach(key => {
+    if (!key.endsWith(tag)) return;
+    if (key.startsWith('art:') && MEMO[key].href) URL.revokeObjectURL(MEMO[key].href);
+    delete MEMO[key];
+  });
+  sceneryCache.clear();
+  K = next;
+}
+/* PNG -> blob: URL. Curta (a marcação de cada mesa não carrega KB de base64 a cada troca de estado) e a mesma
+   URL para o mesmo desenho: o navegador reaproveita a imagem já decodificada quando a mesa é refeita. */
+function blobUrl(canvas) {
+  const b64 = canvas.toDataURL('image/png').slice(22), bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+}
 function toImage(g) {
   let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9;
   const ys = Object.keys(g).map(Number);
   ys.forEach(y => { by0 = Math.min(by0, y); by1 = Math.max(by1, y + 1); Object.keys(g[y]).forEach(xs => { const x = +xs; if (x < bx0) bx0 = x; if (x + 1 > bx1) bx1 = x + 1; }); });
-  if (!ys.length) return { href: '', x: 0, y: 0, w: 0, h: 0, box: [0, 0, 0, 0], mx: 0, my: 0, mw: 0, mask: new Uint8Array(0) };
+  /* Sem pixel nenhum (grade vazia, ou só linhas criadas por pinturas de largura 0): sprite vazio. */
+  if (bx1 <= bx0) return { href: '', x: 0, y: 0, w: 0, h: 0, box: [0, 0, 0, 0], mx: 0, my: 0, mw: 0, mask: new Uint8Array(0) };
   const mx = Math.floor(bx0 / R), my = Math.floor(by0 / R), mw = Math.ceil(bx1 / R) - mx, mask = new Uint8Array(mw * (Math.ceil(by1 / R) - my));
   ys.forEach(y => { const mo = (Math.floor(y / R) - my) * mw - mx; Object.keys(g[y]).forEach(xs => { mask[mo + Math.floor(+xs / R)] = 1; }); });
   /* Grade do bitmap: a fina (K = 1) ou a da tela; [x0, x1) x [y0, y1) em pixels dela. */
@@ -226,11 +246,11 @@ function toImage(g) {
   ENC.getContext('2d').putImageData(new ImageData(data, w, h), 0, 0);
   /* De volta a px lógicos: um px lógico tem R * k pixels do bitmap. */
   const u = R * k, box = [x0 / u, y0 / u, w / u, h / u];
-  return { href: ENC.toDataURL('image/png'), x: box[0], y: box[1], w: box[2], h: box[3], box: box, mx: mx, my: my, mw: mw, mask: mask };
+  return { href: blobUrl(ENC), x: box[0], y: box[1], w: box[2], h: box[3], box: box, mx: mx, my: my, mw: mw, mask: mask };
 }
 /* Sprite = um <g>: classes de animação, estilo inline e o bitmap (memoizado pela chave do desenho).
    SO é o mesmo sprite com contorno: móveis, pessoas e objetos soltos (telas, brilhos e fumaça ficam sem). */
-function S(key, cls, style, draw, ol) { return { k: key, cls: cls || '', style: style || '', art: memo('art:' + key + (K === 1 ? '' : '@' + K), () => { const g = {}; draw(iso(g)); if (ol) outline(g); return toImage(g); }) }; }
+function S(key, cls, style, draw, ol) { return { k: key, cls: cls || '', style: style || '', art: memo('art:' + key + '@' + K, () => { const g = {}; draw(iso(g)); if (ol) outline(g); return toImage(g); }) }; }
 const SO = (key, cls, style, draw) => S(key, cls, style, draw, true);
 /* Quadros alternados por visibilidade: n sprites, cada um visível em 1/n do ciclo. */
 function frames(n, dur, make) {
@@ -923,7 +943,8 @@ function legStyle(a, b, za, zb, t0, dur, steps) {
 }
 /* Canto superior esquerdo da caixa 12x20 de quem anda, com os pés no ponto do chão p. */
 const feet = p => [sx(p[0], p[1]) - 6, sy(p[0], p[1]) - 20];
-function tripOf(scene) {
+/* bare: só a rota e os tempos, sem desenhar os sprites (quem só quer saber quanto a viagem dura). */
+function tripOf(scene, bare) {
   const ai = scene.active, pi = scene.previous;
   if (ai == null || pi == null || ai === pi || !scene.stations[ai] || !scene.stations[pi]) return null;
   const from = scene.stations[pi].role, go = geo(from), gd = geo(scene.stations[ai].role);
@@ -933,7 +954,7 @@ function tripOf(scene) {
     const a = [sx(p[0], p[1]) - 6, sy(p[0], p[1], 16) - 6], b = [sx(q[0], q[1]) - 6, sy(q[0], q[1], 13) - 6];
     return Object.assign(base, { kind: 'plane', td: td, arrive: td, points: [p, q], legs: [{
       cls: 'leg plane f-' + (b[0] < a[0] ? 'sw' : 'se'), vb: '0 0 12 6',
-      style: legStyle(a, b, 2900, 2900, 0, td, 36), sprites: [SO('plane', '', '', t => t.map(0, 0, PLANE))]
+      style: legStyle(a, b, 2900, 2900, 0, td, 36), sprites: bare ? [] : [SO('plane', '', '', t => t.map(0, 0, PLANE))]
     }] });
   }
   const B = blocked(), goal = [Math.floor(gd.front[0]), Math.floor(gd.front[1])];
@@ -956,7 +977,7 @@ function tripOf(scene) {
   /* Um trecho: andando (ciclo de 4 quadros, um passo de 2x1 px a cada 1/6 de tile) ou parado entregando a pasta. */
   const leg = (p, q, dir, carry) => {
     const len = Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]), dur = len ? len / SPEED : HAND;
-    legs.push({ cls: 'leg f-' + dir, vb: '0 0 12 20', style: legStyle(feet(p), feet(q), depth(p), depth(q), t, dur, Math.max(1, Math.round(len * 6))), sprites: walkerSprites(from, dir === 'ne' || dir === 'nw', carry, len ? null : 0) });
+    legs.push({ cls: 'leg f-' + dir, vb: '0 0 12 20', style: legStyle(feet(p), feet(q), depth(p), depth(q), t, dur, Math.max(1, Math.round(len * 6))), sprites: bare ? [] : walkerSprites(from, dir === 'ne' || dir === 'nw', carry, len ? null : 0) });
     t += dur;
   };
   for (let i = 0; i + 1 < corners.length; i++) leg(corners[i], corners[i + 1], face(corners[i], corners[i + 1]), true);
@@ -997,7 +1018,7 @@ function buildView(scene, opt) {
       } : null
     };
   });
-  return { roomStyle: '--s:' + (opt.scale || 3), scenery: scenery(), stations: stations, trip: trip };
+  return { stations: stations, trip: trip };
 }
 
 // ---- interface pública
@@ -1035,7 +1056,6 @@ interface Layer { cls: string; style: string; sprites: Sprite[] }
 export interface OfficeTrip { id: number; kind: "walk" | "plane"; td: number; legs: { cls: string; style: string; vb: string; sprites: Sprite[] }[] }
 
 export interface OfficeView {
-  roomStyle: string;
   stations: {
     role: string;
     index: number;
@@ -1058,15 +1078,22 @@ export const OFFICE_H: number = LH;
 /** `traveling`: verdadeiro enquanto a viagem atual anda; quem monta desliga depois de `trip.td` segundos.
     `dpr`: window.devicePixelRatio (os bitmaps saem na densidade da tela; ver `density`). */
 export const officeView: (scene: OfficeScene, opt: { scale: number; dpr: number; traveling: boolean }) => OfficeView = buildView;
-export const officeTrip: (scene: OfficeScene) => OfficeTrip | null = tripOf;
+/** Rota e duração da viagem atual, sem os sprites (`legs[].sprites` vazio). */
+export const officeTrip = (scene: OfficeScene): OfficeTrip | null => tripOf(scene, true);
 
 const imageSvg = (a: Art): string => (a.href ? `<image href="${a.href}" x="${a.x}" y="${a.y}" width="${a.w}" height="${a.h}"/>` : "");
 const spritesSvg = (list: Sprite[]): string => list.map((s) => `<g class="${s.cls}" style="${s.style}">${imageSvg(s.art)}</g>`).join("");
 
-/* Máscara de clique: um <path> transparente com as células de px lógico pintadas por qualquer sprite da mesa
-   (uma <image> recebe clique no retângulo todo, e as mesas vizinhas se sobrepõem). Memoizada pelo conjunto de sprites. */
+/* Máscara de clique: um <path> transparente com as células de px lógico pintadas pelos sprites da mesa
+   (uma <image> recebe clique no retângulo todo, e as mesas vizinhas se sobrepõem). Só conta o que fica à vista:
+   fora os quadros de animação além do primeiro, a fumaça, o gole e o estado de antes da chegada da pasta (g-until).
+   Memoizada pelo conjunto de sprites. */
+const HIDDEN = /(^|\s)(fr(?!0|\d)|a-smoke|a-sipB)(\s|$)/;
 const HITS = new Map<string, string>();
-function hitPath(layers: Layer[]): string {
+function hitPath(all: Layer[]): string {
+  const layers = all
+    .filter((l) => !/(^|\s)g-until(\s|$)/.test(l.cls))
+    .map((l) => ({ ...l, sprites: l.sprites.filter((s) => !HIDDEN.test(s.cls) || /(^|\s)fr0(\s|$)/.test(s.cls)) }));
   const key = layers.map((l) => l.sprites.map((s) => s.k).join(",")).join("|");
   let out = HITS.get(key);
   if (out == null) {

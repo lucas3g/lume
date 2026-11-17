@@ -63,7 +63,8 @@ function step(tr: Track, lt: number): [number, number] {
 export function officeClock(root: HTMLElement, fps = 15) {
   let min = 1000 / fps;
   const tracks = new WeakMap<Animation, Track>();
-  const now = () => (document.timeline.currentTime as number | null) ?? performance.now();
+  // performance.now e não document.timeline: a linha do tempo do documento para de andar com a janela escondida.
+  const now = () => performance.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let visible = true;
 
@@ -101,10 +102,14 @@ export function officeClock(root: HTMLElement, fps = 15) {
     sync();
   });
   io.observe(root);
-  // Sprites novos (troca de estado, viagem da pasta) nascem pausados no começo: entram no próximo tique.
-  const mo = new MutationObserver(() => {
-    if (visible && !document.hidden) queueMicrotask(tick);
-  });
+  // Sprites novos (troca de estado, viagem da pasta) nascem pausados no começo: entram no próximo tique. Com a sala
+  // fora da tela ou a janela escondida, o relógio dorme, mas anota quando cada um nasceu: ao voltar, a pasta está
+  // onde estaria (e acaba junto com o fim da viagem que o componente conta em tempo real), em vez de recomeçar.
+  const note = () => {
+    const t = now();
+    for (const a of root.getAnimations({ subtree: true })) if (!tracks.has(a)) tracks.set(a, track(a, t));
+  };
+  const mo = new MutationObserver(() => queueMicrotask(visible && !document.hidden ? tick : note));
   mo.observe(root, { childList: true, subtree: true });
   document.addEventListener("visibilitychange", sync);
   sync();

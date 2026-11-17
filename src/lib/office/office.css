@@ -2,9 +2,10 @@
    grade lógica 360x186 px escalada por inteiro (--s), animações só em passos de 1 px lógico.
    Global porque os sprites entram por {@html}; tudo fica sob .office-room e as animações têm o prefixo of-. */
 /* ---- sala isométrica: tudo em px lógicos (--x, --y, --w, --h) vezes a escala ---- */
-/* Sprites são bitmaps (<image>) ampliados sem suavizar. contain + content-visibility: o que muda lá dentro não
-   recalcula o resto da página, e fora da tela a sala nem pinta (as animações param de custar). */
-.office-room{--s:3;--u:calc(var(--s)*1px);position:relative;width:calc(360px*var(--s));height:calc(186px*var(--s));overflow:hidden;isolation:isolate;margin:0 auto;background:var(--bg);contain:strict;content-visibility:auto;contain-intrinsic-size:calc(360px*var(--s)) calc(186px*var(--s))}
+/* Sprites são bitmaps (<image>) ampliados sem suavizar. contain: o que muda lá dentro não recalcula o
+   resto da página; fora da tela o relógio (clock.ts) dorme. Sem content-visibility: com ela a sala fora da tela
+   nem cria as animações, e a viagem que começasse ali perderia a hora em que nasceu. */
+.office-room{--s:3;--u:calc(var(--s)*1px);position:relative;width:calc(360px*var(--s));height:calc(186px*var(--s));overflow:hidden;isolation:isolate;margin:0 auto;background:var(--bg);contain:strict}
 .office-room svg{display:block;overflow:visible;shape-rendering:crispEdges;image-rendering:pixelated}
 .office-room image{image-rendering:pixelated;pointer-events:none}
 .office-room .bg{position:absolute;left:0;top:0;width:100%;height:100%;z-index:0}
