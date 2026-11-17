@@ -402,6 +402,7 @@ impl SendMessage {
             TurnEvent::ToolCall { id, name, input } => {
                 self.record_segment(conversation_id, account_id, journal);
                 journal.calls.insert(id.clone(), (name.clone(), input.clone()));
+                self.emit(conversation_id, ChatEvent::ToolStart { id: id.clone(), name: name.clone(), input: input.clone() });
             }
             TurnEvent::ToolResult { id, output, is_error } => {
                 if let Some((name, input)) = journal.calls.remove(id) {
@@ -452,6 +453,7 @@ impl SendMessage {
                 self.emit(conversation_id, ChatEvent::Waiting { text });
             }
             TurnEvent::Tool(name) => self.emit(conversation_id, ChatEvent::Tool { name: name.clone() }),
+            TurnEvent::ToolTask(id) => self.emit(conversation_id, ChatEvent::ToolTask { id: id.clone() }),
             TurnEvent::Rate(rate) => {
                 if self.accounts.set_usage(account_id, rate).is_ok() {
                     self.events.accounts_changed();
@@ -843,6 +845,8 @@ mod tests {
         assert!(messages[3].content.contains("\"name\":\"Edit\"") && messages[3].content.contains("\"output\":null"));
         assert_eq!(messages[4].content, "Pronto.");
         assert_eq!(world.events.chat_events().iter().filter(|e| **e == ChatEvent::Step).count(), 3);
+        let started = world.events.chat_events().iter().filter(|e| matches!(e, ChatEvent::ToolStart { .. })).count();
+        assert_eq!(started, 2, "cada chamada aparece ao começar, antes do resultado");
     }
 
     #[tokio::test]

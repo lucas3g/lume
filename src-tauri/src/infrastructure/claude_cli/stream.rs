@@ -136,7 +136,8 @@ fn parse_task(v: &Value) -> Option<TurnEvent> {
     let parent = v["tool_use_id"].as_str()?.to_owned();
     let text = |key: &str| v[key].as_str().unwrap_or_default().to_owned();
     let step = match v["subtype"].as_str()? {
-        // Tarefas de outros tipos (ex.: comandos em segundo plano) não são subagentes.
+        // Tarefas de outros tipos (ex.: comandos do terminal) não são subagentes, mas já podem ir para segundo plano.
+        "task_started" if !v["task_type"].as_str().is_some_and(|t| t.contains("agent")) => return Some(TurnEvent::ToolTask(parent)),
         "task_started" if v["task_type"].as_str().is_some_and(|t| t.contains("agent")) => SubagentStep::Started {
             description: text("description"),
             agent_type: text("subagent_type"),
@@ -346,7 +347,7 @@ mod tests {
         assert_eq!(parse_line(progress), [sub(SubagentStep::Progress { description: "Reading a.txt".into() })]);
         assert_eq!(parse_line(done), [sub(SubagentStep::Finished { status: "completed".into(), summary: "hello".into() })]);
         let shell = r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"t8","task_type":"local_bash"}"#;
-        assert!(parse_line(shell).is_empty(), "comandos em segundo plano não são subagentes");
+        assert_eq!(parse_line(shell), [TurnEvent::ToolTask("t8".into())], "comandos não são subagentes, mas podem ir para segundo plano");
         assert!(parse_line(r#"{"type":"system","subtype":"task_updated","task_id":"a1"}"#).is_empty());
     }
 

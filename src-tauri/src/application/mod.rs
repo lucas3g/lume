@@ -79,6 +79,10 @@ pub enum ChatEvent {
     /// Passo de um subagente, para acompanhar o que ele faz; `parent` é a chamada que o criou.
     AgentStep { parent: String, step: SubagentStep },
     Tool { name: String },
+    /// Uma ferramenta começou a rodar (argumentos completos); vira mensagem gravada quando termina.
+    ToolStart { id: String, name: String, input: String },
+    /// A ferramenta em execução virou tarefa e já pode ir para segundo plano.
+    ToolTask { id: String },
     /// Algo foi gravado na conversa (trecho de texto ou uso de ferramenta): recarregue as mensagens.
     Step,
     /// Uma mensagem enviada durante o turno foi lida pelo agente e gravada na conversa.
@@ -104,6 +108,8 @@ pub struct TurnControl {
     pub injections: mpsc::UnboundedReceiver<(Injection, oneshot::Sender<bool>)>,
     /// O que gravar na conversa quando o agente ler cada mensagem: id → (texto, registro dos anexos).
     pub pending_users: PendingUsers,
+    /// Chamadas de ferramenta (Bash, subagente) que o usuário mandou para segundo plano.
+    pub backgrounds: mpsc::UnboundedReceiver<String>,
 }
 
 /// Mensagens entregues durante o turno e ainda não lidas pelo agente.
@@ -114,9 +120,10 @@ impl TurnControl {
         let cancel = Cancel::default();
         let (answer, decisions) = mpsc::unbounded_channel();
         let (inject, injections) = mpsc::unbounded_channel();
+        let (background, backgrounds) = mpsc::unbounded_channel();
         let pending_users = PendingUsers::default();
-        let handle = TurnHandle { cancel: cancel.clone(), answer: answer.clone(), inject, pending_users: pending_users.clone() };
-        (TurnControl { cancel, decisions, answer, injections, pending_users }, handle)
+        let handle = TurnHandle { cancel: cancel.clone(), answer: answer.clone(), inject, pending_users: pending_users.clone(), background };
+        (TurnControl { cancel, decisions, answer, injections, pending_users, backgrounds }, handle)
     }
 }
 
@@ -126,6 +133,7 @@ pub struct TurnHandle {
     answer: mpsc::UnboundedSender<PermissionDecision>,
     inject: mpsc::UnboundedSender<(Injection, oneshot::Sender<bool>)>,
     pending_users: PendingUsers,
+    background: mpsc::UnboundedSender<String>,
 }
 
 /// Turnos em andamento, por conversa, para cancelar e responder autorizações.
@@ -161,6 +169,13 @@ impl RunningTurns {
     pub fn decide(&self, conversation_id: &str, decision: PermissionDecision) {
         if let Some(turn) = self.map().get(conversation_id) {
             let _ = turn.answer.send(decision);
+        }
+    }
+
+    /// Manda para segundo plano a ferramenta em execução (o turno segue sem esperá-la).
+    pub fn background(&self, conversation_id: &str, tool_id: &str) {
+        if let Some(turn) = self.map().get(conversation_id) {
+            let _ = turn.background.send(tool_id.to_owned());
         }
     }
 

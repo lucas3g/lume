@@ -53,6 +53,10 @@ export function parseToolUse(content: string): ToolUse | null {
 }
 
 export function summarize(name: string, input: Record<string, unknown>): ToolSummary {
+  // A descrição que o agente dá ao comando (ex.: "Compilar o app") diz mais que o comando em si.
+  if (typeof input.description === "string" && input.description.trim() && !isAgentTool(name)) {
+    return { label: input.description.trim(), target: "" };
+  }
   const field = TARGET_FIELDS.find((f) => typeof input[f] === "string" && input[f]);
   const target = field ? String(input[field]) : "";
   const connector = name.match(/^mcp__(.+?)__(.+)$/);
@@ -76,4 +80,123 @@ export function parseInput(json: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/** Ferramenta que ainda está rodando no turno, antes de virar mensagem gravada. */
+export interface RunningTool {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  /** Quando começou (ms). */
+  startedAt: number;
+  /** Já virou tarefa no CLI e pode ir para segundo plano. */
+  task: boolean;
+  /** O pedido de segundo plano foi enviado. */
+  backgrounded: boolean;
+}
+
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface Todo {
+  text: string;
+  status: TodoStatus;
+}
+
+/** Ferramentas que mantêm a lista de tarefas do agente. */
+const TODO_TOOLS = new Set(["TodoWrite", "TaskCreate", "TaskUpdate"]);
+
+export function isTodoTool(name: string): boolean {
+  return TODO_TOOLS.has(name);
+}
+
+function todoStatus(value: unknown): TodoStatus {
+  return value === "in_progress" || value === "completed" ? value : "pending";
+}
+
+/**
+ * Lista de tarefas depois de uma sequência de chamadas: `TodoWrite` manda a lista inteira;
+ * `TaskCreate`/`TaskUpdate` criam e mudam uma tarefa por vez (o id vem no resultado da criação).
+ */
+export function todosAfter(tools: ToolUse[]): Todo[] {
+  let list: { id: string; todo: Todo }[] = [];
+  let created = 0;
+  for (const tool of tools) {
+    const input = tool.input;
+    if (tool.name === "TodoWrite" && Array.isArray(input.todos)) {
+      list = input.todos.map((t: Record<string, unknown>, i: number) => ({
+        id: String(i),
+        todo: { text: String(t?.content ?? ""), status: todoStatus(t?.status) },
+      }));
+    } else if (tool.name === "TaskCreate") {
+      created += 1;
+      const id = tool.output?.match(/Task #(\S+?) created/)?.[1] ?? String(created);
+      list.push({ id, todo: { text: String(input.subject ?? ""), status: "pending" } });
+    } else if (tool.name === "TaskUpdate") {
+      const entry = list.find((e) => e.id === String(input.taskId));
+      if (!entry) continue;
+      if (input.status === "deleted") list = list.filter((e) => e !== entry);
+      else {
+        if (input.status !== undefined) entry.todo.status = todoStatus(input.status);
+        if (typeof input.subject === "string") entry.todo.text = input.subject;
+      }
+    }
+  }
+  return list.map((e) => e.todo).filter((t) => t.text);
+}
+
+/** Uma ação dentro de um grupo: gravada (`message`) ou ainda rodando (`running`). */
+export interface ToolItem {
+  key: string;
+  tool: ToolUse;
+  running: RunningTool | null;
+}
+
+export type ThreadBlock<M> =
+  | { kind: "message"; key: string; message: M }
+  | { kind: "tools"; key: string; items: ToolItem[] }
+  | { kind: "todos"; key: string; todos: Todo[] };
+
+/**
+ * Monta a conversa em blocos: ferramentas seguidas viram um grupo; a lista de tarefas aparece
+ * uma vez, como cartão, onde foi atualizada pela última vez; as que ainda rodam entram no fim.
+ */
+export function groupThread<M extends { id: number; role: string; content: string }>(
+  messages: M[],
+  running: RunningTool[],
+): ThreadBlock<M>[] {
+  type Entry = { message: M; tool: ToolUse | null } | { running: RunningTool; tool: ToolUse };
+  const entries: Entry[] = messages.map((message) => ({ message, tool: message.role === "tool" ? parseToolUse(message.content) : null }));
+  const recorded = new Set(entries.map((e) => e.tool?.id).filter(Boolean));
+  for (const r of running) {
+    if (!recorded.has(r.id)) entries.push({ running: r, tool: { id: r.id, name: r.name, input: r.input, output: null, is_error: false } });
+  }
+
+  const todoTools = entries.flatMap((e) => (e.tool && isTodoTool(e.tool.name) ? [e.tool] : []));
+  const lastTodo = todoTools.at(-1);
+  const blocks: ThreadBlock<M>[] = [];
+  let group: ToolItem[] | null = null;
+  for (const entry of entries) {
+    const tool = entry.tool;
+    if (!tool) {
+      group = null;
+      if ("message" in entry) blocks.push({ kind: "message", key: `m${entry.message.id}`, message: entry.message });
+      continue;
+    }
+    const key = tool.id ?? ("message" in entry ? `m${entry.message.id}` : "");
+    if (isTodoTool(tool.name)) {
+      if (tool !== lastTodo) continue;
+      const todos = todosAfter(todoTools);
+      if (todos.length) {
+        group = null;
+        blocks.push({ kind: "todos", key: `todos-${key}`, todos });
+      }
+      continue;
+    }
+    if (!group) {
+      group = [];
+      blocks.push({ kind: "tools", key: `g-${key}`, items: group });
+    }
+    group.push({ key, tool, running: "running" in entry ? entry.running : null });
+  }
+  return blocks;
 }

@@ -126,6 +126,8 @@ pub enum TurnEvent {
         step: SubagentStep,
     },
     Tool(String),
+    /// A chamada de ferramenta virou uma tarefa (ex.: comando do terminal) que pode ir para segundo plano.
+    ToolTask(String),
     /// Chamada de ferramenta completa; `input` é o JSON dos argumentos.
     ToolCall {
         id: String,

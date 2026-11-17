@@ -309,6 +309,12 @@ pub fn decide_permission(
     Ok(())
 }
 
+/// Manda para segundo plano um comando (ou subagente) em execução no turno da conversa.
+#[tauri::command]
+pub fn background_tool(app: App<'_>, conversation_id: String, tool_id: String) {
+    app.running.background(&conversation_id, &tool_id);
+}
+
 #[tauri::command]
 pub fn cancel_message(app: App<'_>, conversation_id: String) {
     app.running.cancel(&conversation_id);

@@ -151,6 +151,15 @@ fn permission_response(decision: &PermissionDecision, input: &str) -> Value {
     })
 }
 
+/// Pedido de controle que manda para segundo plano a tarefa iniciada por uma chamada de ferramenta.
+fn background_request(tool_id: &str) -> Value {
+    json!({
+        "type": "control_request",
+        "request_id": format!("background-{tool_id}"),
+        "request": { "subtype": "background_tasks", "tool_use_id": tool_id }
+    })
+}
+
 #[async_trait]
 impl ChatEngine for ClaudeCliEngine {
     async fn run_turn(
@@ -204,6 +213,14 @@ impl ChatEngine for ClaudeCliEngine {
                 Some(decision) = control.decisions.recv() => {
                     if let Some(input) = pending.remove(&decision.request_id) {
                         write_line(&mut stdin, permission_response(&decision, &input)).await;
+                    }
+                }
+                Some(tool_id) = control.backgrounds.recv() => {
+                    // Como o Ctrl+B do terminal, só para esta chamada: ela devolve na hora e o
+                    // turno segue; o processo fica vivo até a tarefa avisar que terminou.
+                    if stdin.is_some() {
+                        write_line(&mut stdin, background_request(&tool_id)).await;
+                        background.insert(tool_id);
                     }
                 }
                 Some((injection, ack)) = control.injections.recv() => {
@@ -382,6 +399,36 @@ mod tests {
         assert_eq!(read, ["11111111-1111-4111-8111-111111111111"], "só o eco da mensagem mandada no meio do turno");
         let TurnEnd::Done { text, .. } = end else { panic!("turno falhou: {end:?}") };
         assert!(text.contains("BANANA"), "leu a mensagem: {text}");
+    }
+
+    #[tokio::test]
+    #[ignore = "consome uso da conta real"]
+    async fn real_cli_moves_a_running_command_to_the_background() {
+        let mut req = request("Use a ferramenta Bash (sem run_in_background) para rodar: sleep 12; echo pronto. Quando o comando terminar, responda só com a palavra FIM.", None);
+        req.tools = "Bash".into();
+        req.allowed_tools = vec!["Bash".into()];
+        let (mut control, _handle) = TurnControl::new();
+        let (background, backgrounds) = tokio::sync::mpsc::unbounded_channel();
+        control.backgrounds = backgrounds;
+        let started = std::time::Instant::now();
+        let mut results = vec![];
+        let mut sent = false;
+        let end = engine()
+            .run_turn(&req, &mut control, &mut |e| match e {
+                // Só o primeiro comando: o modelo pode rodar outros para esperar por ele.
+                TurnEvent::ToolTask(id) if !sent => {
+                    sent = true;
+                    background.send(id.clone()).unwrap();
+                }
+                TurnEvent::ToolResult { output, .. } => results.push((started.elapsed().as_secs(), output.clone())),
+                _ => {}
+            })
+            .await;
+        eprintln!("resultados: {results:?}");
+        let (secs, output) = results.first().expect("o Bash devolveu um resultado");
+        assert!(*secs < 10 && output.contains("background"), "o resultado veio antes do fim do sleep ({secs} s): {output}");
+        let TurnEnd::Done { text, .. } = end else { panic!("turno falhou: {end:?}") };
+        assert!(text.contains("FIM"), "esperou o comando terminar: {text}");
     }
 
     #[tokio::test]

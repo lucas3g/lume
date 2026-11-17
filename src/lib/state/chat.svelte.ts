@@ -3,6 +3,7 @@
 import { api, errorMessage } from "../api";
 import { DEFAULT_MODEL, type ChatEvent, type Conversation, type Message, type PastedImage } from "../types";
 import { loadProjects } from "./projects.svelte";
+import { parseInput, parseToolUse, type RunningTool } from "../tools";
 import { applySubagentStep, forgetSubagents, loadSubagents, settleSubagents } from "./subagents.svelte";
 
 /** Resposta em andamento de uma conversa. */
@@ -13,6 +14,10 @@ export interface Turn {
   context: string[];
   /** A resposta terminou; só subagentes em segundo plano seguem trabalhando, e dá para conversar. */
   waiting: boolean;
+  /** Ferramentas rodando agora, antes de virarem mensagens gravadas. */
+  running: RunningTool[];
+  /** Quando começou a sequência de ferramentas em curso (ms); texto do agente encerra a sequência. */
+  toolsSince: number | null;
 }
 
 /** Como terminou o último turno, quando não foi com uma resposta. */
@@ -213,7 +218,7 @@ export async function send(text: string, options: SendOptions = {}): Promise<voi
 /** Inicia o turno de uma conversa que já existe (aberta ou não). */
 async function deliver(id: string, text: string, attachments: string[], images: PastedImage[]): Promise<void> {
   chat.outcomes[id] = null;
-  chat.turns[id] = { text: "", status: null, account: null, context: [], waiting: false };
+  chat.turns[id] = { text: "", status: null, account: null, context: [], waiting: false, running: [], toolsSince: null };
   if (chat.activeId === id) {
     const sent = localMessage("user", text || "Veja as imagens anexadas.");
     const names = [...attachments.map(fileName), ...images.map((i) => i.name)];
@@ -306,6 +311,15 @@ export async function decide(allow: boolean, always: boolean, extras: DecisionEx
   }
 }
 
+/** Manda para segundo plano um comando em execução: ele segue rodando e o agente continua. */
+export function backgroundTool(toolId: string): void {
+  const id = chat.activeId;
+  const tool = id ? chat.turns[id]?.running.find((r) => r.id === toolId) : undefined;
+  if (!id || !tool || tool.backgrounded) return;
+  tool.backgrounded = true;
+  void api.backgroundTool(id, toolId).catch(() => tool && (tool.backgrounded = false));
+}
+
 export function cancel(): void {
   if (chat.activeId) void api.cancelMessage(chat.activeId);
 }
@@ -334,10 +348,10 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 /** Eventos que indicam um turno em andamento, mesmo que iniciado por outra janela. */
-const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "agent_step", "tool", "step", "permission", "waiting"]);
+const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "agent_step", "tool", "tool_start", "tool_task", "step", "permission", "waiting"]);
 
 /** Eventos do agente principal: um deles depois da espera significa que ele voltou a trabalhar. */
-const MAIN_ACTIVITY = new Set<ChatEvent["kind"]>(["delta", "thinking", "tool", "permission", "injected"]);
+const MAIN_ACTIVITY = new Set<ChatEvent["kind"]>(["delta", "thinking", "tool", "tool_start", "permission", "injected"]);
 
 const SUBAGENT_PREFIX = "Subagente: ";
 const SUBAGENT_MAX = 90;
@@ -357,6 +371,11 @@ function takeRecorded(id: string): void {
   void api.listMessages(id).then((messages) => {
     // A resposta de uma conversa que o usuário já deixou não substitui a aberta.
     if (chat.activeId === id) chat.messages = messages;
+    const live = chat.turns[id];
+    if (live?.running.length) {
+      const recorded = new Set(messages.filter((m) => m.role === "tool").map((m) => parseToolUse(m.content)?.id));
+      live.running = live.running.filter((r) => !recorded.has(r.id));
+    }
   });
 }
 
@@ -364,7 +383,7 @@ function takeRecorded(id: string): void {
 export function handleChatEvent(event: ChatEvent): void {
   const id = event.conversation_id;
   if (!chat.turns[id] && TURN_ACTIVITY.has(event.kind)) {
-    chat.turns[id] = { text: "", status: null, account: null, context: [], waiting: false };
+    chat.turns[id] = { text: "", status: null, account: null, context: [], waiting: false, running: [], toolsSince: null };
   }
   const turn = chat.turns[id];
   if (turn?.waiting && MAIN_ACTIVITY.has(event.kind)) turn.waiting = false;
@@ -384,6 +403,7 @@ export function handleChatEvent(event: ChatEvent): void {
       if (turn) {
         turn.text += event.text;
         turn.status = null;
+        if (!turn.running.length) turn.toolsSince = null;
       }
       break;
     case "thinking":
@@ -406,6 +426,18 @@ export function handleChatEvent(event: ChatEvent): void {
     case "tool":
       if (turn) turn.status = TOOL_LABELS[event.name] ?? (event.name.startsWith("mcp__") ? "Usando um conector" : `Usando ${event.name}`);
       break;
+    case "tool_start":
+      if (turn) {
+        const now = Date.now();
+        turn.toolsSince ??= now;
+        turn.running.push({ id: event.id, name: event.name, input: parseInput(event.input), startedAt: now, task: false, backgrounded: false });
+      }
+      break;
+    case "tool_task": {
+      const tool = turn?.running.find((r) => r.id === event.id);
+      if (tool) tool.task = true;
+      break;
+    }
     case "step":
       // Um trecho de texto ou uso de ferramenta foi gravado: passa a vir da lista de mensagens.
       takeRecorded(id);

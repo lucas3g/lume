@@ -75,6 +75,7 @@ pub fn run() {
             commands::delete_task,
             commands::run_task,
             commands::cancel_message,
+            commands::background_tool,
             commands::start_folder_session,
             commands::start_isolated_session,
             commands::decide_permission,

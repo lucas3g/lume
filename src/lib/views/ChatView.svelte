@@ -15,17 +15,19 @@
   import QuestionCard from "../components/QuestionCard.svelte";
   import CodeView from "../components/CodeView.svelte";
   import SubagentPanel from "../components/SubagentPanel.svelte";
+  import TodoCard from "../components/TodoCard.svelte";
+  import ToolGroup from "../components/ToolGroup.svelte";
   import ToolRow from "../components/ToolRow.svelte";
   import { describeFile, folderName, formatTime, formatWhen, fullDate, isoDate, renderMarkdown } from "../format";
   import { activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
   import { api } from "../api";
-  import { activeConversation, branchAt, cancel, cancelEdit, chat, decide, enqueue, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
+  import { activeConversation, backgroundTool, branchAt, cancel, cancelEdit, chat, decide, enqueue, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
   import { NEW_CONVERSATION, readDraft, saveDraft } from "../state/drafts";
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
   import { closeSubagent, loadSubagents, openSubagent, runOf, runsOf, statusLabel, subagents } from "../state/subagents.svelte";
-  import { isAgentTool, parseToolUse, type ToolUse } from "../tools";
+  import { groupThread, isAgentTool, parseToolUse, type ToolUse } from "../tools";
   import { pastedImageFiles, readPastedImage } from "../paste";
   import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
   import { onMount } from "svelte";
@@ -104,6 +106,14 @@
 
   const conversation = $derived(activeConversation());
   const turn = $derived(chat.activeId ? chat.turns[chat.activeId] : undefined);
+  /** A conversa em blocos: mensagens, grupos de ações (com as que ainda rodam) e a lista de tarefas. */
+  const thread = $derived(groupThread(chat.messages, turn?.running ?? []));
+  /** O agente ainda está na última sequência de ações: nada escrito depois dela. */
+  const liveGroupKey = $derived.by(() => {
+    const last = thread.at(-1);
+    if (!turn || turn.waiting || last?.kind !== "tools") return null;
+    return turn.running.length || !turn.text ? last.key : null;
+  });
   const outcome = $derived(chat.activeId ? chat.outcomes[chat.activeId] : null);
   const permission = $derived(chat.activeId ? chat.permissions[chat.activeId] : undefined);
   const isAgent = $derived(conversation?.kind === "agent");
@@ -473,7 +483,24 @@
           </div>
         {/if}
 
-        {#each chat.messages as message (message.id)}
+        {#each thread as block (block.key)}
+          {#if block.kind === "todos"}
+            <TodoCard todos={block.todos} />
+          {:else if block.kind === "tools"}
+            {@const live = block.key === liveGroupKey}
+            <ToolGroup items={block.items} {live} since={live ? turn?.toolsSince : null}>
+              {#snippet row(item)}
+                {@const tool = item.tool}
+                {#if isAgentTool(tool.name) && tool.id}
+                  {@const id = tool.id}
+                  <ToolRow {tool} flat running={runOf(chat.activeId, id)?.status === "running" || item.running !== null} note={agentNote(tool)} onopen={() => showSubagent(id)} />
+                {:else}
+                  <ToolRow {tool} flat live={item.running} onbackground={() => backgroundTool(item.key)} />
+                {/if}
+              {/snippet}
+            </ToolGroup>
+          {:else}
+          {@const message = block.message}
           {#if message.role === "user"}
             {@const info = parseMeta(message)}
             {@const images = imagesOf(message, info)}
@@ -507,14 +534,6 @@
                 </div>
               {/if}
             </div>
-          {:else if message.role === "tool"}
-            {@const tool = parseToolUse(message.content)}
-            {#if tool && isAgentTool(tool.name) && tool.id}
-              {@const id = tool.id}
-              <ToolRow {tool} running={runOf(chat.activeId, id)?.status === "running"} note={agentNote(tool)} onopen={() => showSubagent(id)} />
-            {:else if tool}
-              <ToolRow {tool} />
-            {/if}
           {:else if message.role === "notice"}
             <div class="notice" role="status"><span></span>{message.content}<span></span></div>
           {:else}
@@ -545,6 +564,7 @@
               {/each}
             </div>
           {/if}
+          {/if}
         {/each}
 
         {#if turn}
@@ -555,7 +575,8 @@
             {#if turn.text}
               <div class="markdown">{@html renderMarkdown(turn.text)}</div>
             {/if}
-            {#if !turn.waiting && (turn.status || !turn.text)}
+            <!-- Com a sequência de ações à vista, ela já mostra o trabalho; aqui só o que pede atenção. -->
+            {#if !turn.waiting && (turn.status || !turn.text) && (!liveGroupKey || chat.permissions[chat.activeId ?? ""])}
               <div class="working"><span class="pulse" aria-hidden="true"></span>{turn.status ?? "Respondendo"}…</div>
             {/if}
           </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { highlight } from "../highlight";
   import { editDiff } from "../tools";
 
   interface Props {
@@ -15,7 +16,7 @@
 {#if diff}
   <pre class="diff">{#each lines(diff.before) as line}{#if diff.before}<span class="del">- {line}</span>{/if}{/each}{#each lines(diff.after) as line}<span class="add">+ {line}</span>{/each}</pre>
 {:else if command}
-  <pre>{command}</pre>
+  <pre class="command hljs"><span class="prompt">$ </span>{@html highlight(command, "bash")}</pre>
 {:else if Object.keys(input).length}
   <pre>{JSON.stringify(input, null, 2)}</pre>
 {/if}
@@ -43,4 +44,6 @@
   .del { background: #3a2020; color: #f0a39a; }
   .add { background: var(--ok-bg); color: #8fd9ae; }
   .output { color: var(--text-2); }
+  .command { font-size: 13px; }
+  .prompt { color: var(--muted); user-select: none; }
 </style>

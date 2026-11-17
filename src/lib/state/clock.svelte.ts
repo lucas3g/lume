@@ -26,3 +26,24 @@ if (typeof window !== "undefined") {
   window.addEventListener("focus", sync);
   document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && sync());
 }
+
+/**
+ * Relógio por segundo, para tempos que correm na tela (ex.: um comando em execução).
+ * Só bate enquanto alguém o usa: cada `useLiveClock` liga e devolve como desligar.
+ */
+export const liveClock = $state({ now: Date.now() });
+
+let users = 0;
+let ticker: ReturnType<typeof setInterval> | undefined;
+
+export function useLiveClock(): () => void {
+  users += 1;
+  if (users === 1) {
+    liveClock.now = Date.now();
+    ticker = setInterval(() => (liveClock.now = Date.now()), 1000);
+  }
+  return () => {
+    users -= 1;
+    if (users === 0) clearInterval(ticker);
+  };
+}

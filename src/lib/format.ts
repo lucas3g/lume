@@ -26,6 +26,17 @@ export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/** Tempo decorrido: "8 s", "1 min 5 s", "1 h 2 min". */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h) return m ? `${h} h ${m} min` : `${h} h`;
+  if (m) return s ? `${m} min ${s} s` : `${m} min`;
+  return `${s} s`;
+}
+
 export function formatTime(seconds: number): string {
   return timeFormat.format(new Date(seconds * 1000));
 }
