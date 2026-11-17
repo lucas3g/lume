@@ -135,7 +135,7 @@ pub fn toml_string(s: &str) -> String {
     out
 }
 
-fn toml_array(items: &[String]) -> String {
+pub fn toml_array(items: &[String]) -> String {
     format!("[{}]", items.iter().map(|i| toml_string(i)).collect::<Vec<_>>().join(", "))
 }
 
@@ -149,21 +149,29 @@ fn toml_table(map: &BTreeMap<String, String>) -> String {
 #[derive(Debug, Default, PartialEq)]
 pub struct CodexServers {
     pub args: Vec<String>,
-    /// Segredos passados pelo ambiente do Codex, não pela linha de comando (que qualquer
-    /// processo do computador lê com `ps`).
+    /// Valores dos conectores passados pelo ambiente do Codex, não pela linha de comando (que
+    /// qualquer processo do computador lê com `ps`).
     pub env: Vec<(String, String)>,
+    /// Nomes dessas variáveis, a tirar do ambiente dos comandos que o modelo roda: o Codex só
+    /// esconde `*KEY*`/`*SECRET*`/`*TOKEN*` quando o usuário liga isso, e por padrão não liga.
+    pub shell_exclude: Vec<String>,
 }
 
-/// Nome de variável que o Codex já esconde dos comandos que o modelo roda (`*KEY*`, `*SECRET*`,
-/// `*TOKEN*`): só esses segredos vão pelo ambiente sem vazar para o shell do agente.
-fn hidden_from_shell(name: &str) -> bool {
-    let upper = name.to_uppercase();
-    ["KEY", "SECRET", "TOKEN"].iter().any(|w| upper.contains(w))
+/// Variáveis do próprio sistema: mudá-las no processo do Codex mudaria o Codex, então vão na linha.
+const SYSTEM_VARS: [&str; 9] = ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "TERM", "CODEX_HOME", "PWD"];
+
+/// Nome que pode ir pelo ambiente e numa lista de exclusão sem escape.
+fn forwardable(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !SYSTEM_VARS.contains(&name)
+        && !name.starts_with("LC_")
 }
 
-/// Sobrescritas `--config` do Codex que definem os servidores do turno. Os segredos vão pelo
-/// ambiente: cabeçalhos HTTP por `env_http_headers` (variáveis `LUME_MCP_TOKEN_n`) e variáveis
-/// do servidor local com cara de segredo por `env_vars` (o Codex as repassa com o mesmo nome).
+/// Sobrescritas `--config` do Codex que definem os servidores do turno. Os valores (tokens,
+/// senhas) vão pelo ambiente: cabeçalhos HTTP por `env_http_headers` (variáveis `LUME_MCP_TOKEN_n`)
+/// e variáveis do servidor local por `env_vars` (o Codex as repassa com o mesmo nome).
 pub fn codex_servers(servers: &[McpServer]) -> CodexServers {
     let mut out = CodexServers::default();
     for s in servers {
@@ -178,9 +186,10 @@ pub fn codex_servers(servers: &[McpServer]) -> CodexServers {
                 for (name, value) in env {
                     // Mesmo nome com outro valor em outro servidor: o ambiente é um só, então vai na linha.
                     let taken = out.env.iter().any(|(n, v)| n == name && v != value);
-                    if hidden_from_shell(name) && !taken {
+                    if forwardable(name) && !taken {
                         if !out.env.iter().any(|(n, _)| n == name) {
                             out.env.push((name.clone(), value.clone()));
+                            out.shell_exclude.push(name.clone());
                         }
                         forwarded.push(name.clone());
                     } else {
@@ -201,6 +210,7 @@ pub fn codex_servers(servers: &[McpServer]) -> CodexServers {
                     for (header, value) in headers {
                         let var = format!("LUME_MCP_TOKEN_{}", out.env.len() + 1);
                         out.env.push((var.clone(), value.clone()));
+                        out.shell_exclude.push(var.clone());
                         by_env.insert(header.clone(), var);
                     }
                     out.args.push(format!("{base}.env_http_headers={}", toml_table(&by_env)));
@@ -351,7 +361,7 @@ mod tests {
     fn codex_servers_are_valid_toml_and_keep_secrets_off_the_command_line() {
         let servers = turn_servers(
             &[
-                connector("Arquivos", r#"{"command":"C:\\bin\\fs \"x\"","args":["a\nb"],"env":{"API_TOKEN":"t\"1","MODO":"rapido"}}"#, true),
+                connector("Arquivos", r#"{"command":"C:\\bin\\fs \"x\"","args":["a\nb"],"env":{"API_TOKEN":"t\"1","DB_PASSWORD":"senha","PATH":"/opt/bin"}}"#, true),
                 connector("Web", r#"{"url":"https://a.com/mcp","headers":{"Authorization":"Bearer segredo"}}"#, true),
             ],
             &[atlassian()],
@@ -361,12 +371,13 @@ mod tests {
         let c = codex_servers(&servers);
         assert_eq!(c.args[0], r#"mcp_servers.lume-arquivos.command="C:\\bin\\fs \"x\"""#);
         assert_eq!(c.args[1], r#"mcp_servers.lume-arquivos.args=["a\nb"]"#);
-        assert_eq!(c.args[2], r#"mcp_servers.lume-arquivos.env={ "MODO" = "rapido" }"#, "o que não é segredo vai na linha");
-        assert_eq!(c.args[3], r#"mcp_servers.lume-arquivos.env_vars=["API_TOKEN"]"#);
+        assert_eq!(c.args[2], r#"mcp_servers.lume-arquivos.env={ "PATH" = "/opt/bin" }"#, "variável do sistema vai na linha");
+        assert_eq!(c.args[3], r#"mcp_servers.lume-arquivos.env_vars=["API_TOKEN", "DB_PASSWORD"]"#);
         assert_eq!(c.args[4], r#"mcp_servers.lume-arquivos.default_tools_approval_mode="approve""#);
-        assert_eq!(c.args[6], r#"mcp_servers.lume-web.env_http_headers={ "Authorization" = "LUME_MCP_TOKEN_2" }"#);
-        assert_eq!(c.env, [("API_TOKEN".to_owned(), "t\"1".to_owned()), ("LUME_MCP_TOKEN_2".to_owned(), "Bearer segredo".to_owned())]);
-        assert!(!c.args.iter().any(|a| a.contains("segredo") || a.contains("t\\\"1")), "nenhum segredo nos argumentos");
+        assert_eq!(c.args[6], r#"mcp_servers.lume-web.env_http_headers={ "Authorization" = "LUME_MCP_TOKEN_3" }"#);
+        assert_eq!(c.env.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["API_TOKEN", "DB_PASSWORD", "LUME_MCP_TOKEN_3"]);
+        assert_eq!(c.shell_exclude, ["API_TOKEN", "DB_PASSWORD", "LUME_MCP_TOKEN_3"], "nenhum chega aos comandos do modelo");
+        assert!(!c.args.iter().any(|a| a.contains("segredo") || a.contains("senha") || a.contains("t\\\"1")), "nenhum segredo nos argumentos");
         assert!(c.args.contains(&r#"mcp_servers.lume-atlassian.default_tools_approval_mode="writes""#.to_owned()));
         // Cada valor é TOML válido.
         for line in &c.args {

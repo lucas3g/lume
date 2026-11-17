@@ -171,6 +171,8 @@ impl Container {
                 engine: engine.clone(),
                 accounts: store.clone(),
                 clock: clock.clone(),
+                settings: store.clone(),
+                account_connectors: Arc::new(ClaudeCliConnectors::new(cli.clone())),
                 chat_dir: chat_dir.to_string_lossy().into_owned(),
             },
             projects: ManageProjects {

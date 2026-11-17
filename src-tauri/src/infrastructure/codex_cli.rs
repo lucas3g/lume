@@ -12,7 +12,7 @@ use crate::application::{
 use crate::domain::{
     account::{Identity, Provider},
     chat::{RateInfo, TurnEnd, TurnEvent, TurnRequest},
-    mcp::{codex_servers, McpServer},
+    mcp::{codex_servers, toml_array, McpServer},
 };
 use super::cli_output::{failure_detail, run_login};
 use async_trait::async_trait;
@@ -233,8 +233,20 @@ fn sandbox(request: &TurnRequest) -> &'static str {
     }
 }
 
-/// Argumentos de `codex exec`; a mensagem vai pela entrada padrão.
-fn exec_args(request: &TurnRequest, images: &[PathBuf]) -> Vec<String> {
+/// Exclusões de ambiente que o usuário já tem no config.toml do perfil: o `--config` substitui a
+/// lista inteira, então as dele vão junto com as do Lume.
+fn user_shell_excludes(home: &Path) -> Vec<String> {
+    std::fs::read_to_string(home.join(CONFIG_FILE))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|config| config.get("shell_environment_policy")?.get("exclude")?.as_array().cloned())
+        .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+/// Argumentos de `codex exec`; a mensagem vai pela entrada padrão. `user_excludes` são as exclusões
+/// de ambiente que o usuário já configurou no Codex.
+fn exec_args(request: &TurnRequest, images: &[PathBuf], user_excludes: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
     if !images.is_empty() {
         let list: Vec<String> = images.iter().map(|p| p.to_string_lossy().into_owned()).collect();
@@ -250,9 +262,16 @@ fn exec_args(request: &TurnRequest, images: &[PathBuf]) -> Vec<String> {
         args.extend(["--config".to_owned(), format!("model_reasoning_effort=\"{}\"", request.effort)]);
     }
     // Conectores do Lume e pontes para os da conta claude.ai: valem só neste turno, sem mexer no config.toml.
-    // Os segredos deles vão pelo ambiente do processo (ver `run_turn`), não aqui.
-    for value in codex_servers(&request.mcp_servers).args {
+    // Os valores deles (tokens, senhas) vão pelo ambiente do processo (ver `run_turn`), não aqui,
+    // e saem do ambiente dos comandos que o modelo roda.
+    let servers = codex_servers(&request.mcp_servers);
+    for value in servers.args {
         args.extend(["--config".to_owned(), value]);
+    }
+    if !servers.shell_exclude.is_empty() {
+        let mut exclude: Vec<String> = user_excludes.to_vec();
+        exclude.extend(servers.shell_exclude.into_iter().filter(|n| !user_excludes.contains(n)));
+        args.extend(["--config".to_owned(), format!("shell_environment_policy.exclude={}", toml_array(&exclude))]);
     }
     if let Some(session) = &request.resume {
         args.extend(["resume".to_owned(), session.clone()]);
@@ -361,7 +380,7 @@ impl ChatEngine for CodexEngine {
         let prompt = Prompt::compose(request);
         let mut child = match command(&cli, request.config_dir.as_deref())
             .envs(codex_servers(&request.mcp_servers).env)
-            .args(exec_args(request, &prompt.images))
+            .args(exec_args(request, &prompt.images, &user_shell_excludes(&home_of(request.config_dir.as_deref()))))
             .current_dir(&request.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -592,9 +611,27 @@ mod tests {
             transport: McpTransport::Http { url: "https://mcp.atlassian.com/v1/mcp".into(), headers: Default::default() },
             approval: Approval::ReadOnly,
         }];
-        let args = exec_args(&request, &[]);
+        let args = exec_args(&request, &[], &[]);
         assert!(args.windows(2).any(|w| w == ["--config", r#"mcp_servers.lume-atlassian.url="https://mcp.atlassian.com/v1/mcp""#]));
         assert!(args.windows(2).any(|w| w == ["--config", r#"mcp_servers.lume-atlassian.default_tools_approval_mode="writes""#]));
+        assert!(!args.iter().any(|a| a.starts_with("shell_environment_policy")), "sem segredos, a política do usuário fica como está");
+
+        // Com segredo, ele sai do shell do modelo, somado às exclusões que o usuário já tinha.
+        request.mcp_servers = crate::domain::mcp::turn_servers(
+            &[crate::domain::extension::Connector { id: "1".into(), name: "Banco".into(), config: r#"{"command":"db","env":{"DB_PASSWORD":"x"}}"#.into(), enabled: true, status: None }],
+            &[],
+            &[],
+            "manual",
+        );
+        let args = exec_args(&request, &[], &["AWS_.*".into()]);
+        assert!(args.windows(2).any(|w| w == ["--config", r#"shell_environment_policy.exclude=["AWS_.*", "DB_PASSWORD"]"#]));
+        assert!(!args.iter().any(|a| a.contains("\"x\"")));
+
+        let home = std::env::temp_dir().join(format!("lume-codex-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(CONFIG_FILE), "model = \"x\"\n[shell_environment_policy]\nexclude = [\"AWS_.*\"]\n").unwrap();
+        assert_eq!(user_shell_excludes(&home), ["AWS_.*"]);
+        std::fs::remove_dir_all(&home).unwrap();
         assert_eq!(args.last().map(String::as_str), Some("-"));
     }
 
@@ -602,7 +639,7 @@ mod tests {
     fn exec_arguments_follow_the_conversation() {
         let mut request = sample_request(Provider::ChatGpt);
         request.cwd = "/tmp/pasta".into();
-        let args = exec_args(&request, &[]);
+        let args = exec_args(&request, &[], &[]);
         assert_eq!(args[..2], ["exec", "--json"]);
         assert!(args.windows(2).any(|w| w == ["--sandbox", "read-only"]), "conversa comum não altera arquivos");
         assert!(args.windows(2).any(|w| w == ["--cd", "/tmp/pasta"]));
@@ -610,13 +647,13 @@ mod tests {
         assert_eq!(args.last().map(String::as_str), Some("-"));
         assert!(!args.contains(&"resume".to_owned()) && !args.iter().any(|a| a == "--model"), "sem escolha, o modelo é o do Codex");
         request.model = "gpt-forte".into();
-        assert!(exec_args(&request, &[]).windows(2).any(|w| w == ["--model", "gpt-forte"]));
+        assert!(exec_args(&request, &[], &[]).windows(2).any(|w| w == ["--model", "gpt-forte"]));
         request.model.clear();
 
         request.tools = "default".into();
         request.effort = "max".into();
         request.resume = Some("0199-abc".into());
-        let args = exec_args(&request, &[PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")]);
+        let args = exec_args(&request, &[PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")], &[]);
         assert_eq!(args[1], "--image=/tmp/a.png,/tmp/b.png");
         assert!(args.windows(2).any(|w| w == ["--sandbox", "workspace-write"]));
         assert!(!args.iter().any(|a| a.starts_with("model_reasoning_effort")), "esforço fora da lista fica com o padrão do CLI");

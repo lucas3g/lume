@@ -2,12 +2,14 @@
 //! Não há acesso direto ao Jira no app: um turno curto do Claude Code roda a busca e devolve JSON.
 
 use super::{
-    ports::{AccountRepository, ChatEngine, Clock},
+    extensions::{known_servers, remember_servers},
+    ports::{AccountConnectors, AccountRepository, ChatEngine, Clock, Settings},
     AppError, AppResult, TurnControl,
 };
 use crate::domain::{
     account::{pick_next, Provider},
     chat::{TurnEnd, TurnRequest},
+    extension::{cli_server_key, server_deny_rule},
     jira::{issues_jql, issues_system_prompt, parse_issue_list, JiraIssueList},
 };
 use std::{sync::Arc, time::Duration};
@@ -42,15 +44,41 @@ pub const ATLASSIAN_WRITE_TOOLS: [&str; 16] = [
     "mcp__claude_ai_Atlassian__addGraphContext",
 ];
 
+/// Servidor do conector do Atlassian da conta, o único que a consulta usa.
+const ATLASSIAN_SERVER: &str = "claude.ai Atlassian";
+
 pub struct JiraIssues {
     pub engine: Arc<dyn ChatEngine>,
     pub accounts: Arc<dyn AccountRepository>,
     pub clock: Arc<dyn Clock>,
+    pub settings: Arc<dyn Settings>,
+    /// Para saber quais outros conectores bloquear quando ainda não houve verificação.
+    pub account_connectors: Arc<dyn AccountConnectors>,
     /// Pasta neutra em que o turno roda.
     pub chat_dir: String,
 }
 
 impl JiraIssues {
+    /// Conectores da conta além do Atlassian: os da última verificação ou, sem ela, uma agora.
+    async fn other_servers(&self, config_dir: Option<String>) -> Vec<String> {
+        let names = match known_servers(&*self.settings) {
+            Some(names) => names,
+            None => {
+                let source = self.account_connectors.clone();
+                let loaded = tokio::task::spawn_blocking(move || source.list(config_dir.as_deref())).await;
+                match loaded {
+                    Ok(Ok(list)) => {
+                        remember_servers(&*self.settings, &list);
+                        list.into_iter().map(|c| c.name).collect()
+                    }
+                    _ => vec![],
+                }
+            }
+        };
+        let atlassian = cli_server_key(ATLASSIAN_SERVER);
+        names.into_iter().filter(|n| cli_server_key(n) != atlassian).collect()
+    }
+
     /// Tasks em aberto ou do usuário; com `query`, a busca por texto ou chave em todo o Jira.
     /// Usa a conta que atende a próxima mensagem (a mesma da tela de Conectores); no limite ou sem
     /// login, tenta a seguinte.
@@ -59,6 +87,15 @@ impl JiraIssues {
         let (jql, fallback) = issues_jql(query);
         let mut tried: Vec<String> = Vec::new();
         let mut last = AppError("Nenhuma conta do Claude disponível para consultar o Jira.".into());
+        // O texto das tasks entra no turno: além das escritas do Atlassian, todos os outros
+        // conectores ficam bloqueados, mesmo que as configurações da conta os liberem.
+        let mut denied: Vec<String> = ATLASSIAN_WRITE_TOOLS.iter().map(|t| (*t).to_owned()).collect();
+        denied.extend(
+            self.other_servers(pick_next(&all, self.clock.now(), &[], false).and_then(|a| a.config_dir.clone()))
+                .await
+                .iter()
+                .map(|name| server_deny_rule(name)),
+        );
         while let Some(account) = pick_next(&all, self.clock.now(), &tried, false) {
             tried.push(account.id.clone());
             let request = TurnRequest {
@@ -75,7 +112,7 @@ impl JiraIssues {
                 permission_mode: "auto".into(),
                 interactive: false,
                 denied_skills: vec![],
-                denied_tools: ATLASSIAN_WRITE_TOOLS.iter().map(|t| (*t).to_owned()).collect(),
+                denied_tools: denied.clone(),
                 mcp_config: None,
                 allowed_tools: JIRA_READ_TOOLS.iter().map(|t| (*t).to_owned()).collect(),
                 read_dirs: vec![],
@@ -119,7 +156,14 @@ mod tests {
 
     fn service(engine: ScriptedEngine) -> JiraIssues {
         let world = World::with_accounts(vec![sample("a", 1)]);
-        JiraIssues { engine: Arc::new(engine), accounts: world.store.clone(), clock: Arc::new(FixedClock(0)), chat_dir: "/tmp".into() }
+        JiraIssues {
+            engine: Arc::new(engine),
+            accounts: world.store.clone(),
+            clock: Arc::new(FixedClock(0)),
+            settings: world.store.clone(),
+            account_connectors: Arc::new(FakeAccountConnectors::default()),
+            chat_dir: "/tmp".into(),
+        }
     }
 
     #[tokio::test]
@@ -128,6 +172,9 @@ mod tests {
             assert!(req.tools.is_empty() && !req.interactive);
             assert_eq!(req.allowed_tools, JIRA_READ_TOOLS);
             assert!(req.denied_tools.iter().any(|t| t.ends_with("__editJiraIssue")) && req.denied_tools.iter().any(|t| t.ends_with("__executeWrite")));
+            // Os outros conectores da conta ficam bloqueados; o Atlassian, não.
+            assert!(req.denied_tools.contains(&"mcp__claude_ai_Asana".to_owned()) && req.denied_tools.contains(&"mcp__rea".to_owned()));
+            assert!(!req.denied_tools.contains(&"mcp__claude_ai_Atlassian".to_owned()));
             assert!(req.extra_system.as_deref().unwrap().contains("text ~ \"frete\""));
             let text = r#"{"site":"https://loja.atlassian.net","issues":[{"key":"LOJA-1","summary":"Frete","status":"A fazer","category":"new"}]}"#;
             (vec![], TurnEnd::Done { session_id: None, text: text.into() })
@@ -144,7 +191,14 @@ mod tests {
             1 => (vec![], TurnEnd::Limited { resets_at: None }),
             _ => (vec![], TurnEnd::Done { session_id: None, text: r#"{"i":[["LOJA-1","Frete","A fazer",0]]}"#.into() }),
         });
-        let uc = JiraIssues { engine: Arc::new(engine), accounts: world.store.clone(), clock: Arc::new(FixedClock(0)), chat_dir: "/tmp".into() };
+        let uc = JiraIssues {
+            engine: Arc::new(engine),
+            accounts: world.store.clone(),
+            clock: Arc::new(FixedClock(0)),
+            settings: world.store.clone(),
+            account_connectors: Arc::new(FakeAccountConnectors::default()),
+            chat_dir: "/tmp".into(),
+        };
         let list = uc.list(None).await.unwrap();
         assert_eq!((list.account_id.as_deref(), list.issues.len()), (Some("b"), 1));
     }

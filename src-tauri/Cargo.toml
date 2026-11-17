@@ -43,9 +43,7 @@ tauri-plugin-process = "2"
 ureq = { version = "3.5.2", features = ["json"] }
 arboard = "3.7.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
-
-[dev-dependencies]
-# Confere, nos testes, que as sobrescritas do Codex são TOML válido.
+# Lê o config.toml do Codex (exclusões de ambiente do usuário) e confere, nos testes, as sobrescritas.
 toml = "1.2"
 
 

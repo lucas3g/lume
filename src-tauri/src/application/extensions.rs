@@ -22,6 +22,23 @@ use std::sync::Arc;
 /// Configuração (texto JSON) com as pontes: conectores da conta claude.ai usados também no ChatGPT e no Gemini.
 pub const BRIDGES_KEY: &str = "connector_bridges";
 
+/// Configuração (texto JSON) com os nomes dos conectores que o Claude Code carregou na última
+/// verificação: turnos que só podem usar um deles bloqueiam os outros pelo nome.
+pub const KNOWN_SERVERS_KEY: &str = "known_servers";
+
+/// Guarda os nomes dos conectores que o Claude Code carrega.
+pub fn remember_servers(settings: &dyn Settings, list: &[AccountConnector]) {
+    let names: Vec<&str> = list.iter().map(|c| c.name.as_str()).collect();
+    if let Ok(text) = serde_json::to_string(&names) {
+        let _ = settings.set_text(KNOWN_SERVERS_KEY, &text);
+    }
+}
+
+/// Nomes guardados por `remember_servers`; `None` quando nunca houve verificação.
+pub fn known_servers(settings: &dyn Settings) -> Option<Vec<String>> {
+    serde_json::from_str(&settings.text(KNOWN_SERVERS_KEY)?).ok()
+}
+
 /// Pontes gravadas; texto ilegível vale como nenhuma.
 pub fn load_bridges(settings: &dyn Settings) -> Vec<Bridge> {
     settings.text(BRIDGES_KEY).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
@@ -319,7 +336,9 @@ impl ManageConnectors {
     /// Conectores que o Claude Code carrega para a conta que atende a próxima mensagem.
     pub fn account_list(&self) -> AppResult<Vec<AccountConnector>> {
         let config_dir = self.active_config_dir()?;
-        let mut list = without_shadowed_plugins(self.account_connectors.list(config_dir.as_deref())?);
+        let loaded = self.account_connectors.list(config_dir.as_deref())?;
+        remember_servers(&*self.settings, &loaded);
+        let mut list = without_shadowed_plugins(loaded);
         for c in &mut list {
             c.enabled = !self.settings.flag(&format!("{SERVER_OFF_PREFIX}{}", c.name), false);
         }
@@ -459,7 +478,7 @@ mod tests {
         uc.set_server_enabled("claude.ai Atlassian", true).unwrap();
         assert_eq!(synced_last().0, ["lume-arquivos", "lume-atlassian"]);
         assert!(uc.set_bridge("claude.ai X", "★", "https://x.com/mcp", true).is_err(), "nome que não vira servidor");
-        assert_eq!(uc.other_services().await.unwrap().bridges[0].jira, true);
+        assert!(uc.other_services().await.unwrap().bridges[0].jira);
 
         uc.set_bridge("claude.ai Atlassian", "Atlassian", "", false).unwrap();
         assert!(uc.bridges().is_empty());
