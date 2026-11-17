@@ -4,7 +4,10 @@
   import { api, errorMessage } from "../../api";
   import { renderMarkdown } from "../../format";
   import { accounts } from "../../state/accounts.svelte";
-  import { chat, openConversation } from "../../state/chat.svelte";
+  import { chat, decideFor, openConversation, type DecisionExtras } from "../../state/chat.svelte";
+  import PermissionCard from "../PermissionCard.svelte";
+  import PlanCard from "../PlanCard.svelte";
+  import QuestionCard from "../QuestionCard.svelte";
   import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
@@ -97,6 +100,15 @@
   const panelMessages = $derived(panelStage?.conversation_id ? (pipelines.messages[panelStage.conversation_id] ?? []) : []);
   const panelAsking = $derived(!!panelStage && panelStage.status === "running" && !!chat.permissions[panelStage.conversation_id]);
   const panelVisual = $derived(panelStage ? stageVisual(panelStage, panelAsking) : null);
+  const panelPermission = $derived(panelAsking && panelStage ? chat.permissions[panelStage.conversation_id] : undefined);
+  /** Responde ao pedido da etapa direto daqui; se a resposta não chegar, o pedido volta e o erro aparece. */
+  async function answerStage(id: string, allow: boolean, always: boolean, extras: DecisionExtras = {}) {
+    try {
+      await decideFor(id, allow, always, extras);
+    } catch (e) {
+      error = errorMessage(e);
+    }
+  }
   const panelLog = $derived(stageLog(panelMessages));
   /** Log da etapa: acompanha a última linha, a não ser que o usuário role para cima para ler. */
   let logEl = $state<HTMLOListElement>();
@@ -510,9 +522,20 @@
             </section>
             <p class="muted small">{detail.skipped.includes(panelStation.role) ? "Desligada neste projeto: a esteira passa direto por ela." : active ? "Ainda não recebeu o trabalho." : "Não rodou nesta execução."}</p>
           {:else}
-            {#if panelAsking}
-              <p class="ask">{@html icon("you", 13)}<span>A etapa pede sua autorização para usar uma ferramenta.</span>
-                <button type="button" class="btn small" onclick={() => openStageConversation(panelStage.conversation_id)}>Abrir para autorizar</button></p>
+            {#if panelAsking && panelPermission}
+              {@const cid = panelStage.conversation_id}
+              <!-- O mesmo pedido que apareceria no chat, respondido aqui sem abrir a conversa da etapa. -->
+              <div class="ask-card">
+                <p class="ask">{@html icon("you", 13)}<span>A etapa pede sua autorização.</span>
+                  <button type="button" class="btn small" onclick={() => openStageConversation(cid)}>Abrir conversa</button></p>
+                {#if panelPermission.tool === "AskUserQuestion"}
+                  <QuestionCard request={panelPermission} onanswer={(answers) => answerStage(cid, true, false, { answers })} oncancel={() => answerStage(cid, false, false)} />
+                {:else if panelPermission.tool === "ExitPlanMode"}
+                  <PlanCard request={panelPermission} ondecide={(mode) => (mode ? answerStage(cid, true, false, { nextMode: mode }) : answerStage(cid, false, false))} />
+                {:else}
+                  <PermissionCard request={panelPermission} ondecide={(allow, always) => answerStage(cid, allow, always)} />
+                {/if}
+              </div>
             {/if}
             {#if panelStage.role !== "feedback"}
             <details class="entry" bind:open={entryOpen}>
@@ -707,6 +730,8 @@
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
   .pair div { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 12.5px; }
   .pair .label { display: block; margin-bottom: 2px; }
+  .ask-card { display: flex; flex-direction: column; gap: 8px; }
+  .ask-card .ask button { margin-left: auto; }
   .ask { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid rgba(217, 164, 65, 0.45); border-radius: 8px; background: var(--warn-bg); color: var(--warn-text); font-size: 12.5px; }
   .entry summary { display: flex; align-items: center; gap: 8px; list-style: none; cursor: pointer; }
   .entry summary::-webkit-details-marker { display: none; }

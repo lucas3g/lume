@@ -287,15 +287,19 @@ export async function startIsolatedSession(projectId: string, model = DEFAULT_MO
 }
 
 /** Responde ao pedido de autorização da conversa aberta. */
-export async function decide(allow: boolean, always: boolean, extras: DecisionExtras = {}): Promise<void> {
-  const id = chat.activeId;
-  const request = id ? chat.permissions[id] : undefined;
-  if (!id || !request) return;
+export function decide(allow: boolean, always: boolean, extras: DecisionExtras = {}): Promise<void> {
+  return chat.activeId ? decideFor(chat.activeId, allow, always, extras) : Promise.resolve();
+}
+
+/** Responde ao pedido de autorização de uma conversa qualquer (ex.: a de uma etapa da esteira, sem abri-la no chat). */
+export async function decideFor(id: string, allow: boolean, always: boolean, extras: DecisionExtras = {}): Promise<void> {
+  const request = chat.permissions[id];
+  if (!request) return;
   delete chat.permissions[id];
   const turn = chat.turns[id];
   const status = turn?.status ?? null;
   if (turn) turn.status = null;
-  const conversation = activeConversation();
+  const conversation = chat.conversations.find((c) => c.id === id);
   const mode = conversation?.permission_mode;
   if (allow && extras.nextMode && conversation) conversation.permission_mode = extras.nextMode;
   try {
