@@ -105,6 +105,13 @@ impl RateInfo {
     }
 }
 
+/// Ferramenta do Claude Code que publica e lê artifacts (inclusive os designs do Claude Design).
+/// Liberá-la num turno também a liga no CLI, que sem tela não a oferece por padrão.
+pub const ARTIFACT_TOOL: &str = "Artifact";
+
+/// Marca (nas configurações, com o id da conversa) da conversa que usa o Claude Design: a etapa do Designer.
+pub const ARTIFACTS_PREFIX: &str = "artifacts:";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnEvent {
     Session(String),
@@ -112,6 +119,8 @@ pub enum TurnEvent {
     Environment {
         skills: Vec<String>,
         connectors: Vec<(String, String)>,
+        /// Ferramentas que o CLI oferece neste turno.
+        tools: Vec<String>,
     },
     Delta(String),
     Thinking(String),
@@ -192,6 +201,9 @@ pub struct TurnRequest {
     pub read_dirs: Vec<String>,
     /// Conectores para o ChatGPT (o Codex os recebe a cada turno); o Claude usa `mcp_config`.
     pub mcp_servers: Vec<crate::domain::mcp::McpServer>,
+    /// Liga a ferramenta de artifacts (Claude Design) no CLI, que sem tela não a oferece; o turno para
+    /// com aviso se ela não vier.
+    pub artifacts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

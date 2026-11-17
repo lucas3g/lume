@@ -760,13 +760,14 @@ pub fn start_pipeline(
     request: String,
     budget_minutes: Option<i64>,
     images: Option<Vec<PastedImage>>,
+    design: Option<bool>,
 ) -> AppResult<PipelineRun> {
     let images = images
         .unwrap_or_default()
         .into_iter()
         .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
         .collect();
-    let run = app.pipelines.start(StartInput { project_id, jira_key, jira_site, title, request, budget_minutes, images })?;
+    let run = app.pipelines.start(StartInput { project_id, jira_key, jira_site, title, request, budget_minutes, images, design: design.unwrap_or(false) })?;
     app.spawn_pipeline(run.id.clone());
     Ok(run)
 }
@@ -784,7 +785,7 @@ pub struct ImageOut {
     data: String,
 }
 
-/// Aprova o plano (sem `feedback`) ou pede ajustes ao Planejador.
+/// Aprova o plano ou o design (sem `feedback`) ou pede ajustes ao Planejador ou ao Designer.
 #[tauri::command]
 pub fn decide_pipeline_plan(app: App<'_>, id: String, feedback: Option<String>) -> AppResult<()> {
     app.pipelines.decide_plan(&id, feedback.as_deref())?;

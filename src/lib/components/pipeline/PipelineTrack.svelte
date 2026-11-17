@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { icon, passesByRole, stationRole, STATIONS, VISUAL, type Visual } from "../../pipeline";
+  import { icon, passesByRole, stationPasses, stationRole, STATIONS, VISUAL, type Visual } from "../../pipeline";
   import { loadTierModels, stationCards } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
@@ -27,14 +27,15 @@
 
   const returnedBy = (role: PipelineRole) => passes[role].filter((s) => s.status === "returned").length;
   const arcs = $derived({
-    plan: returnedBy("approval"),
+    // O ajuste no design volta à mesma estação (o Designer fica na do Planejador): a mesma seta.
+    plan: returnedBy("approval") + returnedBy("design_approval"),
     review: returnedBy("reviewer"),
     test: returnedBy("tester"),
     fix: returnedBy("review_choice"),
   });
   /** Trilho até a estação já percorrido. */
   const reached = (role: PipelineRole): boolean => {
-    if (passes[role].length > 0) return true;
+    if (stationPasses(detail, role).length > 0) return true;
     // Estação desligada: o trilho conta como percorrido quando o trabalho já passou adiante.
     const i = ORDER.indexOf(role);
     return detail.skipped.includes(role) && (detail.status === "done" || ORDER.slice(i + 1).some((r) => passes[r].length > 0));

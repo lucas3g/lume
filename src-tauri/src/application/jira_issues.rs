@@ -145,6 +145,7 @@ impl JiraIssues {
                 allowed_tools: JIRA_READ_TOOLS.iter().map(|t| (*t).to_owned()).collect(),
                 read_dirs: vec![],
                 mcp_servers: vec![],
+                artifacts: false,
             };
             let (mut control, _handle) = TurnControl::new();
             let cancel = control.cancel.clone();

@@ -3,7 +3,7 @@ import { accounts, activeAccount } from "./state/accounts.svelte";
 import { chat } from "./state/chat.svelte";
 import { pipelines } from "./state/pipelines.svelte";
 import {
-  duration, isActive, isUserStep, passesByRole, stationRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
+  duration, isActive, isUserStep, passesByRole, stationPasses, stationRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
   type Station, type Visual,
 } from "./pipeline";
 import { EFFORTS, type PipelineDetail, type PipelineRole, type Provider, type StageRun, type TierModels } from "./types";
@@ -51,9 +51,11 @@ export function stationCards(
 ): StationCard[] {
   const finished = !isActive(detail.status);
   return STATIONS.map((station) => {
-    // Bots da estação; na do Code review, a sua escolha vem depois da passagem do bot.
-    const list = passes[station.role];
-    const last = (station.role === "code_review" ? detail.stages.filter((s) => stationRole(s.role) === "code_review").at(-1) : list.at(-1)) ?? null;
+    // Bots da estação (o Designer conta na do Planejador); na do Code review, a sua escolha vem depois da passagem do bot.
+    const list = stationPasses(detail, station.role);
+    // A passagem mais recente que aparece na estação (inclui a sua escolha no Code review, o Designer no Planejador
+    // e a aprovação do design na sua mesa).
+    const last = detail.stages.filter((s) => stationRole(s.role) === station.role).at(-1) ?? list.at(-1) ?? null;
     const lastBot = list.at(-1) ?? null;
     const off = detail.skipped.includes(station.role);
     let visual: Visual = finished || off ? "skipped" : "waiting";

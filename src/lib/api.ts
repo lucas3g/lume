@@ -108,7 +108,7 @@ export const api = {
   pipelineDetail: (id: string) => invoke<PipelineDetail>("pipeline_detail", { id }),
   listJiraIssues: (query: string | null = null, statuses: string[] | null = null) => invoke<JiraIssueList>("list_jira_issues", { query, statuses }),
   listJiraBoards: () => invoke<JiraBoards>("list_jira_boards"),
-  startPipeline: (input: { projectId: string; jiraKey: string | null; jiraSite: string | null; title: string; request: string; budgetMinutes: number | null; images: PastedImage[] }) =>
+  startPipeline: (input: { projectId: string; jiraKey: string | null; jiraSite: string | null; title: string; request: string; budgetMinutes: number | null; images: PastedImage[]; design: boolean }) =>
     invoke<PipelineRun>("start_pipeline", input),
   pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),
   decidePipelinePlan: (id: string, feedback: string | null) => invoke<void>("decide_pipeline_plan", { id, feedback }),

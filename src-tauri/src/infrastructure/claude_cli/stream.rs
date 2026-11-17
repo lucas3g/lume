@@ -109,7 +109,7 @@ fn parse_init(v: &Value) -> Vec<TurnEvent> {
         })
         .unwrap_or_default();
     let mut events: Vec<TurnEvent> = v["session_id"].as_str().map(|s| TurnEvent::Session(s.into())).into_iter().collect();
-    events.push(TurnEvent::Environment { skills: names("skills"), connectors });
+    events.push(TurnEvent::Environment { skills: names("skills"), connectors, tools: names("tools") });
     events
 }
 
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn init_reports_session_skills_and_connectors() {
-        let init = r#"{"type":"system","subtype":"init","session_id":"s1","skills":["pdf","revisar"],"mcp_servers":[{"name":"fs","status":"connected"}]}"#;
+        let init = r#"{"type":"system","subtype":"init","session_id":"s1","skills":["pdf","revisar"],"tools":["Read","Artifact"],"mcp_servers":[{"name":"fs","status":"connected"}]}"#;
         assert_eq!(
             parse_line(init),
             [
@@ -445,6 +445,7 @@ mod tests {
                 TurnEvent::Environment {
                     skills: vec!["pdf".into(), "revisar".into()],
                     connectors: vec![("fs".into(), "connected".into())],
+                    tools: vec!["Read".into(), "Artifact".into()],
                 },
             ]
         );

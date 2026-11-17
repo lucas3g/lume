@@ -11,7 +11,7 @@ use super::{
     AppResult,
 };
 use crate::domain::{
-    chat::{transcript_prompt, Conversation},
+    chat::{transcript_prompt, Conversation, ARTIFACTS_PREFIX},
     extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
     mcp::{turn_servers, McpServer},
     history::context_prompt,
@@ -54,6 +54,8 @@ pub struct TurnSetup {
     pub effort: String,
     pub permission_mode: String,
     pub interactive: bool,
+    /// A conversa usa o Claude Design (a etapa do Designer).
+    pub artifacts: bool,
     /// Títulos das conversas anteriores usadas como contexto.
     pub context_titles: Vec<String>,
     pub denied_skills: Vec<String>,
@@ -162,6 +164,7 @@ impl PrepareTurn {
             permission_mode: conversation.permission_mode.clone(),
             // Conectores da conta pedem aprovação em qualquer conversa; o resto já está liberado.
             interactive: true,
+            artifacts: self.settings.flag(&format!("{ARTIFACTS_PREFIX}{}", conversation.id), false),
             context_titles: snippets.into_iter().map(|s| s.title).collect(),
             denied_skills: denied,
             denied_tools,

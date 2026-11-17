@@ -2,7 +2,7 @@
 
 use super::{command, stream::{parse_line, Observed}};
 use crate::application::{ports::{ChatEngine, TurnListener}, TurnControl};
-use crate::domain::chat::{Attachment, AttachmentKind, Injection, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest};
+use crate::domain::chat::{Attachment, AttachmentKind, Injection, ARTIFACT_TOOL, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio};
@@ -16,6 +16,25 @@ const DENIED_MESSAGE: &str = "O usuário não autorizou esta ação.";
 /// de mensagens: se o aviso de fim de um agente se perder, o processo não fica preso esperando
 /// o usuário. Fechar a entrada não interrompe agentes que ainda trabalham.
 const BACKGROUND_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Variável (não documentada) que liga a ferramenta de artifacts no CLI sem tela.
+const ARTIFACT_ENV: &str = "CLAUDE_CODE_ARTIFACT";
+
+/// Aviso quando o turno precisa da ferramenta de artifacts e o CLI não a ofereceu.
+pub const NO_ARTIFACT_TOOL: &str = "Esta versão do Claude Code não oferece o Claude Design (a ferramenta Artifact) na esteira. \
+Atualize o Claude Code ou rode a execução sem o design.";
+
+/// O turno usa a ferramenta de artifacts: ela foi liberada para ele.
+fn wants_artifacts(request: &TurnRequest) -> bool {
+    request.artifacts
+}
+
+/// O CLI começou o turno sem a ferramenta de artifacts que o turno precisa. Um início sem a lista
+/// de ferramentas não diz nada: o turno segue.
+fn missing_artifacts(request: &TurnRequest, event: &TurnEvent) -> bool {
+    matches!(event, TurnEvent::Environment { tools, .. }
+        if wants_artifacts(request) && !tools.is_empty() && !tools.iter().any(|t| t == ARTIFACT_TOOL))
+}
 
 pub struct ClaudeCliEngine {
     cli: PathBuf,
@@ -50,6 +69,10 @@ impl ClaudeCliEngine {
             "--effort",
             &request.effort,
         ]);
+        if wants_artifacts(request) {
+            // Sem tela, o CLI não oferece a ferramenta de artifacts (e o Claude Design) a não ser com esta variável.
+            cmd.env(ARTIFACT_ENV, "1");
+        }
         if request.interactive {
             // O que não estiver liberado é perguntado ao app, que repassa ao usuário.
             cmd.args(["--permission-mode", &request.permission_mode, "--permission-prompt-tool", "stdio"]);
@@ -241,6 +264,10 @@ impl ChatEngine for ClaudeCliEngine {
                     let Ok(Some(line)) = line else { break };
                     let mut stop = false;
                     for event in parse_line(&line) {
+                        if missing_artifacts(request, &event) {
+                            let _ = child.kill().await;
+                            return TurnEnd::Failed(NO_ARTIFACT_TOOL.into());
+                        }
                         match &event {
                             TurnEvent::Permission { request_id, input, .. } => {
                                 pending.insert(request_id.clone(), input.clone());
@@ -328,11 +355,51 @@ mod tests {
             allowed_tools: vec![],
             read_dirs: vec![],
             mcp_servers: vec![],
+            artifacts: false,
         }
     }
 
     fn engine() -> ClaudeCliEngine {
         ClaudeCliEngine::new(find_cli().expect("Claude Code instalado"))
+    }
+
+    #[tokio::test]
+    #[ignore = "consome uso da conta real e publica um design privado no Claude Design"]
+    async fn real_cli_publishes_a_design_without_a_screen() {
+        use crate::domain::pipeline::parse_design_url;
+        let mut req = request(
+            "Chame a ferramenta Artifact com action \"quickstart\" e intent \"design\" e siga o que ela indicar para criar, a partir \
+             do tipo Design, um design bem simples chamado \"Teste do Lume\": um cartão com o título \"Exportar CSV\" e um botão. \
+             Termine com a linha `DESIGN: <link do artifact>`.",
+            None,
+        );
+        req.model = "sonnet".into();
+        req.tools = "default".into();
+        req.allowed_tools = vec![ARTIFACT_TOOL.into()];
+        req.artifacts = true;
+        let end = engine().run_turn(&req, &mut TurnControl::new().0, &mut |_| {}).await;
+        let TurnEnd::Done { text, .. } = end else { panic!("{end:?}") };
+        eprintln!("{text}");
+        assert!(parse_design_url(&text).is_some(), "o Designer devolve o link do design");
+    }
+
+    #[test]
+    fn artifacts_are_turned_on_only_when_the_turn_allows_them() {
+        let env = |req: &TurnRequest| {
+            let cmd = ClaudeCliEngine::new("claude".into()).command(req);
+            cmd.as_std().get_envs().any(|(k, v)| k == ARTIFACT_ENV && v.is_some_and(|v| v == "1"))
+        };
+        let mut req = request("oi", None);
+        req.allowed_tools = vec![ARTIFACT_TOOL.into()];
+        assert!(!env(&req), "liberar o Artifact numa conversa qualquer não liga a variável");
+        req.artifacts = true;
+        assert!(env(&req), "a etapa do Designer liga a variável");
+
+        let init = |tools: &[&str]| TurnEvent::Environment { skills: vec![], connectors: vec![], tools: tools.iter().map(|t| (*t).to_owned()).collect() };
+        assert!(missing_artifacts(&req, &init(&["Read"])), "pediu e o CLI não ofereceu: a etapa para com aviso claro");
+        assert!(!missing_artifacts(&req, &init(&["Read", "Artifact"])));
+        assert!(!missing_artifacts(&req, &init(&[])), "início sem a lista de ferramentas não para o turno");
+        assert!(!missing_artifacts(&request("oi", None), &init(&["Read"])), "turno sem artifacts não confere nada");
     }
 
     #[test]
@@ -522,7 +589,7 @@ mod tests {
         let mut connectors = vec![];
         let end = engine()
             .run_turn(&req, &mut TurnControl::new().0, &mut |e| {
-                if let TurnEvent::Environment { connectors: found, skills } = e {
+                if let TurnEvent::Environment { connectors: found, skills, .. } = e {
                     assert!(!skills.is_empty(), "o catálogo de skills é informado");
                     connectors = found.clone();
                 }

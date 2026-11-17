@@ -399,7 +399,7 @@ export const SCOPE_ALL = "all";
 // ---- esteira de bots
 
 export type PipelineRole =
-  | "triage" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "code_review" | "reporter" | "feedback" | "review_choice";
+  | "triage" | "designer" | "design_approval" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "code_review" | "reporter" | "feedback" | "review_choice";
 export type PipelineStatus = "running" | "awaiting_approval" | "awaiting_choice" | "needs_info" | "done" | "failed" | "cancelled";
 
 /** Achado do code review, para você escolher o que corrigir. */
@@ -447,6 +447,8 @@ export interface PipelineRun {
   /** Esforço de cada papel quando a execução começou; ausente = padrão (médio). */
   efforts: Partial<Record<PipelineRole, string>>;
   budget_minutes: number;
+  /** A execução começa pelo design no Claude Design, com a sua aprovação antes do plano. */
+  design: boolean;
   note: string | null;
   created_at: number;
   updated_at: number;

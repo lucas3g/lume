@@ -253,6 +253,7 @@ pub(crate) fn sample_request(provider: Provider) -> TurnRequest {
         allowed_tools: vec![],
         read_dirs: vec![],
         mcp_servers: vec![],
+        artifacts: false,
     }
 }
 

@@ -11,7 +11,7 @@
   import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
-    choiceFindings, clock, clockMinutes, duration, findingsMarkdown, icon, inputSummary, isActive, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
+    choiceFindings, clock, clockMinutes, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
@@ -54,8 +54,19 @@
   const latest = $derived(detail.stages.at(-1) ?? null);
   const running = $derived(detail.stages.find((s) => s.status === "running" && !isUserStep(s.role)) ?? null);
   const approval = $derived(
-    detail.status === "awaiting_approval" ? (detail.stages.findLast((s) => s.role === "approval" && s.status === "running") ?? null) : null,
+    detail.status === "awaiting_approval"
+      ? (detail.stages.findLast((s) => (s.role === "approval" || s.role === "design_approval") && s.status === "running") ?? null)
+      : null,
   );
+  /** A parada é a do design: o cartão mostra o link do Claude Design e a conta que o publicou. */
+  const designing = $derived(approval?.role === "design_approval");
+  const designLink = $derived(designing && approval ? designUrl(approval.input) : null);
+  const designer = $derived(designing ? (detail.stages.findLast((s) => s.role === "designer" && s.status === "done") ?? null) : null);
+  const designAccount = $derived.by(() => {
+    if (!designer) return null;
+    const id = stageAccountId(pipelines.messages[designer.conversation_id] ?? []);
+    return accounts.list.find((a) => a.id === id)?.name ?? null;
+  });
   /** Parada da sua escolha sobre o code review, e a passagem do Code review que a abriu. */
   const choice = $derived(
     detail.status === "awaiting_choice" ? (detail.stages.findLast((s) => s.role === "review_choice" && s.status === "running") ?? null) : null,
@@ -182,6 +193,7 @@
 
   /** O que está acontecendo agora, em uma linha. */
   const nowLine = $derived.by(() => {
+    if (detail.status === "awaiting_approval" && designing) return { tone: "you", who: "Aprovação do design", text: "a esteira está parada até você aprovar o design ou pedir ajustes" };
     if (detail.status === "awaiting_approval") return { tone: "you", who: "Sua aprovação", text: "a esteira está parada até você aprovar o plano ou pedir ajustes" };
     if (detail.status === "awaiting_choice") return { tone: "you", who: "Sua escolha", text: "a esteira está parada até você escolher o que corrigir do code review" };
     if (running) {
@@ -372,33 +384,45 @@
   <div class="bottom">
     <div class="main">
       {#if approval}
-        <section class="card approval" aria-label="Plano para aprovação">
+        <section class="card approval" aria-label={designing ? "Design para aprovação" : "Plano para aprovação"}>
           <div class="ap-top">
             <div class="ap-title">
               <div class="row-w">
                 <span class="pill warn"><span class="dot warn pulse"></span>Aguardando aprovação</span>
-                <h2>{indexOf(approval) > 0 ? `Plano revisado (v${indexOf(approval) + 1}) com o seu ajuste` : "O Planejador propõe este plano"}</h2>
+                {#if designing}
+                  <h2>{indexOf(approval) > 0 ? `Design revisado (v${indexOf(approval) + 1}) com o seu ajuste` : "O Designer propõe este design"}</h2>
+                {:else}
+                  <h2>{indexOf(approval) > 0 ? `Plano revisado (v${indexOf(approval) + 1}) com o seu ajuste` : "O Planejador propõe este plano"}</h2>
+                {/if}
               </div>
-              <p class="note">A esteira está parada: nada é alterado antes da sua decisão, e a espera não conta no orçamento.</p>
+              {#if designing}
+                <p class="note">
+                  Abra o design no Claude Design e decida. O plano só começa depois, seguindo o design aprovado.
+                  {#if designAccount}<b>Publicado pela conta {designAccount}</b>: o link só abre com essa conta logada no navegador.{/if}
+                </p>
+              {:else}
+                <p class="note">A esteira está parada: nada é alterado antes da sua decisão, e a espera não conta no orçamento.</p>
+              {/if}
             </div>
             <div class="row-w">
+              {#if designLink}<button type="button" class="btn" title={designLink} onclick={() => openUrl(designLink!)}>Abrir design ↗</button>{/if}
               <button type="button" class="btn" aria-expanded={adjusting} onclick={() => (adjusting = !adjusting)}>Pedir ajustes</button>
               <button type="button" class="btn primary" disabled={busy} onclick={approve}>Aprovar e seguir</button>
             </div>
           </div>
           {#if adjusting}
             <div class="adjust">
-              <label class="label" for="pl-feedback">O que ajustar no plano</label>
-              <textarea id="pl-feedback" class="input area" rows="3" bind:value={feedback} placeholder="Ex.: não ponha o botão no cabeçalho; use o menu da conversa."
+              <label class="label" for="pl-feedback">{designing ? "O que ajustar no design" : "O que ajustar no plano"}</label>
+              <textarea id="pl-feedback" class="input area" rows="3" bind:value={feedback} placeholder={designing ? "Ex.: botão maior e no rodapé; tire a coluna de data." : "Ex.: não ponha o botão no cabeçalho; use o menu da conversa."}
                 onkeydown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && requestChanges()}></textarea>
               <div class="row-w">
-                <button type="button" class="btn primary small" disabled={busy || !feedback.trim()} onclick={requestChanges}>Enviar ao Planejador</button>
+                <button type="button" class="btn primary small" disabled={busy || !feedback.trim()} onclick={requestChanges}>{designing ? "Enviar ao Designer" : "Enviar ao Planejador"}</button>
                 <button type="button" class="btn small" onclick={() => (adjusting = false)}>Voltar</button>
-                <span class="muted small">O plano volta ao Planejador com o seu texto.</span>
+                <span class="muted small">{designing ? "O design volta ao Designer com o seu texto." : "O plano volta ao Planejador com o seu texto."}</span>
               </div>
             </div>
           {/if}
-          <div class="plan md">{@html renderMarkdown(approval.input)}</div>
+          <div class="plan md">{@html renderMarkdown(designing ? designSpec(approval.input) || "O Designer não escreveu a especificação; abra o design." : approval.input)}</div>
         </section>
       {:else if choice}
         <ReviewChoiceCard stage={choice} review={choiceReview} {busy} ondecide={decideReview} />
@@ -540,14 +564,14 @@
             {#if panelStage.role !== "feedback"}
             <details class="entry" bind:open={entryOpen}>
               <summary><h3 class="label">Entrada</h3><span class="res">{inputSummary(panelStage, detail)}</span>{@html icon("chev", 13, 2.2)}</summary>
-              {#if images.length && ["triage", "planner", "implementer"].includes(panelStage.role)}
+              {#if images.length && ["triage", "designer", "planner", "implementer"].includes(panelStage.role)}
                 <div class="thumbs" aria-label="Imagens do pedido">
                   {#each images as image, i (i)}
                     <button type="button" class="thumb" title={`Ampliar ${image.name}`} onclick={() => (zoomed = image)}><img src={imageSrc(image)} alt={image.name} /></button>
                   {/each}
                 </div>
               {/if}
-              {#if panelStage.role === "approval"}
+              {#if panelStage.role === "approval" || panelStage.role === "design_approval"}
                 <div class="md">{@html renderMarkdown(panelStage.input)}</div>
               {:else if panelStage.role === "review_choice"}
                 <div class="md">{@html renderMarkdown(findingsMarkdown(choiceFindings(panelStage)) || "O code review não trouxe a lista de achados.")}</div>
@@ -576,9 +600,13 @@
               {#if panelStage.output}
                 {#if panelStage.status === "failed"}<p class="failed">{panelStage.output}</p>{:else}<div class="md">{@html renderMarkdown(panelStage.output)}</div>{/if}
               {:else}
-                <p class="muted small">{panelStage.status === "running" ? (panelStage.role === "approval" ? "Falta a sua decisão: aprovar o plano ou pedir ajustes." : panelStage.role === "review_choice" ? "Falta a sua escolha: o que corrigir dos achados do code review." : `Ainda trabalhando. Vai entregar: ${panelStation.delivers.toLowerCase()}`) : "Nada entregue."}</p>
+                <p class="muted small">{panelStage.status === "running" ? (panelStage.role === "approval" ? "Falta a sua decisão: aprovar o plano ou pedir ajustes." : panelStage.role === "design_approval" ? "Falta a sua decisão: aprovar o design ou pedir ajustes." : panelStage.role === "review_choice" ? "Falta a sua escolha: o que corrigir dos achados do code review." : `Ainda trabalhando. Vai entregar: ${panelStation.delivers.toLowerCase()}`) : "Nada entregue."}</p>
               {/if}
             </section>
+            {#if panelStage.role === "designer" && panelStage.output && designUrl(panelStage.output)}
+              {@const link = designUrl(panelStage.output)!}
+              <button type="button" class="lnk" title={link} onclick={() => openUrl(link)}>Abrir o design no Claude Design ↗</button>
+            {/if}
             {#if panelStage.conversation_id}
               <button type="button" class="lnk" onclick={() => openStageConversation(panelStage.conversation_id)}>Abrir a conversa desta etapa</button>
             {/if}

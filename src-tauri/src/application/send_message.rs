@@ -219,6 +219,7 @@ impl SendMessage {
                 effort: setup.effort.clone(),
                 permission_mode: setup.permission_mode.clone(),
                 interactive: setup.interactive,
+                artifacts: setup.artifacts,
                 denied_skills: setup.denied_skills.clone(),
                 denied_tools: setup.denied_tools.clone(),
                 mcp_config: setup.mcp_config.clone(),
@@ -477,7 +478,7 @@ impl SendMessage {
                     let _ = self.conversations.set_context_percent(conversation_id, percent);
                 }
             }
-            TurnEvent::Environment { skills, connectors } => {
+            TurnEvent::Environment { skills, connectors, .. } => {
                 let _ = self.skills.remember(skills);
                 for (key, status) in connectors {
                     let _ = self.connectors.set_status(key, status);

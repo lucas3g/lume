@@ -14,6 +14,7 @@
   import { loadPipelines, openPipeline, pipelines } from "../state/pipelines.svelte";
   import { STATION } from "../pipeline";
   import { agentName } from "../state/agents.svelte";
+  import Toggle from "../components/Toggle.svelte";
   import type { PastedImage, PipelineConfig, PipelineRole, View } from "../types";
 
   interface Props {
@@ -25,6 +26,8 @@
   let title = $state("");
   let request = $state("");
   let budget = $state(90);
+  /** Começar pelo design no Claude Design (desligado por padrão, por execução). */
+  let design = $state(false);
   /** Task do Jira escolhida; sem ela a esteira segue só com a descrição e não consulta o Jira. */
   let task = $state<PickedTask | null>(null);
   let picking = $state(false);
@@ -113,9 +116,11 @@
         request: request.trim(),
         budgetMinutes: Number(budget) || null,
         images: images.map(({ name, media_type, data }) => ({ name, media_type, data })),
+        design,
       });
       title = request = "";
       images = [];
+      design = false;
       task = null;
       await loadPipelines();
       await openPipeline(run.id);
@@ -246,6 +251,13 @@
               <button type="button" class="link-btn" onclick={() => { projects.selectedId = projectId; onnavigate("project"); }}>Mudar no projeto</button>
             </p>
           {/if}
+          <div class="design-opt">
+            <div>
+              <strong>Fazer design no Claude Design</strong>
+              <span class="muted small">Antes do plano, o Designer desenha a tela no Claude Design e você abre o design, aprova ou pede ajustes. O plano segue o design aprovado.</span>
+            </div>
+            <Toggle checked={design} label={design ? "Não fazer design" : "Fazer design no Claude Design"} onchange={(v) => (design = v)} />
+          </div>
           <p class="muted small">O texto da task é tratado como dado, não como instrução. Nenhum bot faz commit nem push: o commit fica com você no fim.</p>
           <div class="row">
             <button type="submit" class="btn primary" disabled={busy || !projectId || (!task && !request.trim())}>Iniciar a esteira</button>
@@ -287,6 +299,8 @@
 {/if}
 
 <style>
+  .design-opt { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .design-opt > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .panel { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
   .panel label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
   .panel .input { font-weight: 400; }

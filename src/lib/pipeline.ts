@@ -60,6 +60,20 @@ export const FEEDBACK_STEP: Station = {
   receives: "A execução concluída.", delivers: "O que precisa mudar.",
 };
 
+/** Designer: desenha no Claude Design antes do plano; só roda quando a execução pede. Aparece na estação do Planejador. */
+export const DESIGNER_STEP: Station = {
+  role: "designer", name: "Designer", model: "Modelo forte", tier: "strong", perm: "Claude Design",
+  does: "Estuda as telas parecidas no código e desenha a solução no Claude Design, publicando o design como artifact. Não altera o projeto.",
+  receives: "A task e as notas da Triagem; nas voltas, os seus ajustes.", delivers: "O link do design e uma especificação curta.",
+};
+
+/** Sua aprovação do design; aparece no registro e, na esteira, na sua mesa (estação da aprovação). */
+export const DESIGN_APPROVAL_STEP: Station = {
+  role: "design_approval", name: "Aprovação do design", model: null, tier: null, perm: "você decide", gate: true,
+  does: "Você abre o design no Claude Design e aprova ou pede ajustes. O plano só começa depois, seguindo o design aprovado.",
+  receives: "O design do Designer.", delivers: "A sua decisão: aprovar o design ou pedir ajustes.",
+};
+
 /** Sua escolha sobre o code review; aparece no registro e, na esteira, na estação do Code review. */
 export const CHOICE_STEP: Station = {
   role: "review_choice", name: "Sua escolha", model: null, tier: null, perm: "você decide", gate: true,
@@ -67,7 +81,10 @@ export const CHOICE_STEP: Station = {
   receives: "Os achados do code review.", delivers: "O que corrigir e como.",
 };
 
-export const STATION = Object.fromEntries([...STATIONS, FEEDBACK_STEP, CHOICE_STEP].map((s) => [s.role, s])) as Record<PipelineRole, Station>;
+/** Etapas fora da lista de estações: aparecem no registro e na estação indicada por `stationRole`. */
+const EXTRA_STEPS = [DESIGNER_STEP, DESIGN_APPROVAL_STEP, FEEDBACK_STEP, CHOICE_STEP];
+
+export const STATION = Object.fromEntries([...STATIONS, ...EXTRA_STEPS].map((s) => [s.role, s])) as Record<PipelineRole, Station>;
 
 /** Começo do pedido de correção que a sua escolha manda ao Implementador (ver `fix_request` no Rust). */
 const FIX_MARK = "O code review apontou";
@@ -75,9 +92,28 @@ const FIX_MARK = "O code review apontou";
 /** Etapas que esperam você, não um bot. */
 export const isUserStep = (role: PipelineRole) => STATION[role].gate === true;
 
-/** Estação em que a etapa aparece na esteira: a sua escolha fica na do Code review; o ajuste, em nenhuma. */
+/** Estação em que a etapa aparece na esteira: a sua escolha fica na do Code review; o Designer, na do Planejador;
+ *  a aprovação do design, na sua mesa; o ajuste, em nenhuma. */
 export const stationRole = (role: PipelineRole): PipelineRole | null =>
-  role === "review_choice" ? "code_review" : role === "feedback" ? null : role;
+  role === "review_choice" ? "code_review"
+  : role === "designer" ? "planner"
+  : role === "design_approval" ? "approval"
+  : role === "feedback" ? null
+  : role;
+
+const DESIGN_LINK = /https:\/\/claude\.ai\/[\w/.:-]*artifact\/[\w-]{6,}/g;
+
+/** Link do design publicado pelo Designer (o da linha `DESIGN:` ou o último link de artifact). */
+export function designUrl(text: string): string | null {
+  const tagged = text.split("\n").reverse().find((l) => /^\W*DESIGN:/i.test(l.trim()));
+  const pick = (s: string) => s.match(DESIGN_LINK)?.at(-1)?.replace(/[./]+$/, "") ?? null;
+  return (tagged && pick(tagged)) || pick(text);
+}
+
+/** Especificação do design sem a linha do link. */
+export function designSpec(text: string): string {
+  return text.split("\n").filter((l) => !/^\W*DESIGN:/i.test(l.trim())).join("\n").trim();
+}
 
 const JSON_FENCE = "```json";
 
@@ -176,17 +212,17 @@ export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual;
   const role = stage.role;
   switch (stage.status) {
     case "running":
-      if (role === "approval") return { visual: "you", label: "Esperando você" };
+      if (role === "approval" || role === "design_approval") return { visual: "you", label: "Esperando você" };
       if (role === "review_choice") return { visual: "you", label: "Esperando sua escolha" };
       return asking ? { visual: "you", label: "Pede autorização" } : { visual: "working", label: "Trabalhando" };
     case "done":
       if (role === "feedback") return { visual: "you", label: "Ajuste pedido" };
-      if (role === "approval") return { visual: "done", label: "Aprovado" };
+      if (role === "approval" || role === "design_approval") return { visual: "done", label: "Aprovado" };
       if (role === "review_choice") return { visual: "done", label: "Sem correções" };
       if (role === "reviewer" || role === "tester") return { visual: "done", label: "Aprovou" };
       return { visual: "done", label: "Concluída" };
     case "returned":
-      if (role === "approval") return { visual: "returned", label: "Ajustes pedidos" };
+      if (role === "approval" || role === "design_approval") return { visual: "returned", label: "Ajustes pedidos" };
       if (role === "review_choice") return { visual: "returned", label: "Correções pedidas" };
       if (role === "triage") return { visual: "returned", label: "Achou vaga" };
       return { visual: "returned", label: "Devolveu" };
@@ -197,9 +233,16 @@ export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual;
   }
 }
 
+/** Passagens que contam numa estação: os bots que aparecem nela (o Designer conta na do Planejador) e,
+ *  nas suas mesas, as suas paradas (a aprovação do design conta na da aprovação). */
+export function stationPasses(detail: PipelineDetail, station: PipelineRole): StageRun[] {
+  const gate = STATION[station].gate === true;
+  return detail.stages.filter((s) => stationRole(s.role) === station && (gate || !isUserStep(s.role)));
+}
+
 /** Etapas de cada papel, na ordem em que rodaram. */
 export function passesByRole(detail: PipelineDetail): Record<PipelineRole, StageRun[]> {
-  const out = Object.fromEntries([...STATIONS, FEEDBACK_STEP, CHOICE_STEP].map((s) => [s.role, [] as StageRun[]])) as Record<PipelineRole, StageRun[]>;
+  const out = Object.fromEntries([...STATIONS, ...EXTRA_STEPS].map((s) => [s.role, [] as StageRun[]])) as Record<PipelineRole, StageRun[]>;
   for (const stage of detail.stages) out[stage.role].push(stage);
   return out;
 }
@@ -209,6 +252,7 @@ export function passLabel(stage: StageRun, index: number, maxRounds: number): st
   if (stage.role === "implementer" && stage.input.includes(FIX_MARK)) return "correções do code review";
   if (stage.role === "implementer" && stage.round > 0) return `volta ${stage.round}/${maxRounds}`;
   if ((stage.role === "planner" || stage.role === "approval") && index > 0) return `plano v${index + 1}`;
+  if ((stage.role === "designer" || stage.role === "design_approval") && index > 0) return `design v${index + 1}`;
   if (stage.role === "reviewer" && index > 0) return `${index + 1}ª revisão`;
   if (index > 0) return `${index + 1}ª passagem`;
   return null;
@@ -218,8 +262,13 @@ export function passLabel(stage: StageRun, index: number, maxRounds: number): st
 export function inputSummary(stage: StageRun, detail: PipelineDetail): string {
   switch (stage.role) {
     case "triage": return detail.jira_key ? `Task ${detail.jira_key}` : "Pedido escrito";
+    case "designer":
+      if (stage.input.includes("<ajustes>")) return "Design + seus ajustes";
+      return stage.input.includes("<triagem>") ? "Task + triagem" : "Task (sem triagem)";
+    case "design_approval": return "Design";
     case "planner":
       if (stage.input.includes("<ajustes>")) return "Plano + seus ajustes";
+      if (stage.input.includes("<design_aprovado>")) return "Task + design aprovado";
       return stage.input.includes("<triagem>") ? "Task + triagem" : "Task (sem triagem)";
     case "approval": return "Plano";
     case "implementer":
@@ -241,7 +290,8 @@ const VERDICT_LINE = /^\W*VEREDITO\W.*$/im;
 export function outputSummary(stage: StageRun): string {
   if (stage.status === "running") return isUserStep(stage.role) ? "esperando você" : "trabalhando…";
   if (stage.status === "cancelled") return "Cancelada por você";
-  if (stage.role === "approval") return stage.status === "done" ? "Aprovado por você" : "Ajustes pedidos";
+  if (stage.role === "approval" || stage.role === "design_approval") return stage.status === "done" ? "Aprovado por você" : "Ajustes pedidos";
+  if (stage.role === "designer" && stage.status === "done") return designUrl(stage.output ?? "") ? "Design publicado" : "Concluída";
   if (stage.role === "feedback") return firstLine(stage.output ?? "") || "Ajuste pedido";
   if (stage.role === "review_choice") return stage.status === "done" ? "Seguir sem correções" : "Correções escolhidas por você";
   if (stage.role === "code_review" && stage.status === "done") {

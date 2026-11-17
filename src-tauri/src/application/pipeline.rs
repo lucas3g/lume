@@ -13,10 +13,10 @@ use super::{
 use crate::domain::mcp::server_rule;
 use crate::domain::{
     account::Provider,
-    chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
+    chat::{Attachment, Message, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
-        suggested_commit, fix_request, fixing_review, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -60,6 +60,8 @@ pub struct StartInput {
     pub budget_minutes: Option<i64>,
     /// Imagens coladas no pedido.
     pub images: Vec<Attachment>,
+    /// Começar pelo design no Claude Design, com a sua aprovação antes do plano.
+    pub design: bool,
 }
 
 /// Execução com o registro das etapas, para a tela de acompanhamento.
@@ -223,7 +225,10 @@ impl ManagePipelines {
             return Err(AppError(format!("Cada imagem pode ter até {} MB.", MAX_IMAGE_BYTES / (1024 * 1024))));
         }
         let stored = self.stored_config(&project.id);
-        let (skipped, jira_template, efforts) = (stored.skipped, stored.jira_template, stored.efforts);
+        let (mut skipped, jira_template, efforts) = (stored.skipped, stored.jira_template, stored.efforts);
+        if !input.design {
+            skipped.extend(Role::OPT_IN);
+        }
         let jira_url = jira_key.as_deref().and_then(|key| {
             self.link_for(jira_template.as_deref(), key)
                 .or_else(|| Some(task_url(&jira_site(input.jira_site.as_deref()?)?, key)))
@@ -259,6 +264,7 @@ impl ManagePipelines {
             jira_url,
             efforts,
             budget_minutes: input.budget_minutes.filter(|m| *m > 0).unwrap_or(DEFAULT_BUDGET_MINUTES),
+            design: input.design,
             note: None,
             created_at: now,
             updated_at: now,
@@ -326,7 +332,8 @@ impl ManagePipelines {
             let role = match next_step(&stages, &run.skipped) {
                 Next::Wait => return Ok(()),
                 Next::Finish(status, note) => return self.finish(&mut run, status, note),
-                Next::AskApproval => return self.ask_approval(&mut run, &stages),
+                Next::AskApproval => return self.ask_approval(&mut run, &stages, Role::Approval),
+                Next::AskDesignApproval => return self.ask_approval(&mut run, &stages, Role::DesignApproval),
                 Next::AskChoice => return self.ask_choice(&mut run, &stages),
                 Next::Run(role) => role,
             };
@@ -374,6 +381,13 @@ impl ManagePipelines {
         if let Some(effort) = run.efforts.get(&role) {
             self.conversations.set_effort(&conversation_id, effort)?;
         }
+        // O Claude Design só para o Designer, que publica sem pedir. Quem planeja e implementa recebe a
+        // especificação completa no prompt: não precisa (nem conseguiria, se o design é de outra conta) abrir
+        // o artifact, e não pode sobrescrever o design aprovado.
+        if role == Role::Designer {
+            self.conversations.allow_tool(&conversation_id, ARTIFACT_TOOL)?;
+            self.settings.set_flag(&format!("{ARTIFACTS_PREFIX}{conversation_id}"), true)?;
+        }
         // A volta do Implementador é o número de passagens dele antes desta; a que aplica as
         // correções do code review fica na volta em que já estava.
         let round = if role == Role::Implementer && !fixing_review(stages) { implementer_passes(stages) } else { rounds(stages) };
@@ -403,6 +417,10 @@ impl ManagePipelines {
         let cancelled = lock(&self.cancelled).contains(&run.id);
         (stage.status, stage.output) = match result {
             _ if cancelled => (StageStatus::Cancelled, Some("Cancelada por você.".into())),
+            Ok(text) if role == Role::Designer && parse_design_url(&text).is_none() => (
+                StageStatus::Failed,
+                Some(format!("o design não foi publicado: a resposta não trouxe a linha `DESIGN: <link do artifact>`.\n\n{text}")),
+            ),
             Ok(text) => (finished_status(role, &text), Some(text)),
             Err(e) => (StageStatus::Failed, Some(e.0.clone())),
         };
@@ -439,16 +457,19 @@ impl ManagePipelines {
         (!out.trim().is_empty()).then(|| clip_diff(&out))
     }
 
-    fn ask_approval(&self, run: &mut PipelineRun, stages: &[StageRun]) -> AppResult<()> {
-        let plan = context_for(stages).plan.unwrap_or_default();
+    /// Abre a parada da sua aprovação: do plano (a entrada é o plano) ou do design (a resposta do
+    /// Designer, com a especificação e o link do artifact).
+    fn ask_approval(&self, run: &mut PipelineRun, stages: &[StageRun], role: Role) -> AppResult<()> {
+        let ctx = context_for(stages);
+        let input = if role == Role::DesignApproval { ctx.design } else { ctx.plan };
         let stage = StageRun {
             id: self.ids.new_id(),
             run_id: run.id.clone(),
-            role: Role::Approval,
+            role,
             round: rounds(stages),
             status: StageStatus::Running,
             conversation_id: String::new(),
-            input: plan,
+            input: input.unwrap_or_default(),
             output: None,
             started_at: self.clock.now(),
             finished_at: None,
@@ -507,8 +528,8 @@ impl ManagePipelines {
         self.touch(&mut run)
     }
 
-    /// Resposta do usuário ao plano: aprovar (sem `feedback`) ou pedir ajustes.
-    /// A execução volta a andar e precisa de `advance`.
+    /// Resposta do usuário ao plano ou ao design que espera aprovação: aprovar (sem `feedback`) ou
+    /// pedir ajustes. A execução volta a andar e precisa de `advance`.
     pub fn decide_plan(&self, run_id: &str, feedback: Option<&str>) -> AppResult<()> {
         let mut run = self.get(run_id)?;
         if run.status != RunStatus::AwaitingApproval {
@@ -519,12 +540,13 @@ impl ManagePipelines {
             .stages(run_id)?
             .into_iter()
             .rev()
-            .find(|s| s.role == Role::Approval && s.status == StageStatus::Running)
-            .ok_or_else(|| AppError("Não há plano esperando aprovação.".into()))?;
+            .find(|s| matches!(s.role, Role::Approval | Role::DesignApproval) && s.status == StageStatus::Running)
+            .ok_or_else(|| AppError("Não há plano nem design esperando aprovação.".into()))?;
         let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
+        let approved = if stage.role == Role::DesignApproval { "Design aprovado." } else { "Plano aprovado." };
         (stage.status, stage.output) = match feedback {
             Some(text) => (StageStatus::Returned, Some(text.to_owned())),
-            None => (StageStatus::Done, Some("Plano aprovado.".into())),
+            None => (StageStatus::Done, Some(approved.into())),
         };
         stage.finished_at = Some(self.clock.now());
         self.pipelines.save_stage(&stage)?;
@@ -756,11 +778,59 @@ mod tests {
     }
 
     fn input(jira: Option<&str>) -> StartInput {
-        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), jira_site: None, title: String::new(), request: String::new(), budget_minutes: None, images: vec![] }
+        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), jira_site: None, title: String::new(), request: String::new(), budget_minutes: None, images: vec![], design: false }
     }
 
     fn roles(uc: &ManagePipelines, id: &str) -> Vec<(&'static str, &'static str)> {
         uc.detail(id).unwrap().stages.iter().map(|s| (s.role.key(), s.status.key())).collect()
+    }
+
+    #[tokio::test]
+    async fn design_is_approved_before_the_plan() {
+        let (world, uc, _) = setup(true);
+        let run = uc.start(StartInput { design: true, ..input(Some("loja-8")) }).unwrap();
+        assert!(run.design && !run.skipped.contains(&Role::Designer));
+        let url = "https://claude.ai/artifact/AbC123xyz";
+        let design = format!("Tela nova.\nDESIGN: {url}");
+        let bots = Bots::new(vec![Ok("VEREDITO: CLARO"), Ok(&design)]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!(detail.run.status, RunStatus::AwaitingApproval);
+        assert_eq!(roles(&uc, &run.id), [("triage", "done"), ("designer", "done"), ("design_approval", "running")]);
+        assert_eq!(detail.stages[2].input, design, "a parada mostra a especificação e o link");
+        let designer_conv = world.conversation(&detail.stages[1].conversation_id);
+        assert!(designer_conv.allowed_tools.iter().any(|t| t == ARTIFACT_TOOL), "o Designer pode publicar no Claude Design");
+        assert!(world.store.flag(&format!("{ARTIFACTS_PREFIX}{}", designer_conv.id), false), "e o CLI liga a ferramenta só para ele");
+        assert!(bots.prompts.lock().unwrap()[1].contains("intent \"design\""));
+
+        // Ajuste pedido: o Designer refaz com o pedido e o link anterior.
+        uc.decide_plan(&run.id, Some("botão maior")).unwrap();
+        let bots = Bots::new(vec![Ok(&design)]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        assert!(bots.prompts.lock().unwrap()[0].contains("botão maior"));
+        uc.decide_plan(&run.id, None).unwrap();
+        assert_eq!(uc.detail(&run.id).unwrap().stages[4].output.as_deref(), Some("Design aprovado."));
+
+        // Aprovado: o Planejador recebe o design e pode lê-lo.
+        let bots = Bots::new(vec![Ok("## Plano")]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        assert!(bots.prompts.lock().unwrap()[0].contains("<design_aprovado>"));
+        let detail = uc.detail(&run.id).unwrap();
+        let planner_conv = world.conversation(&detail.stages[5].conversation_id);
+        assert!(!planner_conv.allowed_tools.iter().any(|t| t == ARTIFACT_TOOL), "o Planejador só lê a especificação");
+        assert!(!world.store.flag(&format!("{ARTIFACTS_PREFIX}{}", planner_conv.id), false));
+        assert_eq!(detail.stages.last().unwrap().role, Role::Approval, "depois, a aprovação do plano de sempre");
+    }
+
+    #[tokio::test]
+    async fn designer_without_a_published_link_stops_the_run() {
+        let (_, uc, _) = setup(true);
+        let run = uc.start(StartInput { design: true, ..input(Some("loja-8")) }).unwrap();
+        let bots = Bots::new(vec![Ok("VEREDITO: CLARO"), Ok("Não consegui publicar.")]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!(detail.run.status, RunStatus::Failed);
+        assert!(detail.run.note.unwrap().contains("DESIGN:"));
     }
 
     #[tokio::test]
@@ -860,7 +930,7 @@ mod tests {
         assert!(uc.start(too_many).is_err());
         let run = uc.start(StartInput { title: "Corrigir o cálculo do frete".into(), images: vec![image("a.png"), image("b.png")], ..input(Some("loja-9")) }).unwrap();
         assert_eq!((run.image_count, uc.images(&run.id).unwrap().len()), (2, 2));
-        assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter]);
+        assert_eq!(run.skipped, [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter, Role::Designer, Role::DesignApproval], "sem design pedido, o Designer não roda");
         // Mudar o projeto depois de começar não muda a execução.
         uc.save_config("p1", PipelineConfig::default()).unwrap();
         assert_eq!(run.jira_url, None, "sem modelo, o site do Jira não é conhecido");

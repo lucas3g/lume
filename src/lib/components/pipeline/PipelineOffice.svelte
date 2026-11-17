@@ -3,7 +3,7 @@
   import "../../office/office.css";
   import { officeClock } from "../../office/clock";
   import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, spritesSvg, type OfficeScene } from "../../office/scene";
-  import { passesByRole, passLabel, stationRole, STATIONS } from "../../pipeline";
+  import { passesByRole, passLabel, stationPasses, stationRole, STATIONS } from "../../pipeline";
   import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
@@ -30,7 +30,7 @@
   const passes = $derived(passesByRole(detail));
   // Sem o relógio: a cena (e os sprites) só se refaz quando o estado das mesas muda, não a cada segundo.
   const cards = $derived(stationCards(detail, null, passes));
-  const times = $derived(Object.fromEntries(ORDER.map((role) => [role, stationTime(passes[role], now)])) as Record<string, string>);
+  const times = $derived(Object.fromEntries(ORDER.map((role) => [role, stationTime(stationPasses(detail, role), now)])) as Record<string, string>);
 
   /** A pasta fica na mesa da etapa mais recente; o ajuste sozinho não é mesa. */
   const lastStation = $derived(detail.stages.filter((s) => s.role !== "feedback").at(-1));

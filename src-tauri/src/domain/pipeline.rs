@@ -20,6 +20,10 @@ pub const MAX_DIFF_CHARS: usize = 60_000;
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Triage,
+    /// Desenha a solução no Claude Design e publica o artifact; só roda quando a execução pede.
+    Designer,
+    /// Parada em que o usuário abre o design, aprova ou pede ajustes; não é um bot.
+    DesignApproval,
     Planner,
     Implementer,
     Reviewer,
@@ -38,8 +42,10 @@ pub enum Role {
 
 impl Role {
     /// Estações, na ordem da esteira.
-    pub const ALL: [Role; 8] = [
+    pub const ALL: [Role; 10] = [
         Role::Triage,
+        Role::Designer,
+        Role::DesignApproval,
         Role::Planner,
         Role::Approval,
         Role::Implementer,
@@ -53,14 +59,19 @@ impl Role {
     /// são obrigatórios: nada muda sem você ver o plano, e todo código passa por revisão.
     pub const OPTIONAL: [Role; 4] = [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter];
 
+    /// Etapas desligadas a não ser que a execução peça: o design no Claude Design e a aprovação dele.
+    pub const OPT_IN: [Role; 2] = [Role::Designer, Role::DesignApproval];
+
     /// Papéis feitos por bots (que podem ter um agente).
     pub fn is_bot(self) -> bool {
-        !matches!(self, Role::Approval | Role::Feedback | Role::ReviewChoice)
+        !matches!(self, Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice)
     }
 
     pub fn key(self) -> &'static str {
         match self {
             Role::Triage => "triage",
+            Role::Designer => "designer",
+            Role::DesignApproval => "design_approval",
             Role::Planner => "planner",
             Role::Implementer => "implementer",
             Role::Reviewer => "reviewer",
@@ -80,6 +91,8 @@ impl Role {
     pub fn label(self) -> &'static str {
         match self {
             Role::Triage => "Triagem",
+            Role::Designer => "Designer",
+            Role::DesignApproval => "Aprovação do design",
             Role::Planner => "Planejador",
             Role::Implementer => "Implementador",
             Role::Reviewer => "Revisor",
@@ -95,16 +108,16 @@ impl Role {
     /// Nível de modelo do papel: leitura rápida no rápido, raciocínio e código no forte.
     pub fn tier(self) -> Tier {
         match self {
-            Role::Triage | Role::Reporter | Role::Approval | Role::Feedback | Role::ReviewChoice => Tier::Fast,
+            Role::Triage | Role::Reporter | Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice => Tier::Fast,
             Role::Tester => Tier::Balanced,
-            Role::Planner | Role::Implementer | Role::Reviewer | Role::CodeReview => Tier::Strong,
+            Role::Designer | Role::Planner | Role::Implementer | Role::Reviewer | Role::CodeReview => Tier::Strong,
         }
     }
 
     /// Papéis que recebem as imagens do pedido: quem entende a task e quem a executa.
     /// O Revisor vê só o diff, de propósito.
     pub fn sees_images(self) -> bool {
-        matches!(self, Role::Triage | Role::Planner | Role::Implementer)
+        matches!(self, Role::Triage | Role::Designer | Role::Planner | Role::Implementer)
     }
 
     /// Modo de permissão da sessão: só o Implementador e o Testador alteram a pasta
@@ -381,6 +394,8 @@ pub struct PipelineRun {
     /// Esforço de cada papel quando a execução começou; sem entrada, o padrão da conversa.
     pub efforts: BTreeMap<Role, String>,
     pub budget_minutes: i64,
+    /// A execução começa pelo design no Claude Design (Designer e a aprovação do design).
+    pub design: bool,
     /// Motivo do fim, quando falhou ou parou.
     pub note: Option<String>,
     pub created_at: i64,
@@ -484,6 +499,10 @@ fn place(run: &PipelineRun) -> String {
 #[derive(Debug, Default, Clone)]
 pub struct StageContext {
     pub triage: Option<String>,
+    /// Resposta do Designer mais recente: a especificação e a linha `DESIGN: <link>`.
+    pub design: Option<String>,
+    /// Ajustes pedidos pelo usuário ao design anterior.
+    pub design_feedback: Option<String>,
     pub plan: Option<String>,
     /// Ajustes pedidos pelo usuário ao plano anterior.
     pub plan_feedback: Option<String>,
@@ -502,6 +521,33 @@ pub struct StageContext {
 /// O ajuste que o usuário pediu, como parte do objetivo (para Revisor e Testador).
 fn adjustment(ctx: &StageContext) -> String {
     ctx.user_feedback.as_deref().map(|f| format!("Ajuste pedido pelo usuário depois de testar: {f}\n")).unwrap_or_default()
+}
+
+/// Link do artifact publicado pelo Designer: o da linha `DESIGN:` ou, sem ela, o último link de
+/// artifact do claude.ai na resposta.
+pub fn parse_design_url(text: &str) -> Option<String> {
+    // O link termina no id do artifact (como em `designUrl` na tela): `/artifact/<id>/edit` vale `/artifact/<id>`.
+    let artifact_url = |s: &str| -> Option<String> {
+        let start = s.find("https://claude.ai/")?;
+        let url: String = s[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | ':' | '.' | '-' | '_')).collect();
+        let id_start = url.find("/artifact/")? + "/artifact/".len();
+        let id_len = url[id_start..].chars().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')).count();
+        (id_len >= 6).then(|| url[..id_start + id_len].to_owned())
+    };
+    let tagged = text.lines().rev().find_map(|l| {
+        let l = l.trim().trim_matches(['*', '`', '_', ' ']);
+        l.get(..7).filter(|p| p.eq_ignore_ascii_case("DESIGN:")).and_then(|_| artifact_url(&l[7..]))
+    });
+    tagged.or_else(|| text.rmatch_indices("https://claude.ai/").find_map(|(i, _)| artifact_url(&text[i..])))
+}
+
+/// O design aprovado, para quem planeja e implementa.
+fn design_block(ctx: &StageContext) -> String {
+    let Some(design) = ctx.design.as_deref() else { return String::new() };
+    format!(
+        "<design_aprovado>\n{design}\n</design_aprovado>\nO usuário aprovou este design: siga a especificação acima. O link é a \
+         referência do usuário; você não precisa abri-lo e não deve alterá-lo.\n"
+    )
 }
 
 /// Prompt de uma etapa. Cada papel recebe só o que precisa.
@@ -527,6 +573,36 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                  caso contrário, `VEREDITO: CLARO`."
             )
         }
+        Role::Designer => {
+            let triage = match (ctx.triage.as_deref(), &run.jira_key) {
+                (Some(t), _) => format!("<triagem>\n{t}\n</triagem>\n"),
+                (None, Some(_)) => "Não houve triagem: leia a task no Jira com o conector do Atlassian (descrição, critérios de aceite e comentários).\n".to_owned(),
+                (None, None) => String::new(),
+            };
+            let previous = ctx.design.as_deref().and_then(parse_design_url);
+            let adjust = match (ctx.design_feedback.as_deref(), &previous) {
+                (Some(f), Some(url)) => format!(
+                    "\nO usuário pediu ajustes ao design anterior ({url}):\n<ajustes>\n{f}\n</ajustes>\nAtualize esse mesmo artifact (publique \
+                     com o `url` dele, lendo-o antes). Se a publicação for recusada porque ele é de outra conta, publique um novo.\n"
+                ),
+                (Some(f), None) => format!(
+                    "\nO usuário pediu ajustes ao design anterior:\n<ajustes>\n{f}\n</ajustes>\n<design_anterior>\n{}\n</design_anterior>\n",
+                    ctx.design.as_deref().unwrap_or("")
+                ),
+                _ => String::new(),
+            };
+            format!(
+                "{task}\n{triage}{adjust}\nVocê desenha a solução visual no Claude Design, antes do plano. Não altere nenhum arquivo do projeto: \
+                 os arquivos do design (se o tipo pedir) vão na sua pasta de rascunho (scratchpad), fora do projeto.\n\
+                 1. Estude no código as telas parecidas para seguir o estilo do app (cores, componentes, espaçamentos e textos).\n\
+                 2. Chame a ferramenta Artifact com action \"quickstart\" e intent \"design\" e siga o que ela indicar: crie o design a \
+                 partir do tipo Design (o `type_url` que ela der), com um título curto, e preencha-o como as instruções do tipo mandam.\n\
+                 3. Responda com a especificação completa do design em Markdown, porque quem planeja e implementa não abre o \
+                 artifact: cada tela e estado, a disposição dos elementos, os componentes do app que serão usados, os textos \
+                 exatos, as cores e os espaçamentos, e o que muda em relação ao que existe hoje. Na última linha, \
+                 `DESIGN: <link do artifact>`."
+            )
+        }
         Role::Planner => {
             let feedback = ctx
                 .plan_feedback
@@ -538,8 +614,9 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 (None, Some(_)) => "Não houve triagem: leia a task no Jira com o conector do Atlassian (descrição, critérios de aceite e comentários).\n".to_owned(),
                 (None, None) => String::new(),
             };
+            let design = design_block(ctx);
             format!(
-                "{task}\n{triage}{feedback}\nEstude o código e escreva o plano de implementação. Não altere nada.\n\
+                "{task}\n{triage}{design}{feedback}\nEstude o código e escreva o plano de implementação. Não altere nada.\n\
                  A sua última mensagem deve conter o plano completo, em Markdown: objetivo, arquivos a criar ou mudar \
                  (com o que muda em cada um), abordagem, riscos e como verificar (comandos de teste do projeto)."
             )
@@ -559,9 +636,10 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 ))
                 .unwrap_or_default();
             format!(
-                "{task}\n<plano_aprovado>\n{}\n</plano_aprovado>\n{adjust}{returned}\nExecute o plano aprovado. Siga o estilo do código existente. \
+                "{task}\n<plano_aprovado>\n{}\n</plano_aprovado>\n{}{adjust}{returned}\nExecute o plano aprovado. Siga o estilo do código existente. \
                  Termine com um resumo do que mudou, arquivo por arquivo.",
-                ctx.plan.as_deref().unwrap_or("")
+                ctx.plan.as_deref().unwrap_or(""),
+                design_block(ctx),
             )
         }
         Role::Reviewer => {
@@ -616,7 +694,7 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 ctx.implementation.as_deref().unwrap_or(""),
             )
         }
-        Role::Approval | Role::Feedback | Role::ReviewChoice => String::new(),
+        Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice => String::new(),
         Role::Reporter => {
             let round = match &ctx.user_feedback {
                 Some(f) => format!("Esta é uma rodada de ajuste pedida pelo usuário depois da entrega ({f}). O relatório e o comentário falam do que foi ajustado.\n"),
@@ -727,6 +805,8 @@ pub enum Next {
     Run(Role),
     /// Abre a parada de aprovação do plano.
     AskApproval,
+    /// Abre a parada de aprovação do design.
+    AskDesignApproval,
     /// Abre a parada em que o usuário escolhe os achados do code review a corrigir.
     AskChoice,
     /// Algo está em andamento (etapa ou aprovação): nada a fazer agora.
@@ -777,6 +857,7 @@ fn forward(from: Option<Role>, skipped: &[Role], stages: &[StageRun]) -> Next {
     let reviewed = effective(current_cycle(stages)).any(|s| s.role == Role::CodeReview);
     match Role::ALL[start..].iter().find(|r| !skipped.contains(r) && !(**r == Role::CodeReview && reviewed)) {
         Some(Role::Approval) => Next::AskApproval,
+        Some(Role::DesignApproval) => Next::AskDesignApproval,
         Some(role) => Next::Run(*role),
         None => Next::Finish(RunStatus::Done, None),
     }
@@ -793,6 +874,7 @@ pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
     match last.role {
         Role::Triage if returned => Next::Finish(RunStatus::NeedsInfo, Some("A Triagem achou a task vaga demais para seguir.".into())),
         Role::Approval if returned => Next::Run(Role::Planner),
+        Role::DesignApproval if returned => Next::Run(Role::Designer),
         Role::Reviewer | Role::Tester if returned && rounds(stages) >= MAX_ROUNDS => Next::Finish(
             RunStatus::Failed,
             Some(format!("O trabalho foi devolvido {MAX_ROUNDS} vezes; a esteira parou para você decidir.")),
@@ -820,6 +902,8 @@ pub fn context_for(stages: &[StageRun]) -> StageContext {
     let returned_by = |roles: &[Role]| last.filter(|s| s.status == StageStatus::Returned && roles.contains(&s.role)).and_then(|s| s.output.clone());
     StageContext {
         triage: latest(Role::Triage),
+        design: latest(Role::Designer),
+        design_feedback: returned_by(&[Role::DesignApproval]),
         plan: latest(Role::Planner),
         plan_feedback: returned_by(&[Role::Approval]),
         returned: returned_by(&[Role::Reviewer, Role::Tester, Role::ReviewChoice]),
@@ -1007,6 +1091,7 @@ mod tests {
             jira_url: None,
             efforts: BTreeMap::new(),
             budget_minutes: 60,
+            design: false,
             note: None,
             created_at: 0,
             updated_at: 0,
@@ -1073,48 +1158,48 @@ mod tests {
     fn walks_the_fixed_sequence_with_approval_and_return_loops() {
         use StageStatus::*;
         let mut stages = vec![];
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Triage));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Triage));
         stages.push(stage(Role::Triage, Done, "VEREDITO: CLARO"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Planner));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Planner));
         stages.push(stage(Role::Planner, Done, "plano 1"));
-        assert_eq!(next_step(&stages, &[]), Next::AskApproval);
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::AskApproval);
         stages.push(stage(Role::Approval, Running, ""));
-        assert_eq!(next_step(&stages, &[]), Next::Wait);
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Wait);
         stages.last_mut().unwrap().status = Returned;
         stages.last_mut().unwrap().output = Some("use CSV".into());
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Planner));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Planner));
         assert_eq!(context_for(&stages).plan_feedback.as_deref(), Some("use CSV"));
         stages.push(stage(Role::Planner, Done, "plano 2"));
         stages.push(stage(Role::Approval, Done, ""));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Implementer));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Implementer));
         assert_eq!(context_for(&stages).plan.as_deref(), Some("plano 2"));
         stages.push(stage(Role::Implementer, Failed, "caiu"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Implementer), "etapa que falhou é refeita ao retomar");
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Implementer), "etapa que falhou é refeita ao retomar");
         stages.push(stage(Role::Implementer, Done, "fiz"));
         stages.push(stage(Role::Reviewer, Returned, "bug"));
-        assert_eq!((next_step(&stages, &[]), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("bug")));
+        assert_eq!((next_step(&stages, &Role::OPT_IN), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("bug")));
         stages.push(stage(Role::Implementer, Done, "corrigi"));
         assert_eq!(rounds(&stages), 1);
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Tester));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Tester));
         stages.push(stage(Role::Tester, Done, "ok"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::CodeReview));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::CodeReview));
         stages.push(stage(Role::CodeReview, Done, "Achei um.\n```json\n[{\"id\": \"A1\", \"title\": \"nulo\", \"options\": []}]\n```"));
-        assert_eq!(next_step(&stages, &[]), Next::AskChoice);
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::AskChoice);
         stages.push(stage(Role::ReviewChoice, Running, ""));
-        assert_eq!(next_step(&stages, &[]), Next::Wait);
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Wait);
         stages.last_mut().unwrap().status = Returned;
         stages.last_mut().unwrap().output = Some("corrija A1".into());
-        assert_eq!((next_step(&stages, &[]), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("corrija A1")));
+        assert_eq!((next_step(&stages, &Role::OPT_IN), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("corrija A1")));
         stages.push(stage(Role::Implementer, Done, "corrigi A1"));
         assert_eq!(rounds(&stages), 1, "as correções do code review não gastam voltas");
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Tester));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Tester));
         stages.push(stage(Role::Tester, Done, "ok"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter), "o code review roda uma vez por ciclo");
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Reporter), "o code review roda uma vez por ciclo");
         assert!(context_for(&stages).code_review.is_some_and(|c| c.contains("corrija A1")));
         stages.push(stage(Role::Reporter, Done, "COMMIT: x"));
-        assert_eq!(next_step(&stages, &[]), Next::Finish(RunStatus::Done, None));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Finish(RunStatus::Done, None));
     }
 
     #[test]
@@ -1122,12 +1207,12 @@ mod tests {
         use StageStatus::*;
         let mut stages = vec![stage(Role::Implementer, Done, ""), stage(Role::Reviewer, Done, "VEREDITO: APROVADO"), stage(Role::Tester, Done, "ok")];
         stages.push(stage(Role::CodeReview, Done, "Tudo certo.\n```json\n[]\n```"));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Reporter));
         // Resposta sem a lista: o usuário lê o texto e escolhe mesmo assim.
         stages.last_mut().unwrap().output = Some("Achei coisas, mas esqueci o bloco.".into());
-        assert_eq!(next_step(&stages, &[]), Next::AskChoice);
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::AskChoice);
         stages.push(stage(Role::ReviewChoice, Done, "Nenhuma correção escolhida."));
-        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter));
+        assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Reporter));
         assert_eq!(next_step(&stages, &[Role::Reporter]), Next::Finish(RunStatus::Done, None));
         assert_eq!(spent_seconds(&stages, 10), 40, "a espera pela sua escolha não conta no orçamento");
         // Reaberta: o code review novo sem achados não herda a escolha do ciclo anterior.
@@ -1167,10 +1252,12 @@ mod tests {
     fn skipped_stages_are_jumped_over() {
         use StageStatus::*;
         let quick = [Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter];
-        assert_eq!(next_step(&[], &quick), Next::Run(Role::Planner));
+        // Na execução, o design não pedido entra com as etapas desligadas.
+        let quick_run = [quick.as_slice(), Role::OPT_IN.as_slice()].concat();
+        assert_eq!(next_step(&[], &quick_run), Next::Run(Role::Planner));
         let mut stages = vec![stage(Role::Planner, Done, "plano"), stage(Role::Approval, Done, ""), stage(Role::Implementer, Done, "")];
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
-        assert_eq!(next_step(&stages, &quick), Next::Finish(RunStatus::Done, None));
+        assert_eq!(next_step(&stages, &quick_run), Next::Finish(RunStatus::Done, None));
         assert_eq!(next_step(&stages, &[Role::Tester]), Next::Run(Role::CodeReview));
         assert_eq!(next_step(&stages, &[Role::Tester, Role::CodeReview]), Next::Run(Role::Reporter));
         let config = PipelineConfig { agents: BTreeMap::from([(Role::Approval, "a".into())]), skipped: vec![], ..Default::default() };
@@ -1210,13 +1297,13 @@ mod tests {
     #[test]
     fn stops_on_vague_task_and_after_max_rounds() {
         use StageStatus::*;
-        assert!(matches!(next_step(&[stage(Role::Triage, Returned, "")], &[]), Next::Finish(RunStatus::NeedsInfo, _)));
+        assert!(matches!(next_step(&[stage(Role::Triage, Returned, "")], &Role::OPT_IN), Next::Finish(RunStatus::NeedsInfo, _)));
         let mut stages = vec![stage(Role::Approval, Done, "")];
         for _ in 0..=MAX_ROUNDS {
             stages.push(stage(Role::Implementer, Done, ""));
             stages.push(stage(Role::Tester, Returned, "falhou"));
         }
-        assert!(matches!(next_step(&stages, &[]), Next::Finish(RunStatus::Failed, Some(_))));
+        assert!(matches!(next_step(&stages, &Role::OPT_IN), Next::Finish(RunStatus::Failed, Some(_))));
     }
 
     #[test]
@@ -1287,5 +1374,38 @@ mod tests {
         let big = "x".repeat(MAX_DIFF_CHARS + 10);
         assert!(clip_diff(&big).ends_with("resto)"));
         assert_eq!(clip_diff("curto"), "curto");
+    }
+
+    #[test]
+    fn design_runs_before_the_plan_and_loops_on_adjustments() {
+        use StageStatus::*;
+        let url = "https://claude.ai/artifact/AbC123xyz";
+        let design = format!("## Tela de exportação\nBotão no topo.\n\nDESIGN: {url}");
+        let mut stages = vec![stage(Role::Triage, Done, "VEREDITO: CLARO")];
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Designer), "com design, o Designer vem depois da Triagem");
+        stages.push(stage(Role::Designer, Done, &design));
+        assert_eq!(next_step(&stages, &[]), Next::AskDesignApproval);
+        stages.push(stage(Role::DesignApproval, Returned, "botão no rodapé"));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Designer), "ajuste pedido: volta ao Designer");
+        let ctx = context_for(&stages);
+        let again = stage_prompt(Role::Designer, &run(WorkMode::Worktree, None), &ctx);
+        assert!(again.contains("botão no rodapé") && again.contains(url), "o ajuste e o link anterior vão ao Designer");
+        stages.push(stage(Role::Designer, Done, &design));
+        stages.push(stage(Role::DesignApproval, Done, "Design aprovado."));
+        assert_eq!(next_step(&stages, &[]), Next::Run(Role::Planner));
+        let plan = stage_prompt(Role::Planner, &run(WorkMode::Worktree, None), &context_for(&stages));
+        assert!(plan.contains("<design_aprovado>") && plan.contains(url) && !plan.contains("action \"read\""), "o plano segue a especificação, sem abrir o artifact");
+        assert!(!stage_prompt(Role::Planner, &run(WorkMode::Worktree, None), &StageContext::default()).contains("design_aprovado"));
+        assert_eq!(next_step(&[stage(Role::Triage, Done, "VEREDITO: CLARO")], &Role::OPT_IN), Next::Run(Role::Planner), "sem design, direto ao plano");
+        assert!(!Role::DesignApproval.is_bot() && Role::Designer.is_bot());
+    }
+
+    #[test]
+    fn design_link_comes_from_the_tagged_line() {
+        assert_eq!(parse_design_url("pronto\n**DESIGN: https://claude.ai/artifact/QKN21svewx.**"), Some("https://claude.ai/artifact/QKN21svewx".into()));
+        assert_eq!(parse_design_url("veja https://claude.ai/code/artifact/1b2c3d4e-aa e pronto"), Some("https://claude.ai/code/artifact/1b2c3d4e-aa".into()));
+        assert_eq!(parse_design_url("DESIGN: https://exemplo.com/artifact/abcdef"), None, "só links do claude.ai");
+        assert_eq!(parse_design_url("sem link"), None);
+        assert_eq!(parse_design_url("DESIGN: https://claude.ai/artifact/AbC123xyz/edit"), Some("https://claude.ai/artifact/AbC123xyz".into()));
     }
 }
