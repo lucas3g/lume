@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import "../../office/office.css";
   import { officeClock } from "../../office/clock";
-  import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, spritesSvg, type OfficeScene } from "../../office/scene";
-  import { passesByRole, passLabel, stationPasses, stationRole, STATIONS } from "../../pipeline";
+  import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, officeVisit, spritesSvg, type OfficeScene } from "../../office/scene";
+  import { isUserStep, passesByRole, passLabel, stationPasses, stationRole, STATIONS } from "../../pipeline";
+  import { chat } from "../../state/chat.svelte";
   import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
@@ -69,6 +70,8 @@
     if (from < 0 || from === indexOf(latest.role)) return;
     previous = from;
     tripId += 1;
+    // A pasta saiu: quem estava voltando da sua mesa já chegou.
+    if (visit?.phase === "back") endVisit();
     traveling = true;
     clearTimeout(settle);
     // A duração depende da distância entre as mesas: calculada pela própria cena.
@@ -79,14 +82,66 @@
   });
   onMount(() => () => clearTimeout(settle));
 
+  // ---- visita à sua mesa: quem pede autorização no meio da etapa (pergunta, plano, permissão) vai até ela
+
+  /** Mesa do bot que espera a sua resposta agora, ou -1. */
+  const asking = $derived.by(() => {
+    const stage = detail.stages.findLast((s) => s.status === "running" && !isUserStep(s.role) && !!s.conversation_id && !!chat.permissions[s.conversation_id]);
+    return stage ? indexOf(stage.role) : -1;
+  });
+  let visit = $state<OfficeScene["visit"]>(null);
+  let visitId = 0;
+  let visitRun: string | null = null;
+  let back: ReturnType<typeof setTimeout> | undefined;
+  const endVisit = () => {
+    clearTimeout(back);
+    visit = null;
+  };
+
+  $effect(() => {
+    const index = asking;
+    const run = detail.id;
+    untrack(() => {
+      // Ao abrir a execução no meio de um pedido, a pessoa já está lá.
+      if (run !== visitRun) {
+        visitRun = run;
+        endVisit();
+        if (index >= 0) visit = { index, phase: "stay", id: ++visitId };
+        return;
+      }
+      if (index >= 0) {
+        if (visit?.index === index && visit.phase !== "back") return;
+        endVisit();
+        visit = { index, phase: "go", id: ++visitId };
+        // Chegou: fica de pé esperando, e o relógio da sala volta ao ritmo de quem está parado.
+        queueMicrotask(() => {
+          const trip = officeVisit(scene);
+          back = setTimeout(() => (visit = { index, phase: "stay", id: ++visitId }), (trip?.td ?? 0) * 1000);
+        });
+      } else if (visit && visit.phase !== "back") {
+        // Respondido: volta para a mesa; a duração da volta vem da própria cena.
+        clearTimeout(back);
+        visit = { index: visit.index, phase: "back", id: ++visitId };
+        queueMicrotask(() => {
+          const trip = officeVisit(scene);
+          clearTimeout(back);
+          back = setTimeout(() => (visit = null), (trip?.td ?? 0) * 1000);
+        });
+      }
+    });
+  });
+  onMount(() => () => clearTimeout(back));
+
   // ---- cena
 
+  /** Enquanto alguém pede autorização, a sua mesa acende como quando espera a sua aprovação. */
+  const askingName = $derived(asking >= 0 ? cards[asking]?.station.name : null);
   const scene = $derived<OfficeScene>({
     stations: cards.map((c) => ({
       role: c.station.role,
-      visual: c.visual,
+      visual: askingName && c.station.role === "approval" && c.visual !== "you" ? "you" : c.visual,
       label: c.station.name,
-      stateText: c.label,
+      stateText: askingName && c.station.role === "approval" && c.visual !== "you" ? `${askingName} pede sua autorização` : c.label,
       activity: c.visual === "working" ? (c.activity ?? "Trabalhando") : null,
       account: c.account && c.account !== "você" ? c.account : null,
       model: c.model,
@@ -98,6 +153,7 @@
     previous,
     selected: selected ? indexOf(selected) : null,
     tripId,
+    visit,
   });
 
   let width = $state(0);
@@ -130,7 +186,7 @@
     clock = officeClock(room, 12);
     return () => clock?.destroy();
   });
-  $effect(() => clock?.setFps(traveling ? 30 : 12));
+  $effect(() => clock?.setFps(traveling || (visit && visit.phase !== "stay") ? 30 : 12));
   const meta = (text: string, role: string) => [text, times[role]].filter(Boolean).join(" · ");
 </script>
 
@@ -167,6 +223,13 @@
         {#if view.trip}
           {#key view.trip.id}
             {#each view.trip.legs as leg, i (i)}
+              <div class={leg.cls} style={leg.style}><svg viewBox={leg.vb}>{@html spritesSvg(leg.sprites)}</svg></div>
+            {/each}
+          {/key}
+        {/if}
+        {#if view.visit}
+          {#key view.visit.id}
+            {#each view.visit.legs as leg, i (i)}
               <div class={leg.cls} style={leg.style}><svg viewBox={leg.vb}>{@html spritesSvg(leg.sprites)}</svg></div>
             {/each}
           {/key}

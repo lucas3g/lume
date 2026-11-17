@@ -48,6 +48,8 @@
 .office-room .trip{display:contents}
 .office-room .leg{position:absolute;left:0;top:0;width:calc(12px*var(--s));height:calc(20px*var(--s));opacity:0;pointer-events:none;animation:of-leg var(--dur) var(--ease) var(--t0) 1}
 .office-room .leg>svg{width:100%;height:100%}
+/* De pé esperando na sua mesa: o último trecho fica à vista depois de acabar. */
+.office-room .leg.hold{animation-fill-mode:forwards}
 .office-room .leg.f-se>svg,.office-room .leg.f-ne>svg{scale:-1 1}
 @keyframes of-leg{from{opacity:1;z-index:var(--z0);transform:translate(calc(var(--x0)*var(--u)),calc(var(--y0)*var(--u)))}to{opacity:1;z-index:var(--z1);transform:translate(calc(var(--x1)*var(--u)),calc(var(--y1)*var(--u)))}}
 .office-room .leg.plane{height:calc(6px*var(--s))}

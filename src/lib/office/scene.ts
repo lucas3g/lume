@@ -733,7 +733,8 @@ function deskSprites(role) {
 
 /* Camadas de uma estação, na ordem de pintura: [chão e cadeira] [corpo] [mesa] [ao vivo] [mãos] [pasta] [selo] [fumaça].
    As que dependem do estado viram duas camadas no destino de uma viagem: "aguardando" até a pasta chegar e o
-   estado novo a partir daí (portões g-until/g-from em --at). Quem saiu para entregar não aparece sentado. */
+   estado novo a partir daí (portões g-until/g-from em --at). Quem saiu para entregar ou foi até a sua mesa não
+   aparece sentado. */
 function stationLayers(st, c) {
   const role = st.role, g = geo(role), you = role === 'approval', id = '-' + role;
   const v = you && st.visual === 'working' ? 'you' : st.visual;
@@ -771,7 +772,8 @@ function stationLayers(st, c) {
     const b = { you: 'a-bounce', done: 'a-pop', returned: '', failed: '' }[vis];
     return b == null ? [] : [SO('badge-' + vis + id, b, '', t => t.map(g.seat[0] - 5, g.seat[1] - (vis === 'done' ? 30 : 27), BADGE[vis]))];
   };
-  slot(badge, c.away ? c.td : null);
+  /* Quem foi até a sua mesa leva o pedido junto: o selo não fica na mesa vazia. */
+  if (!c.visiting) slot(badge, c.away ? c.td : null);
   if (v === 'failed' && !you) add([0, 0.6, 1.2].map((d, n) => S('smoke' + n + id, 'a-smoke', d ? 'animation-delay:' + d + 's' : '', t => {
     const p = g.pt(0.32, 1.5, 23); t.px(p[0] - 3 + n * 2, p[1] - 3 - (n % 2), 2 + (n % 2), 2 + (n % 2), n === 1 ? '#8b909a99' : '#8b909acc');
   })));
@@ -943,6 +945,40 @@ function legStyle(a, b, za, zb, t0, dur, steps) {
 }
 /* Canto superior esquerdo da caixa 12x20 de quem anda, com os pés no ponto do chão p. */
 const feet = p => [sx(p[0], p[1]) - 6, sy(p[0], p[1]) - 20];
+/* Rota a pé da mesa de origem até a ponta da mesa de destino, só com os cantos: a pessoa levanta (de pé atrás da
+   mesa), sai pelo lado de caminho mais curto e anda pelos corredores. null se não houver caminho. */
+function walkPath(from, to) {
+  return memo('path:' + from + '>' + to, () => {
+    const B = blocked(), gd = geo(to), goal = [Math.floor(gd.front[0]), Math.floor(gd.front[1])];
+    let best = null;
+    geo(from).exits.forEach(e => {
+      const out = [Math.floor(e.out[0]), Math.floor(e.out[1])];
+      if (out[0] < 0 || out[1] < 0 || B[out[0] + ',' + out[1]]) return;
+      const r = route(out, goal); if (!r) return;
+      const pts = [e.stand].concat(r.map(q => [q[0] + .5, q[1] + .5]));
+      if (!best || pts.length < best.length) best = pts;
+    });
+    return best && best.filter((q, i) => {
+      if (i === 0 || i === best.length - 1) return true;
+      const a = best[i - 1], b = best[i + 1];
+      return (q[0] - a[0]) * (b[1] - q[1]) !== (q[1] - a[1]) * (b[0] - q[0]);
+    });
+  });
+}
+/* Trechos de quem anda, um depois do outro: andando (ciclo de 4 quadros, um passo de 2x1 px a cada 1/6 de tile) ou
+   parado (entregando a pasta, ou de pé esperando com hold, que fica à vista depois do fim). bare: sem os sprites. */
+function walker(role, bare) {
+  const w = { legs: [], t: 0 };
+  const face = (p, q) => (q[0] > p[0] ? 'se' : q[0] < p[0] ? 'nw' : q[1] > p[1] ? 'sw' : 'ne');
+  w.leg = (p, q, dir, carry, hold) => {
+    const len = Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]), dur = len ? len / SPEED : HAND;
+    w.legs.push({ cls: 'leg f-' + dir + (hold ? ' hold' : ''), vb: '0 0 12 20', style: legStyle(feet(p), feet(q), depth(p), depth(q), w.t, dur, Math.max(1, Math.round(len * 6))), sprites: bare ? [] : walkerSprites(role, dir === 'ne' || dir === 'nw', carry, len ? null : 0) });
+    w.t += dur;
+  };
+  w.go = (pts, carry) => { for (let i = 0; i + 1 < pts.length; i++) w.leg(pts[i], pts[i + 1], face(pts[i], pts[i + 1]), carry); };
+  w.back = pts => { for (let i = pts.length - 1; i > 0; i--) w.leg(pts[i], pts[i - 1], face(pts[i], pts[i - 1]), false); };
+  return w;
+}
 /* bare: só a rota e os tempos, sem desenhar os sprites (quem só quer saber quanto a viagem dura). */
 function tripOf(scene, bare) {
   const ai = scene.active, pi = scene.previous;
@@ -957,34 +993,29 @@ function tripOf(scene, bare) {
       style: legStyle(a, b, 2900, 2900, 0, td, 36), sprites: bare ? [] : [SO('plane', '', '', t => t.map(0, 0, PLANE))]
     }] });
   }
-  const B = blocked(), goal = [Math.floor(gd.front[0]), Math.floor(gd.front[1])];
-  let best = null;
-  go.exits.forEach(e => {
-    const out = [Math.floor(e.out[0]), Math.floor(e.out[1])];
-    if (out[0] < 0 || out[1] < 0 || B[out[0] + ',' + out[1]]) return;
-    const r = route(out, goal); if (!r) return;
-    const pts = [e.stand].concat(r.map(q => [q[0] + .5, q[1] + .5]));
-    if (!best || pts.length < best.length) best = pts;
-  });
-  if (!best) return null;
-  const corners = best.filter((q, i) => {
-    if (i === 0 || i === best.length - 1) return true;
-    const a = best[i - 1], b = best[i + 1];
-    return (q[0] - a[0]) * (b[1] - q[1]) !== (q[1] - a[1]) * (b[0] - q[0]);
-  });
-  const legs = [], face = (p, q) => (q[0] > p[0] ? 'se' : q[0] < p[0] ? 'nw' : q[1] > p[1] ? 'sw' : 'ne');
-  let t = 0;
-  /* Um trecho: andando (ciclo de 4 quadros, um passo de 2x1 px a cada 1/6 de tile) ou parado entregando a pasta. */
-  const leg = (p, q, dir, carry) => {
-    const len = Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]), dur = len ? len / SPEED : HAND;
-    legs.push({ cls: 'leg f-' + dir, vb: '0 0 12 20', style: legStyle(feet(p), feet(q), depth(p), depth(q), t, dur, Math.max(1, Math.round(len * 6))), sprites: bare ? [] : walkerSprites(from, dir === 'ne' || dir === 'nw', carry, len ? null : 0) });
-    t += dur;
-  };
-  for (let i = 0; i + 1 < corners.length; i++) leg(corners[i], corners[i + 1], face(corners[i], corners[i + 1]), true);
-  const arrive = t, end = corners[corners.length - 1];
-  leg(end, end, gd.facing, false);
-  for (let i = corners.length - 1; i > 0; i--) leg(corners[i], corners[i - 1], face(corners[i], corners[i - 1]), false);
-  return Object.assign(base, { kind: 'walk', td: +t.toFixed(2), arrive: +arrive.toFixed(2), points: corners, legs: legs });
+  const corners = walkPath(from, scene.stations[ai].role);
+  if (!corners) return null;
+  const w = walker(from, bare), end = corners[corners.length - 1];
+  w.go(corners, true);
+  const arrive = w.t;
+  w.leg(end, end, gd.facing, false);
+  w.back(corners);
+  return Object.assign(base, { kind: 'walk', td: +w.t.toFixed(2), arrive: +arrive.toFixed(2), points: corners, legs: w.legs });
+}
+/* Visita à sua mesa, derivada só de scene.visit { index, phase, id }: quem pede a sua autorização no meio da etapa
+   (uma pergunta, o plano, uma permissão) levanta sem a pasta, anda até a ponta da sua mesa e fica de pé, virado
+   para ela, até você responder ('go'; 'stay' já começa lá, para quem abre a execução no meio do pedido).
+   Respondido, volta para a mesa ('back'); td é quando a ida chega ou a volta acaba. */
+function visitOf(scene, bare) {
+  const v = scene.visit, st = v && scene.stations[v.index];
+  if (!st || st.role === 'approval' || !scene.stations.some(s => s.role === 'approval')) return null;
+  const corners = walkPath(st.role, 'approval');
+  if (!corners) return null;
+  const w = walker(st.role, bare), end = corners[corners.length - 1], facing = geo('approval').facing;
+  if (v.phase === 'go') w.go(corners, false);
+  if (v.phase === 'back') { w.leg(end, end, facing, false); w.back(corners); }
+  else w.leg(end, end, facing, false, true);
+  return { id: v.id || 0, kind: 'visit', fromIndex: v.index, phase: v.phase, td: +w.t.toFixed(2), legs: w.legs };
 }
 
 /* Estado da cena -> tudo o que a marcação precisa. opt: { scale, dpr, traveling }.
@@ -992,13 +1023,13 @@ function tripOf(scene, bare) {
 function buildView(scene, opt) {
   opt = opt || {};
   density(opt.scale || 3, opt.dpr || 1);
-  const trip = opt.traveling ? tripOf(scene) : null;
+  const trip = opt.traveling ? tripOf(scene) : null, visit = visitOf(scene);
   const stations = scene.stations.map((st, i) => {
     const g = geo(st.role), selected = scene.selected === i, active = scene.active === i;
-    const from = !!trip && trip.fromIndex === i, to = !!trip && trip.toIndex === i;
+    const from = !!trip && trip.fromIndex === i, to = !!trip && trip.toIndex === i, visiting = !!visit && visit.fromIndex === i;
     const layers = stationLayers(st, {
       index: i, selected: selected, folder: active && st.visual !== 'skipped',
-      to: to, arrive: trip ? trip.arrive : 0, away: from && trip.kind === 'walk', td: trip ? trip.td : 0
+      to: to, arrive: trip ? trip.arrive : 0, away: (from && trip.kind === 'walk') || visiting, td: trip ? trip.td : 0, visiting: visiting
     });
     const meta = [st.account, st.model, st.time].filter(Boolean).join(' · ');
     const working = st.visual === 'working' && st.role !== 'approval';
@@ -1018,7 +1049,7 @@ function buildView(scene, opt) {
       } : null
     };
   });
-  return { stations: stations, trip: trip };
+  return { stations: stations, trip: trip, visit: visit };
 }
 
 // ---- interface pública
@@ -1047,13 +1078,15 @@ export interface OfficeScene {
   selected: number | null;
   /** Cresce a cada passagem da pasta, para reiniciar a viagem. */
   tripId: number;
+  /** Quem foi até a sua mesa pedir autorização: ida ('go'), já lá ('stay') ou volta ('back'). `id` reinicia a cena. */
+  visit: { index: number; phase: "go" | "stay" | "back"; id: number } | null;
 }
 
 interface Art { href: string; x: number; y: number; w: number; h: number; box: number[]; mx: number; my: number; mw: number; mask: Uint8Array }
 interface Sprite { k: string; cls: string; style: string; art: Art }
 interface Layer { cls: string; style: string; sprites: Sprite[] }
 
-export interface OfficeTrip { id: number; kind: "walk" | "plane"; td: number; legs: { cls: string; style: string; vb: string; sprites: Sprite[] }[] }
+export interface OfficeTrip { id: number; kind: "walk" | "plane" | "visit"; td: number; legs: { cls: string; style: string; vb: string; sprites: Sprite[] }[] }
 
 export interface OfficeView {
   stations: {
@@ -1070,6 +1103,8 @@ export interface OfficeView {
     balloon: { cls: string; style: string; activity: string; meta: string } | null;
   }[];
   trip: OfficeTrip | null;
+  /** Ida, espera de pé ou volta de quem foi até a sua mesa (à vista enquanto `scene.visit` existir). */
+  visit: OfficeTrip | null;
 }
 
 /** Largura e altura lógicas da sala. */
@@ -1080,6 +1115,8 @@ export const OFFICE_H: number = LH;
 export const officeView: (scene: OfficeScene, opt: { scale: number; dpr: number; traveling: boolean }) => OfficeView = buildView;
 /** Rota e duração da viagem atual, sem os sprites (`legs[].sprites` vazio). */
 export const officeTrip = (scene: OfficeScene): OfficeTrip | null => tripOf(scene, true);
+/** Rota e duração da visita atual à sua mesa, sem os sprites. */
+export const officeVisit = (scene: OfficeScene): OfficeTrip | null => visitOf(scene, true);
 
 const imageSvg = (a: Art): string => (a.href ? `<image href="${a.href}" x="${a.x}" y="${a.y}" width="${a.w}" height="${a.h}"/>` : "");
 const spritesSvg = (list: Sprite[]): string => list.map((s) => `<g class="${s.cls}" style="${s.style}">${imageSvg(s.art)}</g>`).join("");
