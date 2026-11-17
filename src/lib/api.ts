@@ -50,7 +50,7 @@ export const api = {
   injectMessage: (conversationId: string, id: string, text: string, attachments: string[], images: PastedImage[]) =>
     invoke<boolean>("inject_message", { conversationId, id, text, attachments, images }),
   cancelMessage: (conversationId: string) => invoke<void>("cancel_message", { conversationId }),
-  backgroundTool: (conversationId: string, toolId: string) => invoke<void>("background_tool", { conversationId, toolId }),
+  backgroundTool: (conversationId: string, toolId: string) => invoke<boolean>("background_tool", { conversationId, toolId }),
   startFolderSession: (folder: string, model: string) => invoke<Conversation>("start_folder_session", { folder, model }),
   startIsolatedSession: (projectId: string, model: string) =>
     invoke<Conversation>("start_isolated_session", { projectId, model }),

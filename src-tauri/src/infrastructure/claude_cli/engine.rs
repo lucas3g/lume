@@ -198,6 +198,9 @@ impl ChatEngine for ClaudeCliEngine {
         // Subagentes em segundo plano ainda trabalhando: com eles, o processo segue vivo
         // depois da resposta e continua aceitando mensagens do usuário.
         let mut background: HashSet<String> = HashSet::new();
+        // Chamadas que já devolveram resultado: pedir segundo plano para elas não teria resposta
+        // e deixaria o processo esperando por uma tarefa que já acabou.
+        let mut finished: HashSet<String> = HashSet::new();
         // A resposta terminou e o processo segue vivo só pelos agentes em segundo plano.
         let mut awaiting = false;
         loop {
@@ -215,13 +218,15 @@ impl ChatEngine for ClaudeCliEngine {
                         write_line(&mut stdin, permission_response(&decision, &input)).await;
                     }
                 }
-                Some(tool_id) = control.backgrounds.recv() => {
+                Some((tool_id, ack)) = control.backgrounds.recv() => {
                     // Como o Ctrl+B do terminal, só para esta chamada: ela devolve na hora e o
                     // turno segue; o processo fica vivo até a tarefa avisar que terminou.
-                    if stdin.is_some() {
+                    let open = stdin.is_some() && !finished.contains(&tool_id);
+                    if open {
                         write_line(&mut stdin, background_request(&tool_id)).await;
                         background.insert(tool_id);
                     }
+                    let _ = ack.send(open);
                 }
                 Some((injection, ack)) = control.injections.recv() => {
                     // Depois do resultado sem nada por ler, o stdin já fechou e o processo está saindo.
@@ -246,6 +251,11 @@ impl ChatEngine for ClaudeCliEngine {
                             }
                             TurnEvent::Subagent { parent, step: SubagentStep::Finished { .. } } => {
                                 background.remove(parent);
+                                finished.insert(parent.clone());
+                            }
+                            // Só conta como acabada se não foi para segundo plano (aí o resultado vem na hora).
+                            TurnEvent::ToolResult { id, .. } if !background.contains(id) => {
+                                finished.insert(id.clone());
                             }
                             _ => {}
                         }
@@ -418,7 +428,7 @@ mod tests {
                 // Só o primeiro comando: o modelo pode rodar outros para esperar por ele.
                 TurnEvent::ToolTask(id) if !sent => {
                     sent = true;
-                    background.send(id.clone()).unwrap();
+                    background.send((id.clone(), tokio::sync::oneshot::channel().0)).unwrap();
                 }
                 TurnEvent::ToolResult { output, .. } => results.push((started.elapsed().as_secs(), output.clone())),
                 _ => {}

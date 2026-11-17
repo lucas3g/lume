@@ -138,7 +138,7 @@ fn parse_task(v: &Value) -> Option<TurnEvent> {
     let step = match v["subtype"].as_str()? {
         // Tarefas de outros tipos (ex.: comandos do terminal) não são subagentes, mas já podem ir para segundo plano.
         "task_started" if !v["task_type"].as_str().is_some_and(|t| t.contains("agent")) => return Some(TurnEvent::ToolTask(parent)),
-        "task_started" if v["task_type"].as_str().is_some_and(|t| t.contains("agent")) => SubagentStep::Started {
+        "task_started" => SubagentStep::Started {
             description: text("description"),
             agent_type: text("subagent_type"),
             prompt: text("prompt"),

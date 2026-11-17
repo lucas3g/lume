@@ -1,6 +1,6 @@
 <script lang="ts">
   import { formatDuration } from "../format";
-  import { liveClock } from "../state/clock.svelte";
+  import { liveClock, useLiveClock } from "../state/clock.svelte";
   import { summarize, type RunningTool, type ToolUse } from "../tools";
   import ToolPreview from "./ToolPreview.svelte";
 
@@ -27,6 +27,11 @@
   const skipped = $derived(!busy && tool.output === null && !tool.is_error);
   const state = $derived(busy ? "executando" : failed ? "falhou" : skipped ? "não executada" : "concluída");
   const canBackground = $derived(live !== null && live.task && !live.backgrounded && onbackground !== undefined);
+
+  // O tempo no rodapé corre mesmo quando o grupo em volta já não está ativo.
+  $effect(() => {
+    if (live) return useLiveClock();
+  });
 </script>
 
 {#snippet icon()}

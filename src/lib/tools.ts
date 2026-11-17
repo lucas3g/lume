@@ -165,7 +165,12 @@ export function groupThread<M extends { id: number; role: string; content: strin
   running: RunningTool[],
 ): ThreadBlock<M>[] {
   type Entry = { message: M; tool: ToolUse | null } | { running: RunningTool; tool: ToolUse };
-  const entries: Entry[] = messages.map((message) => ({ message, tool: message.role === "tool" ? parseToolUse(message.content) : null }));
+  const entries: Entry[] = messages.flatMap<Entry>((message) => {
+    if (message.role !== "tool") return [{ message, tool: null }];
+    // Uso de ferramenta ilegível não aparece (nem vira texto do agente).
+    const tool = parseToolUse(message.content);
+    return tool ? [{ message, tool }] : [];
+  });
   const recorded = new Set(entries.map((e) => e.tool?.id).filter(Boolean));
   for (const r of running) {
     if (!recorded.has(r.id)) entries.push({ running: r, tool: { id: r.id, name: r.name, input: r.input, output: null, is_error: false } });

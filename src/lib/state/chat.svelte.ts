@@ -316,8 +316,10 @@ export function backgroundTool(toolId: string): void {
   const id = chat.activeId;
   const tool = id ? chat.turns[id]?.running.find((r) => r.id === toolId) : undefined;
   if (!id || !tool || tool.backgrounded) return;
+  // Já esconde o botão; volta se o pedido não chegou à CLI (ex.: o comando acabou antes).
   tool.backgrounded = true;
-  void api.backgroundTool(id, toolId).catch(() => tool && (tool.backgrounded = false));
+  const undo = () => tool && (tool.backgrounded = false);
+  void api.backgroundTool(id, toolId).then((sent) => sent || undo(), undo);
 }
 
 export function cancel(): void {
@@ -367,7 +369,8 @@ function subagentStatus(current: string | null, delta: string): string {
 function takeRecorded(id: string): void {
   const turn = chat.turns[id];
   if (turn) turn.text = "";
-  if (chat.activeId !== id) return;
+  // Fora da conversa aberta, só busca para tirar das que rodam as ferramentas já gravadas.
+  if (chat.activeId !== id && !turn?.running.length) return;
   void api.listMessages(id).then((messages) => {
     // A resposta de uma conversa que o usuário já deixou não substitui a aberta.
     if (chat.activeId === id) chat.messages = messages;
@@ -452,9 +455,12 @@ export function handleChatEvent(event: ChatEvent): void {
       if (turn) turn.status = event.tool === "AskUserQuestion" ? "Aguardando sua resposta" : "Aguardando sua aprovação";
       break;
     case "reset":
+      // A tentativa foi descartada: as ferramentas dela não vão devolver resultado.
       if (turn) {
         turn.text = "";
         turn.status = null;
+        turn.running = [];
+        turn.toolsSince = null;
       }
       break;
     case "notice":

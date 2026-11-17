@@ -309,10 +309,12 @@ pub fn decide_permission(
     Ok(())
 }
 
-/// Manda para segundo plano um comando (ou subagente) em execução no turno da conversa.
+/// Manda para segundo plano um comando (ou subagente) em execução no turno da conversa;
+/// devolve se o pedido chegou à CLI (o turno pode já ter acabado, ou o comando terminado).
 #[tauri::command]
-pub fn background_tool(app: App<'_>, conversation_id: String, tool_id: String) {
-    app.running.background(&conversation_id, &tool_id);
+pub async fn background_tool(app: App<'_>, conversation_id: String, tool_id: String) -> AppResult<bool> {
+    let Some(sent) = app.running.background(&conversation_id, &tool_id) else { return Ok(false) };
+    Ok(sent.await.unwrap_or(false))
 }
 
 #[tauri::command]

@@ -110,7 +110,8 @@
   const thread = $derived(groupThread(chat.messages, turn?.running ?? []));
   /** O agente ainda está na última sequência de ações: nada escrito depois dela. */
   const liveGroupKey = $derived.by(() => {
-    const last = thread.at(-1);
+    // O cartão de tarefas pode vir depois do grupo (atualizado junto com um comando): não conta.
+    const last = thread.findLast((b) => b.kind !== "todos");
     if (!turn || turn.waiting || last?.kind !== "tools") return null;
     return turn.running.length || !turn.text ? last.key : null;
   });

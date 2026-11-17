@@ -108,8 +108,9 @@ pub struct TurnControl {
     pub injections: mpsc::UnboundedReceiver<(Injection, oneshot::Sender<bool>)>,
     /// O que gravar na conversa quando o agente ler cada mensagem: id → (texto, registro dos anexos).
     pub pending_users: PendingUsers,
-    /// Chamadas de ferramenta (Bash, subagente) que o usuário mandou para segundo plano.
-    pub backgrounds: mpsc::UnboundedReceiver<String>,
+    /// Chamadas de ferramenta (Bash, subagente) que o usuário mandou para segundo plano;
+    /// o motor confirma se conseguiu fazer o pedido.
+    pub backgrounds: mpsc::UnboundedReceiver<(String, oneshot::Sender<bool>)>,
 }
 
 /// Mensagens entregues durante o turno e ainda não lidas pelo agente.
@@ -133,7 +134,7 @@ pub struct TurnHandle {
     answer: mpsc::UnboundedSender<PermissionDecision>,
     inject: mpsc::UnboundedSender<(Injection, oneshot::Sender<bool>)>,
     pending_users: PendingUsers,
-    background: mpsc::UnboundedSender<String>,
+    background: mpsc::UnboundedSender<(String, oneshot::Sender<bool>)>,
 }
 
 /// Turnos em andamento, por conversa, para cancelar e responder autorizações.
@@ -173,10 +174,13 @@ impl RunningTurns {
     }
 
     /// Manda para segundo plano a ferramenta em execução (o turno segue sem esperá-la).
-    pub fn background(&self, conversation_id: &str, tool_id: &str) {
-        if let Some(turn) = self.map().get(conversation_id) {
-            let _ = turn.background.send(tool_id.to_owned());
-        }
+    /// O receptor diz se o motor fez o pedido; `None` quando não há turno nesta conversa.
+    pub fn background(&self, conversation_id: &str, tool_id: &str) -> Option<oneshot::Receiver<bool>> {
+        let map = self.map();
+        let turn = map.get(conversation_id)?;
+        let (ack, sent) = oneshot::channel();
+        turn.background.send((tool_id.to_owned(), ack)).ok()?;
+        Some(sent)
     }
 
     /// Esquece uma mensagem que o motor não aceitou.
