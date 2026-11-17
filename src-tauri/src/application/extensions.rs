@@ -27,6 +27,11 @@ pub fn load_bridges(settings: &dyn Settings) -> Vec<Bridge> {
     settings.text(BRIDGES_KEY).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
+/// Pontes que valem nos turnos: as gravadas, menos as de conectores desligados na tela de Conectores.
+pub fn active_bridges(settings: &dyn Settings) -> Vec<Bridge> {
+    load_bridges(settings).into_iter().filter(|b| !settings.flag(&format!("{SERVER_OFF_PREFIX}{}", b.name), false)).collect()
+}
+
 /// Uma skill vista a partir de um escopo (todos ou um agente).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SkillView {
@@ -115,6 +120,15 @@ pub struct ManageConnectors {
     pub codex: Arc<dyn CodexMcp>,
 }
 
+/// Servidor de uma ponte para o login e a situação dele (sem a liberação de cada turno).
+fn login_server(bridge: &Bridge) -> McpServer {
+    McpServer {
+        name: bridge.server_name(),
+        transport: McpTransport::Http { url: bridge.endpoint.clone(), headers: Default::default() },
+        approval: Approval::ReadOnly,
+    }
+}
+
 /// Uma ponte (conector da conta claude.ai) como a tela de Conectores a mostra.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct BridgeView {
@@ -122,6 +136,8 @@ pub struct BridgeView {
     pub bridge: Bridge,
     /// Nome do servidor no ChatGPT e no Gemini (`lume-…`).
     pub server: String,
+    /// Ponte para o Jira (a tela explica quem escreve nela fora do Claude).
+    pub jira: bool,
     /// Login feito em todas as contas do ChatGPT; `None` quando não dá para saber.
     pub chatgpt: Option<bool>,
     /// Login feito no Antigravity; `None` quando não dá para saber.
@@ -201,6 +217,9 @@ impl ManageConnectors {
         if on && !endpoint.starts_with("https://") {
             return Err(AppError("Este conector não tem um endereço público para usar fora do Claude.".into()));
         }
+        if on && connector_key(display_name).is_empty() {
+            return Err(AppError("Este conector não tem um nome que sirva de servidor no ChatGPT e no Gemini.".into()));
+        }
         let mut list: Vec<Bridge> = self.bridges().into_iter().filter(|b| b.name != name).collect();
         if on {
             list.push(Bridge { name: name.to_owned(), display_name: display_name.trim().to_owned(), endpoint: endpoint.to_owned() });
@@ -213,7 +232,7 @@ impl ManageConnectors {
 
     /// Servidores que vão para o arquivo do Antigravity (a aprovação de cada turno não se aplica lá).
     fn mirrored(&self) -> AppResult<(Vec<McpServer>, Vec<Bridge>)> {
-        let bridges = self.bridges();
+        let bridges = active_bridges(&*self.settings);
         Ok((turn_servers(&self.connectors.list()?, &bridges, &[], "manual"), bridges))
     }
 
@@ -232,11 +251,7 @@ impl ManageConnectors {
 
     fn bridge_server(&self, name: &str) -> AppResult<McpServer> {
         let bridge = self.bridges().into_iter().find(|b| b.name == name).ok_or_else(|| AppError("Ligue o conector no ChatGPT e no Gemini antes de entrar.".into()))?;
-        Ok(McpServer {
-            name: bridge.server_name(),
-            transport: McpTransport::Http { url: bridge.endpoint, headers: Default::default() },
-            approval: Approval::ReadOnly,
-        })
+        Ok(login_server(&bridge))
     }
 
     fn chatgpt_profiles(&self) -> AppResult<Vec<Option<String>>> {
@@ -247,20 +262,33 @@ impl ManageConnectors {
     pub async fn other_services(&self) -> AppResult<OtherServices> {
         let profiles = self.chatgpt_profiles()?;
         let gemini_error = self.sync_antigravity().err().map(|e| e.0);
-        let mut bridges = Vec::new();
-        for bridge in self.bridges() {
-            let server = self.bridge_server(&bridge.name)?;
-            let mut chatgpt = if profiles.is_empty() { None } else { Some(true) };
+        // Cada consulta ao Codex leva alguns segundos: todas as pontes e contas de uma vez.
+        let list = self.bridges();
+        let mut checks = tokio::task::JoinSet::new();
+        for (index, bridge) in list.iter().enumerate() {
             for dir in &profiles {
-                match self.codex.linked(dir.as_deref(), &server).await {
-                    Some(false) => chatgpt = Some(false),
-                    None if chatgpt == Some(true) => chatgpt = None,
-                    _ => {}
-                }
+                let (codex, server, dir) = (self.codex.clone(), login_server(bridge), dir.clone());
+                checks.spawn(async move { (index, codex.linked(dir.as_deref(), &server).await) });
             }
-            let gemini = self.antigravity.linked(&server);
-            bridges.push(BridgeView { server: server.name, bridge, chatgpt, gemini });
         }
+        let mut chatgpt: Vec<Option<bool>> = vec![if profiles.is_empty() { None } else { Some(true) }; list.len()];
+        while let Some(Ok((index, linked))) = checks.join_next().await {
+            // Uma conta sem login decide; sem saber de alguma, fica desconhecido.
+            chatgpt[index] = match (chatgpt[index], linked) {
+                (_, Some(false)) | (Some(false), _) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            };
+        }
+        let bridges = list
+            .into_iter()
+            .zip(chatgpt)
+            .map(|(bridge, chatgpt)| {
+                let server = login_server(&bridge);
+                let gemini = self.antigravity.linked(&server);
+                BridgeView { server: server.name, jira: bridge.is_jira(), bridge, chatgpt, gemini }
+            })
+            .collect();
         Ok(OtherServices {
             chatgpt_installed: self.codex.installed(),
             gemini_installed: self.antigravity.installed(),
@@ -310,7 +338,12 @@ impl ManageConnectors {
     }
 
     pub fn set_server_enabled(&self, name: &str, enabled: bool) -> AppResult<()> {
-        self.settings.set_flag(&format!("{SERVER_OFF_PREFIX}{name}"), !enabled)
+        self.settings.set_flag(&format!("{SERVER_OFF_PREFIX}{name}"), !enabled)?;
+        // Desligar um conector da conta tira também a ponte dele do Gemini.
+        if self.bridges().iter().any(|b| b.name == name) {
+            self.sync_others();
+        }
+        Ok(())
     }
 
     /// Ícone do serviço de um endereço, como data URL; `None` para comandos locais ou sem ícone.
@@ -418,6 +451,15 @@ mod tests {
         assert_eq!((view.chatgpt_accounts, view.bridges[0].chatgpt, view.bridges[0].server.as_str()), (2, Some(false), "lume-atlassian"));
         uc.login_chatgpt("claude.ai Atlassian").await.unwrap();
         assert_eq!(uc.other_services().await.unwrap().bridges[0].chatgpt, Some(true));
+
+        // Desligar o conector da conta na tela tira a ponte dos turnos e do Gemini.
+        uc.set_server_enabled("claude.ai Atlassian", false).unwrap();
+        assert!(active_bridges(&*world.store).is_empty());
+        assert_eq!(synced_last().0, ["lume-arquivos"]);
+        uc.set_server_enabled("claude.ai Atlassian", true).unwrap();
+        assert_eq!(synced_last().0, ["lume-arquivos", "lume-atlassian"]);
+        assert!(uc.set_bridge("claude.ai X", "★", "https://x.com/mcp", true).is_err(), "nome que não vira servidor");
+        assert_eq!(uc.other_services().await.unwrap().bridges[0].jira, true);
 
         uc.set_bridge("claude.ai Atlassian", "Atlassian", "", false).unwrap();
         assert!(uc.bridges().is_empty());

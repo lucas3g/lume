@@ -12,7 +12,7 @@ use crate::application::{
 use crate::domain::{
     account::{Identity, Provider},
     chat::{RateInfo, TurnEnd, TurnEvent, TurnRequest},
-    mcp::{codex_overrides, McpServer},
+    mcp::{codex_servers, McpServer},
 };
 use super::cli_output::{failure_detail, run_login};
 use async_trait::async_trait;
@@ -163,8 +163,15 @@ const MCP_LIST_TIMEOUT: Duration = Duration::from_secs(20);
 /// vai por `--config` também aqui, para o Codex saber o endereço.
 pub struct CodexMcpLogins;
 
-fn server_args(server: &McpServer) -> Vec<String> {
-    codex_overrides(std::slice::from_ref(server)).into_iter().flat_map(|o| ["--config".to_owned(), o]).collect()
+/// Comando do Codex com os servidores dados: as sobrescritas na linha e os segredos no ambiente.
+fn with_servers(cmd: &mut Command, servers: &[McpServer]) {
+    let defined = codex_servers(servers);
+    for (name, value) in defined.env {
+        cmd.env(name, value);
+    }
+    for value in defined.args {
+        cmd.args(["--config".to_owned(), value]);
+    }
 }
 
 /// Situação de login do servidor na saída de `codex mcp list --json`.
@@ -189,7 +196,8 @@ impl CodexMcp for CodexMcpLogins {
     async fn login(&self, config_dir: Option<&str>, server: &McpServer) -> AppResult<()> {
         let cli = find_cli().ok_or_else(missing_cli)?;
         let mut cmd = command(&cli, config_dir);
-        cmd.args(server_args(server)).args(["mcp", "login", &server.name]);
+        with_servers(&mut cmd, std::slice::from_ref(server));
+        cmd.args(["mcp", "login", &server.name]);
         // Como no login da conta, o Codex abre o navegador sozinho.
         let output = tokio::time::timeout(LOGIN_TIMEOUT, run_login(cmd, false, None))
             .await
@@ -204,7 +212,8 @@ impl CodexMcp for CodexMcpLogins {
     async fn linked(&self, config_dir: Option<&str>, server: &McpServer) -> Option<bool> {
         let cli = find_cli()?;
         let mut cmd = command(&cli, config_dir);
-        cmd.args(server_args(server)).args(["mcp", "list", "--json"]).stdin(Stdio::null());
+        with_servers(&mut cmd, std::slice::from_ref(server));
+        cmd.args(["mcp", "list", "--json"]).stdin(Stdio::null());
         let output = tokio::time::timeout(MCP_LIST_TIMEOUT, cmd.output()).await.ok()?.ok()?;
         parse_mcp_auth(&String::from_utf8_lossy(&output.stdout), &server.name)
     }
@@ -241,7 +250,8 @@ fn exec_args(request: &TurnRequest, images: &[PathBuf]) -> Vec<String> {
         args.extend(["--config".to_owned(), format!("model_reasoning_effort=\"{}\"", request.effort)]);
     }
     // Conectores do Lume e pontes para os da conta claude.ai: valem só neste turno, sem mexer no config.toml.
-    for value in codex_overrides(&request.mcp_servers) {
+    // Os segredos deles vão pelo ambiente do processo (ver `run_turn`), não aqui.
+    for value in codex_servers(&request.mcp_servers).args {
         args.extend(["--config".to_owned(), value]);
     }
     if let Some(session) = &request.resume {
@@ -350,6 +360,7 @@ impl ChatEngine for CodexEngine {
         let Some(cli) = find_cli() else { return TurnEnd::Failed(missing_cli().0) };
         let prompt = Prompt::compose(request);
         let mut child = match command(&cli, request.config_dir.as_deref())
+            .envs(codex_servers(&request.mcp_servers).env)
             .args(exec_args(request, &prompt.images))
             .current_dir(&request.cwd)
             .stdin(Stdio::piped())

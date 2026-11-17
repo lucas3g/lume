@@ -145,24 +145,65 @@ fn toml_table(map: &BTreeMap<String, String>) -> String {
     format!("{{ {} }}", pairs.join(", "))
 }
 
-/// Sobrescritas `--config` do Codex que definem os servidores do turno.
-pub fn codex_overrides(servers: &[McpServer]) -> Vec<String> {
-    let mut out = Vec::new();
+/// Servidores do turno para o Codex: as sobrescritas `--config` e as variáveis de ambiente do processo.
+#[derive(Debug, Default, PartialEq)]
+pub struct CodexServers {
+    pub args: Vec<String>,
+    /// Segredos passados pelo ambiente do Codex, não pela linha de comando (que qualquer
+    /// processo do computador lê com `ps`).
+    pub env: Vec<(String, String)>,
+}
+
+/// Nome de variável que o Codex já esconde dos comandos que o modelo roda (`*KEY*`, `*SECRET*`,
+/// `*TOKEN*`): só esses segredos vão pelo ambiente sem vazar para o shell do agente.
+fn hidden_from_shell(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    ["KEY", "SECRET", "TOKEN"].iter().any(|w| upper.contains(w))
+}
+
+/// Sobrescritas `--config` do Codex que definem os servidores do turno. Os segredos vão pelo
+/// ambiente: cabeçalhos HTTP por `env_http_headers` (variáveis `LUME_MCP_TOKEN_n`) e variáveis
+/// do servidor local com cara de segredo por `env_vars` (o Codex as repassa com o mesmo nome).
+pub fn codex_servers(servers: &[McpServer]) -> CodexServers {
+    let mut out = CodexServers::default();
     for s in servers {
         // `connector_key` deixa o nome só com letras, números, `-` e `_`: vale como chave TOML sem aspas.
         let base = format!("mcp_servers.{}", s.name);
         match &s.transport {
             McpTransport::Stdio { command, args, env } => {
-                out.push(format!("{base}.command={}", toml_string(command)));
-                out.push(format!("{base}.args={}", toml_array(args)));
-                if !env.is_empty() {
-                    out.push(format!("{base}.env={}", toml_table(env)));
+                out.args.push(format!("{base}.command={}", toml_string(command)));
+                out.args.push(format!("{base}.args={}", toml_array(args)));
+                let mut inline = BTreeMap::new();
+                let mut forwarded = Vec::new();
+                for (name, value) in env {
+                    // Mesmo nome com outro valor em outro servidor: o ambiente é um só, então vai na linha.
+                    let taken = out.env.iter().any(|(n, v)| n == name && v != value);
+                    if hidden_from_shell(name) && !taken {
+                        if !out.env.iter().any(|(n, _)| n == name) {
+                            out.env.push((name.clone(), value.clone()));
+                        }
+                        forwarded.push(name.clone());
+                    } else {
+                        inline.insert(name.clone(), value.clone());
+                    }
+                }
+                if !inline.is_empty() {
+                    out.args.push(format!("{base}.env={}", toml_table(&inline)));
+                }
+                if !forwarded.is_empty() {
+                    out.args.push(format!("{base}.env_vars={}", toml_array(&forwarded)));
                 }
             }
             McpTransport::Http { url, headers } => {
-                out.push(format!("{base}.url={}", toml_string(url)));
+                out.args.push(format!("{base}.url={}", toml_string(url)));
                 if !headers.is_empty() {
-                    out.push(format!("{base}.http_headers={}", toml_table(headers)));
+                    let mut by_env = BTreeMap::new();
+                    for (header, value) in headers {
+                        let var = format!("LUME_MCP_TOKEN_{}", out.env.len() + 1);
+                        out.env.push((var.clone(), value.clone()));
+                        by_env.insert(header.clone(), var);
+                    }
+                    out.args.push(format!("{base}.env_http_headers={}", toml_table(&by_env)));
                 }
             }
         }
@@ -170,7 +211,7 @@ pub fn codex_overrides(servers: &[McpServer]) -> Vec<String> {
             Approval::All => "approve",
             Approval::ReadOnly => "writes",
         };
-        out.push(format!("{base}.default_tools_approval_mode={}", toml_string(mode)));
+        out.args.push(format!("{base}.default_tools_approval_mode={}", toml_string(mode)));
     }
     out
 }
@@ -237,7 +278,12 @@ pub fn antigravity_config(existing: Option<&str>, servers: &[McpServer]) -> Opti
 pub fn antigravity_allow_rules(servers: &[McpServer], bridges: &[Bridge]) -> Vec<String> {
     let mut rules = Vec::new();
     for s in servers {
-        match bridges.iter().find(|b| b.server_name() == s.name) {
+        // Um conector do Lume com o nome de uma ponte a substitui em `turn_servers`: só é ponte o
+        // servidor que aponta para o endereço dela.
+        let bridge = bridges.iter().find(|b| {
+            b.server_name() == s.name && matches!(&s.transport, McpTransport::Http { url, .. } if *url == b.endpoint)
+        });
+        match bridge {
             None => rules.push(format!("mcp({}/*)", s.name)),
             Some(b) if b.is_jira() => rules.extend(ATLASSIAN_READ_TOOLS.iter().map(|t| format!("mcp({}/{t})", s.name))),
             Some(_) => {}
@@ -302,22 +348,28 @@ mod tests {
     }
 
     #[test]
-    fn codex_overrides_are_valid_toml_values() {
+    fn codex_servers_are_valid_toml_and_keep_secrets_off_the_command_line() {
         let servers = turn_servers(
-            &[connector("Arquivos", r#"{"command":"C:\\bin\\fs \"x\"","args":["a\nb"],"env":{"TOKEN":"t\"1"}}"#, true)],
+            &[
+                connector("Arquivos", r#"{"command":"C:\\bin\\fs \"x\"","args":["a\nb"],"env":{"API_TOKEN":"t\"1","MODO":"rapido"}}"#, true),
+                connector("Web", r#"{"url":"https://a.com/mcp","headers":{"Authorization":"Bearer segredo"}}"#, true),
+            ],
             &[atlassian()],
             &[],
             "manual",
         );
-        let o = codex_overrides(&servers);
-        assert_eq!(o[0], r#"mcp_servers.lume-arquivos.command="C:\\bin\\fs \"x\"""#);
-        assert_eq!(o[1], r#"mcp_servers.lume-arquivos.args=["a\nb"]"#);
-        assert_eq!(o[2], r#"mcp_servers.lume-arquivos.env={ "TOKEN" = "t\"1" }"#);
-        assert_eq!(o[3], r#"mcp_servers.lume-arquivos.default_tools_approval_mode="approve""#);
-        assert_eq!(o[4], r#"mcp_servers.lume-atlassian.url="https://mcp.atlassian.com/v1/mcp""#);
-        assert_eq!(o[5], r#"mcp_servers.lume-atlassian.default_tools_approval_mode="writes""#);
+        let c = codex_servers(&servers);
+        assert_eq!(c.args[0], r#"mcp_servers.lume-arquivos.command="C:\\bin\\fs \"x\"""#);
+        assert_eq!(c.args[1], r#"mcp_servers.lume-arquivos.args=["a\nb"]"#);
+        assert_eq!(c.args[2], r#"mcp_servers.lume-arquivos.env={ "MODO" = "rapido" }"#, "o que não é segredo vai na linha");
+        assert_eq!(c.args[3], r#"mcp_servers.lume-arquivos.env_vars=["API_TOKEN"]"#);
+        assert_eq!(c.args[4], r#"mcp_servers.lume-arquivos.default_tools_approval_mode="approve""#);
+        assert_eq!(c.args[6], r#"mcp_servers.lume-web.env_http_headers={ "Authorization" = "LUME_MCP_TOKEN_2" }"#);
+        assert_eq!(c.env, [("API_TOKEN".to_owned(), "t\"1".to_owned()), ("LUME_MCP_TOKEN_2".to_owned(), "Bearer segredo".to_owned())]);
+        assert!(!c.args.iter().any(|a| a.contains("segredo") || a.contains("t\\\"1")), "nenhum segredo nos argumentos");
+        assert!(c.args.contains(&r#"mcp_servers.lume-atlassian.default_tools_approval_mode="writes""#.to_owned()));
         // Cada valor é TOML válido.
-        for line in &o {
+        for line in &c.args {
             let (_, value) = line.split_once('=').unwrap();
             assert!(format!("v = {value}").parse::<toml::Table>().is_ok(), "{line}");
         }
@@ -345,6 +397,10 @@ mod tests {
         assert_eq!(rules[0], "mcp(lume-web/*)");
         assert!(rules.contains(&"mcp(lume-atlassian/getJiraIssue)".into()));
         assert!(!rules.iter().any(|r| r.contains("editJiraIssue") || r.contains("lume-gmail")));
+
+        // Um conector do Lume com o nome de uma ponte vence e leva as regras de conector do Lume.
+        let own = turn_servers(&[connector("Atlassian", r#"{"url":"https://meu.com/mcp"}"#, true)], &[atlassian()], &[], "manual");
+        assert_eq!(antigravity_allow_rules(&own, &[atlassian()]), ["mcp(lume-atlassian/*)"]);
 
         let settings = antigravity_settings(Some(r#"{"permissions":{"allow":["mcp(meu/*)","mcp(lume-velho/*)"],"deny":["x"]},"tema":"escuro"}"#), &rules).unwrap();
         let v: Value = serde_json::from_str(&settings).unwrap();

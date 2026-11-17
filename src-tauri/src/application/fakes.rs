@@ -209,7 +209,6 @@ impl UsageProbe for FakeUsage {
     }
 }
 
-/// Conectores "já configurados em outro aplicativo".
 /// Antigravity de mentira: guarda o que seria gravado nos arquivos dele.
 #[derive(Default)]
 pub struct FakeAntigravity {
@@ -251,6 +250,7 @@ impl crate::application::ports::CodexMcp for FakeCodexMcp {
     }
 }
 
+/// Conectores "já configurados em outro aplicativo".
 pub struct FixedConnectors(pub Vec<(String, String)>);
 
 impl ConnectorSource for FixedConnectors {

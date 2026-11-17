@@ -319,6 +319,8 @@ export interface ConnectorBridge {
   endpoint: string;
   /** Nome do servidor no ChatGPT e no Gemini (`lume-…`). */
   server: string;
+  /** Ponte para o Jira. */
+  jira: boolean;
   /** Login feito em todas as contas do ChatGPT; null quando não dá para saber. */
   chatgpt: boolean | null;
   /** Login feito no Antigravity; null quando não dá para saber. */

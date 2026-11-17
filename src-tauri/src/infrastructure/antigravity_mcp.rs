@@ -43,7 +43,11 @@ fn write_atomic(path: &Path, text: &str) -> AppResult<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
-    let tmp = path.with_extension("json.lume-tmp");
+    // Nome próprio por gravação: duas sincronizações ao mesmo tempo (a da abertura do app e a da
+    // tela de Conectores) não escrevem no mesmo arquivo temporário.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.lume-tmp-{}-{seq}", std::process::id()));
     std::fs::write(&tmp, text).map_err(io)?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);

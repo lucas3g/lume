@@ -153,7 +153,7 @@
                 <li>Volte aqui e clique em Verificar de novo.</li>
               </ol>
             {/if}
-            {#if b.display_name.toLowerCase() === "atlassian"}
+            {#if b.jira}
               <p class="muted small note">
                 Fora do Claude, os bots leem o Jira sem pedir aprovação. Só o Relator da esteira escreve (comenta e muda o status), e só no ChatGPT:
                 o Gemini não deixa liberar escrita para um único papel.
