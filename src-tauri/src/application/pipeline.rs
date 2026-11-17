@@ -15,7 +15,7 @@ use crate::domain::{
     chat::{Attachment, Message, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, created_task, found_task, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
-        suggested_commit, fix_request, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, fix_request, fixing_review, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -361,8 +361,9 @@ impl ManagePipelines {
         if let Some(effort) = run.efforts.get(&role) {
             self.conversations.set_effort(&conversation_id, effort)?;
         }
-        // A volta do Implementador é o número de passagens dele antes desta.
-        let round = if role == Role::Implementer { implementer_passes(stages) } else { rounds(stages) };
+        // A volta do Implementador é o número de passagens dele antes desta; a que aplica as
+        // correções do code review fica na volta em que já estava.
+        let round = if role == Role::Implementer && !fixing_review(stages) { implementer_passes(stages) } else { rounds(stages) };
         let mut stage = StageRun {
             id: self.ids.new_id(),
             run_id: run.id.clone(),
@@ -543,7 +544,7 @@ impl ManagePipelines {
             conducted
         };
         for mut stage in running {
-            if stage.role.is_user_step() || !conducted {
+            if !stage.role.is_bot() || !conducted {
                 stage.status = StageStatus::Cancelled;
                 stage.finished_at = Some(self.clock.now());
                 self.pipelines.save_stage(&stage)?;
@@ -818,7 +819,9 @@ mod tests {
         assert!(prompts[0].contains("Decisão do usuário: ponto e vírgula") && prompts[0].contains("mantenha a API") && !prompts[0].contains("CSV sem cabeçalho"));
         assert!(prompts[3].contains("<code_review>") && prompts[3].contains("Escolha do usuário"), "o Relator sabe o que o code review apontou");
         let detail = uc.detail(&run.id).unwrap();
-        assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 2));
+        assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 1), "as correções do code review não gastam voltas");
+        let fix = detail.stages.iter().filter(|s| s.role == Role::Implementer).last().unwrap();
+        assert_eq!(fix.round, 1, "a passagem das correções fica na volta em que estava");
         assert_eq!(detail.commit_message.as_deref(), Some("Exporta CSV"));
         let implementer = world.conversation(&detail.stages.iter().find(|s| s.role == Role::Implementer).unwrap().conversation_id);
         assert_eq!(implementer.permission_mode, "acceptEdits");
@@ -934,7 +937,7 @@ mod tests {
         let prompts = again.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("<ajuste_do_usuario>\nO botão exporta o arquivo vazio") && !prompts[0].contains("falta X"), "o Implementador recebe o ajuste, não a devolução antiga");
         assert!(prompts[1].contains("Ajuste pedido pelo usuário depois de testar: O botão exporta o arquivo vazio"));
-        assert!(prompts[3].contains("skill `code-review`"), "cada reabertura é um ciclo novo, com o seu code review");
+        assert!(prompts[3].contains("revise você mesmo os arquivos citados"), "cada reabertura é um ciclo novo, com o seu code review");
         assert!(prompts[4].contains("Comente na task EI-6001") && !prompts[4].contains("crie uma no Jira"), "não cria outra task");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!((detail.run.status, detail.run.rounds, detail.run.jira_key.as_deref()), (RunStatus::Done, 0, Some("EI-6001")));

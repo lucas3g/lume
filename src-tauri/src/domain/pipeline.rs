@@ -58,11 +58,6 @@ impl Role {
         !matches!(self, Role::Approval | Role::Feedback | Role::ReviewChoice)
     }
 
-    /// Paradas que esperam o usuário: não são trabalho dos bots e não contam no orçamento.
-    pub fn is_user_step(self) -> bool {
-        !self.is_bot()
-    }
-
     pub fn key(self) -> &'static str {
         match self {
             Role::Triage => "triage",
@@ -598,16 +593,20 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             adjustment(ctx)
         ),
         Role::CodeReview => {
-            let fallback = match run.mode {
-                WorkMode::Worktree => "as alterações ainda não commitadas da pasta de trabalho",
-                WorkMode::Direct => "os arquivos citados no resumo do Implementador (a pasta não tem git)",
-            };
             let level = run.efforts.get(&Role::CodeReview).map(|e| format!(" (argumento `{e}`)")).unwrap_or_default();
+            // Sem git, a skill (que lê o diff) não vê nada: a revisão é feita nos arquivos citados.
+            let how = match run.mode {
+                WorkMode::Worktree => format!(
+                    "Rode a skill de code review do CLI: chame a ferramenta Skill com a skill `code-review`{level} para revisar as \
+                     alterações ainda não commitadas da pasta de trabalho. Se a skill não existir neste CLI, revise você mesmo \
+                     essas alterações,"
+                ),
+                WorkMode::Direct => "A pasta não tem git, então não há diff para a skill de code review: revise você mesmo os arquivos citados no resumo do Implementador,"
+                    .to_owned(),
+            };
             format!(
                 "Objetivo da task: {}\n{}<resumo_da_implementacao>\n{}\n</resumo_da_implementacao>\n\n\
-                 Rode a skill de code review do CLI: chame a ferramenta Skill com a skill `code-review`{level} para revisar as \
-                 alterações ainda não commitadas da pasta de trabalho. Se a skill não existir neste CLI, revise você mesmo {fallback}, \
-                 procurando bugs de correção, casos não tratados e problemas de segurança. Não altere nada: quem decide o que \
+                 {how} procurando bugs de correção, casos não tratados e problemas de segurança. Não altere nada: quem decide o que \
                  corrigir é o usuário.\n\
                  Responda com um resumo curto e termine com um bloco ```json com a lista dos achados que valem correção \
                  (ignore gosto pessoal), do mais grave ao menos grave:\n\
@@ -756,8 +755,20 @@ fn current_cycle(stages: &[StageRun]) -> &[StageRun] {
 }
 
 /// Passagens do Implementador que contam (as que falharam ou foram canceladas são refeitas).
+/// A passagem que aplica as correções escolhidas no code review não conta: ela é pedido seu, não
+/// devolução, e não gasta as voltas que o Revisor e o Testador têm.
 pub fn implementer_passes(stages: &[StageRun]) -> i64 {
-    effective(current_cycle(stages)).filter(|s| s.role == Role::Implementer).count() as i64
+    let cycle: Vec<&StageRun> = effective(current_cycle(stages)).collect();
+    cycle
+        .iter()
+        .enumerate()
+        .filter(|(i, s)| s.role == Role::Implementer && !(*i > 0 && cycle[i - 1].role == Role::ReviewChoice))
+        .count() as i64
+}
+
+/// A próxima etapa é a passagem do Implementador que aplica as correções escolhidas no code review.
+pub fn fixing_review(stages: &[StageRun]) -> bool {
+    effective(stages).last().is_some_and(|s| s.role == Role::ReviewChoice && s.status == StageStatus::Returned)
 }
 
 /// Voltas já feitas: passagens do Implementador além da primeira.
@@ -823,10 +834,17 @@ pub fn context_for(stages: &[StageRun]) -> StageContext {
         diff: None,
         review: latest(Role::Reviewer),
         tests: latest(Role::Tester),
-        code_review: latest(Role::CodeReview).map(|review| match latest(Role::ReviewChoice) {
-            Some(choice) => format!("{review}\n\nEscolha do usuário:\n{choice}"),
-            None => review,
-        }),
+        // Só a escolha feita sobre este code review: a de um ciclo anterior não vale para ele.
+        code_review: stages
+            .iter()
+            .rposition(|s| s.role == Role::CodeReview && !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled) && s.output.is_some())
+            .map(|i| {
+                let review = stages[i].output.clone().unwrap_or_default();
+                match effective(&stages[i + 1..]).filter(|s| s.role == Role::ReviewChoice).last().and_then(|s| s.output.as_deref()) {
+                    Some(choice) => format!("{review}\n\nEscolha do usuário:\n{choice}"),
+                    None => review,
+                }
+            }),
         user_feedback: latest(Role::Feedback),
     }
 }
@@ -846,7 +864,7 @@ pub fn finished_status(role: Role, output: &str) -> StageStatus {
 pub fn spent_seconds(stages: &[StageRun], now: i64) -> i64 {
     stages
         .iter()
-        .filter(|s| !s.role.is_user_step())
+        .filter(|s| s.role.is_bot())
         .map(|s| s.finished_at.unwrap_or(now) - s.started_at)
         .sum()
 }
@@ -885,9 +903,13 @@ pub fn parse_findings(text: &str) -> Option<Vec<Finding>> {
         .iter()
         .enumerate()
         .filter_map(|(i, item)| {
-            let title = text_of(item, "title")?;
+            // Sem título, vale a primeira linha do detalhe: um achado listado nunca some da escolha.
+            let detail = text_of(item, "detail").unwrap_or_default();
+            let title = text_of(item, "title").or_else(|| detail.lines().next().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned))?;
             // Ids repetidos ou ausentes ganham um próprio: a escolha do usuário aponta por id.
-            let id = text_of(item, "id").filter(|id| !seen.contains(id)).unwrap_or_else(|| format!("A{}", i + 1));
+            let id = text_of(item, "id").filter(|id| !seen.contains(id)).unwrap_or_else(|| {
+                (i + 1..).map(|n| format!("A{n}")).find(|id| !seen.contains(id)).unwrap_or_default()
+            });
             seen.insert(id.clone());
             let line = item.get("line").and_then(|l| l.as_i64().or_else(|| l.as_str().and_then(|s| s.trim().parse().ok())));
             let options = item
@@ -901,7 +923,7 @@ pub fn parse_findings(text: &str) -> Option<Vec<Finding>> {
                 file: text_of(item, "file"),
                 line,
                 severity: text_of(item, "severity"),
-                detail: text_of(item, "detail").unwrap_or_default(),
+                detail,
                 options,
             })
         })
@@ -1092,6 +1114,7 @@ mod tests {
         stages.last_mut().unwrap().output = Some("corrija A1".into());
         assert_eq!((next_step(&stages, &[]), context_for(&stages).returned.as_deref()), (Next::Run(Role::Implementer), Some("corrija A1")));
         stages.push(stage(Role::Implementer, Done, "corrigi A1"));
+        assert_eq!(rounds(&stages), 1, "as correções do code review não gastam voltas");
         stages.push(stage(Role::Reviewer, Done, "VEREDITO: APROVADO"));
         assert_eq!(next_step(&stages, &[]), Next::Run(Role::Tester));
         stages.push(stage(Role::Tester, Done, "ok"));
@@ -1114,6 +1137,10 @@ mod tests {
         assert_eq!(next_step(&stages, &[]), Next::Run(Role::Reporter));
         assert_eq!(next_step(&stages, &[Role::Reporter]), Next::Finish(RunStatus::Done, None));
         assert_eq!(spent_seconds(&stages, 10), 40, "a espera pela sua escolha não conta no orçamento");
+        // Reaberta: o code review novo sem achados não herda a escolha do ciclo anterior.
+        stages.push(stage(Role::Feedback, Done, "ajuste"));
+        stages.push(stage(Role::CodeReview, Done, "```json\n[]\n```"));
+        assert_eq!(context_for(&stages).code_review.as_deref(), Some("```json\n[]\n```"));
     }
 
     #[test]
@@ -1122,10 +1149,14 @@ mod tests {
                     \"severity\": \"alta\", \"detail\": \"total vazio\", \"options\": [\"retornar 0\", \" lançar erro \"]},\
                     {\"id\": \"A1\", \"title\": \"Sem log\"}, {\"detail\": \"sem título\"}]\n```";
         let findings = parse_findings(text).unwrap();
-        assert_eq!(findings.len(), 2, "achado sem título é ignorado");
+        assert_eq!(findings.len(), 3);
+        assert_eq!(findings[2].title, "sem título", "sem título, vale o detalhe");
+        assert_eq!(parse_findings("```json\n[{\"id\": \"A1\"}]\n```"), Some(vec![]), "item vazio não é achado");
         assert_eq!((findings[0].line, findings[0].options.clone()), (Some(12), vec!["retornar 0".to_owned(), "lançar erro".to_owned()]));
         assert_eq!(findings[1].id, "A2", "id repetido ganha um próprio");
         assert_eq!(parse_findings("sem bloco"), None);
+        let clash = parse_findings("```json\n[{\"id\": \"A2\", \"title\": \"a\"}, {\"id\": \"A2\", \"title\": \"b\"}]\n```").unwrap();
+        assert_eq!((clash[0].id.as_str(), clash[1].id.as_str()), ("A2", "A3"), "o id gerado também não repete");
 
         let pick = |id: &str, option: Option<usize>| ReviewPick { id: id.into(), option };
         assert_eq!(fix_request(&findings, &[], Some("  ")), Ok(None));

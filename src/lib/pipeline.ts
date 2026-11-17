@@ -69,16 +69,27 @@ export const CHOICE_STEP: Station = {
 
 export const STATION = Object.fromEntries([...STATIONS, FEEDBACK_STEP, CHOICE_STEP].map((s) => [s.role, s])) as Record<PipelineRole, Station>;
 
+/** Começo do pedido de correção que a sua escolha manda ao Implementador (ver `fix_request` no Rust). */
+const FIX_MARK = "O code review apontou";
+
 /** Etapas que esperam você, não um bot. */
-export const isUserStep = (role: PipelineRole) => role === "approval" || role === "feedback" || role === "review_choice";
+export const isUserStep = (role: PipelineRole) => STATION[role].gate === true;
 
 /** Estação em que a etapa aparece na esteira: a sua escolha fica na do Code review; o ajuste, em nenhuma. */
 export const stationRole = (role: PipelineRole): PipelineRole | null =>
   role === "review_choice" ? "code_review" : role === "feedback" ? null : role;
 
+const JSON_FENCE = "```json";
+
+/** Conteúdo do último bloco ```json do texto (onde o code review lista os achados); `null` sem ele. */
+function lastJsonBlock(text: string): string | null {
+  const start = text.lastIndexOf(JSON_FENCE);
+  return start < 0 ? null : text.slice(start + JSON_FENCE.length).split("```")[0];
+}
+
 /** Texto do code review sem o bloco ```json final dos achados (que a tela mostra como lista). */
 export function reviewSummary(text: string): string {
-  const start = text.lastIndexOf("```json");
+  const start = text.lastIndexOf(JSON_FENCE);
   return (start < 0 ? text : text.slice(0, start)).trim();
 }
 
@@ -195,6 +206,7 @@ export function passesByRole(detail: PipelineDetail): Record<PipelineRole, Stage
 
 /** Nome da passagem para abas e registro: "volta 1/3", "plano v2"… */
 export function passLabel(stage: StageRun, index: number, maxRounds: number): string | null {
+  if (stage.role === "implementer" && stage.input.includes(FIX_MARK)) return "correções do code review";
   if (stage.role === "implementer" && stage.round > 0) return `volta ${stage.round}/${maxRounds}`;
   if ((stage.role === "planner" || stage.role === "approval") && index > 0) return `plano v${index + 1}`;
   if (stage.role === "reviewer" && index > 0) return `${index + 1}ª revisão`;
@@ -211,7 +223,7 @@ export function inputSummary(stage: StageRun, detail: PipelineDetail): string {
       return stage.input.includes("<triagem>") ? "Task + triagem" : "Task (sem triagem)";
     case "approval": return "Plano";
     case "implementer":
-      if (stage.input.includes("O code review apontou")) return "Correções do code review";
+      if (stage.input.includes(FIX_MARK)) return "Correções do code review";
       if (stage.input.includes("<problemas>")) return "Problemas apontados";
       return stage.input.includes("<ajuste_do_usuario>") ? "Seu ajuste" : "Plano aprovado";
     case "reviewer": return stage.input.includes("<diff>") ? "Só o diff" : "Resumo do Implementador";
@@ -243,14 +255,14 @@ export function outputSummary(stage: StageRun): string {
   return firstLine(text) || "Concluída";
 }
 
-/** Quantos achados a resposta do code review lista no último bloco ```json; `null` sem a lista. */
+/** Itens do último bloco ```json da resposta do code review que viram achados (com título ou
+ *  detalhe, como no backend); `null` sem a lista. */
 function findingsIn(text: string): number | null {
-  const start = text.lastIndexOf("```json");
-  if (start < 0) return null;
-  const block = text.slice(start + 7).split("```")[0];
+  const block = lastJsonBlock(text);
+  if (block === null) return null;
   try {
     const list = JSON.parse(block);
-    return Array.isArray(list) ? list.length : null;
+    return Array.isArray(list) ? list.filter((f) => f && (String(f.title ?? "").trim() || String(f.detail ?? "").trim())).length : null;
   } catch {
     return null;
   }
