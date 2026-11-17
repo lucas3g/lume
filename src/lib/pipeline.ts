@@ -123,6 +123,42 @@ function lastJsonBlock(text: string): string | null {
   return start < 0 ? null : text.slice(start + JSON_FENCE.length).split("```")[0];
 }
 
+const LIST_ITEM = /^(\s*)(?:[-*+]|\d+[.)])\s+/;
+
+/**
+ * Perguntas que a Triagem deixou para o usuário quando achou a task vaga: os itens do bloco `PERGUNTAS:`;
+ * sem o bloco (respostas antigas), as linhas que terminam em interrogação.
+ */
+export function triageQuestions(text: string): string[] {
+  const clean = (line: string) => line.replace(LIST_ITEM, "").replace(/^>\s*/, "").replace(/\*\*/g, "").trim();
+  const lines = text.split("\n");
+  // O bloco fica logo antes do veredito: vale o último cabeçalho `PERGUNTAS:` do texto.
+  let start = -1;
+  lines.forEach((l, i) => { if (/^\W*perguntas\W*:?\W*$/i.test(l.trim())) start = i; });
+  if (start >= 0) {
+    const out: string[] = [];
+    let indent = -1;
+    let blank = false;
+    for (const line of lines.slice(start + 1)) {
+      const trimmed = line.trim();
+      if (/^\W*veredito/i.test(trimmed) || /^(#|-{3,}$|\*{3,}$|_{3,}$)/.test(trimmed)) break;
+      const item = LIST_ITEM.exec(line);
+      if (item && (indent < 0 || item[1].length <= indent)) {
+        // Item do mesmo nível: uma pergunta nova.
+        indent = item[1].length;
+        out.push(clean(line));
+      } else if (trimmed && out.length) {
+        // Subitem ou continuação da pergunta; texto solto depois de uma linha em branco já é outra coisa.
+        if (blank && !item && !/^\s/.test(line)) break;
+        out[out.length - 1] += ` ${clean(line)}`;
+      }
+      blank = !trimmed;
+    }
+    if (out.length) return out;
+  }
+  return lines.map(clean).filter((l) => l.endsWith("?") && !/^#/.test(l));
+}
+
 /** Texto do code review sem o bloco ```json final dos achados (que a tela mostra como lista). */
 export function reviewSummary(text: string): string {
   const start = text.lastIndexOf(JSON_FENCE);

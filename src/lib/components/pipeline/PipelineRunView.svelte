@@ -12,7 +12,7 @@
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
-    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, VISUAL,
+    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, triageQuestions, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
@@ -277,6 +277,13 @@
   /** A task foi criada pelo Relator (a execução começou sem task). */
   const createdTask = $derived(!!detail.jira_key && /TASK_CRIADA:/i.test(passes.reporter.at(-1)?.output ?? ""));
 
+  /** Espaço para responder: cada pergunta da Triagem com a sua linha de resposta. */
+  function answersTemplate(): string {
+    const questions = triageQuestions(passes.triage.at(-1)?.output ?? "");
+    if (!questions.length) return "Respostas às dúvidas da Triagem:\n- ";
+    return `Respostas às dúvidas da Triagem:\n\n${questions.map((q, i) => `${i + 1}. ${q}\n   Resposta: `).join("\n\n")}`;
+  }
+
   function complete() {
     // O pedido volta ao formulário com espaço para responder ao que a Triagem achou vago.
     // A task escolhida segue escolhida; o título igual à chave é o padrão e não precisa voltar.
@@ -284,7 +291,7 @@
     pipelines.draft = {
       projectId: detail.project_id,
       title: key && detail.title === key ? "" : detail.title,
-      request: `${detail.request}\n\nRespostas às dúvidas da Triagem:\n- `.trimStart(),
+      request: `${detail.request}\n\n${answersTemplate()}`.trimStart(),
       images: $state.snapshot(images),
       task: key ? { key, site: detail.jira_url?.split("/browse/")[0] ?? null, issue: null } : null,
     };
