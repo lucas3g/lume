@@ -100,10 +100,5 @@
 .office-room .g-until{animation:of-g-until .01s steps(1) var(--at) both}
 @keyframes of-g-until{0%{opacity:1}100%{opacity:0}}
 
-@media (prefers-reduced-motion:reduce){
-  .office-room *,.office-room *::before,.office-room *::after{animation:none!important}
-  .office-room .fr,.office-room .a-sipB,.office-room .a-smoke{visibility:hidden}
-  .office-room .fr0{visibility:visible}
-  .office-room .a-mote{opacity:.5}
-  .office-room .leg,.office-room .g-until{display:none}
-}
+/* Sem bloco de movimento reduzido: o Windows o liga sozinho com "Efeitos de animação" desligado (comum em PC sem
+   placa de vídeo), e a sala congelava inteira. As animações são poucas, em passos e pelo relógio: rodam leves assim. */

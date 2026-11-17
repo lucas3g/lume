@@ -43,7 +43,6 @@
   let seenRun: string | null = null;
   let seenCount = 0;
   let settle: ReturnType<typeof setTimeout> | undefined;
-  const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   $effect(() => {
     const count = detail.stages.length;
@@ -70,7 +69,6 @@
     if (from < 0 || from === indexOf(latest.role)) return;
     previous = from;
     tripId += 1;
-    if (reduce) return;
     traveling = true;
     clearTimeout(settle);
     // A duração depende da distância entre as mesas: calculada pela própria cena.
