@@ -210,8 +210,7 @@ function iso(g) {
   const at = (tx, ty, z, lines, pal, flip) => stamp(g, Math.round(sx(tx, ty) - lines[0].length / 2), Math.round(sy(tx, ty, z)) - lines.length, lines, pal, flip);
   /* Tela fina (canvas) copiada para a grade com origem em (ox, oy) pixels finos; flip espelha em x. */
   /* (ox, oy) em pixels finos da grade; o desenho está na grade de 2 por px lógico e, em R = 4, sai ampliado pelo Scale2x. */
-  const fine = (ox, oy, cv, flip, vol) => {
-    if (vol) volume(cv, flip);
+  const fine = (ox, oy, cv, flip) => {
     const m = R === 4 ? upscale(cv.m) : cv.m;
     Object.keys(m).forEach(y => Object.keys(m[y]).forEach(x => paint(g, flip ? ox - +x - 1 : ox + +x, oy + +y, 1, 1, m[y][x])));
   };
@@ -418,31 +417,60 @@ function upscale(m) {
   up.forEach((r, j) => r.forEach((c, i) => { if (c !== '.') (out[y0 * 2 + j] || (out[y0 * 2 + j] = {}))[x0 * 2 + i] = c; }));
   return out;
 }
-/* Volume: a luz vem do alto à esquerda da tela. Cada pixel opaco na borda do desenho virada para a luz clareia e
-   o da borda oposta escurece (duas fileiras, a segunda mais fraca); o resto escurece um pouco de cima para baixo.
-   flip: o desenho vai espelhado, então a luz troca de lado no espaço local. */
-function volume(cv, flip) {
-  const m = cv.m, L = flip ? 1 : -1, ys = Object.keys(m).map(Number);
-  if (!ys.length) return;
-  const y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), out = [];
-  const has = (x, y) => !!(m[y] && m[y][x]);
-  ys.forEach(y => Object.keys(m[y]).forEach(xs => {
-    const x = +xs, c = m[y][x]; if (c.length > 7) return;
-    let d = 0;
-    if (!has(x + L, y) || !has(x, y - 1)) d += 0.14;
-    else if (!has(x + 2 * L, y)) d += 0.06;
-    if (!has(x - L, y) || !has(x, y + 1)) d -= 0.2;
-    else if (!has(x - 2 * L, y)) d -= 0.09;
-    d -= 0.1 * dith((y - y0) / Math.max(1, y1 - y0), 2, x, y);
-    if (d) out.push([x, y, tone(c, Math.round(d * 100) / 100)]);
+/* Volume por parte do corpo: a luz vem do alto à esquerda da tela. Cada pixel mede quanto do desenho da própria
+   parte há até a borda virada para a luz e até a oposta, na horizontal e na vertical; isso dá a posição dele na forma
+   (0 na borda iluminada, 1 na da sombra), como numa forma arredondada. Daí saem quatro faixas de tom (brilho, base,
+   sombra e sombra funda), com pontilhado só na passagem de uma para a outra, como na pixel art sombreada à mão.
+   wx, wy: quanto a luz vem de lado e de cima nessa parte. No desenho espelhado a luz troca de lado no espaço local. */
+function shapeLight(cv, wx, wy, bias, noise) {
+  const m = cv.m, L = cv.flip ? 1 : -1, has = (x, y) => !!(m[y] && m[y][x] && m[y][x].length <= 7), out = [];
+  const run = (x, y, dx, dy) => { let k = 1; while (k < 24 && has(x + dx * k, y + dy * k)) k++; return k; };
+  Object.keys(m).forEach(ys => Object.keys(m[ys]).forEach(xs => {
+    const x = +xs, y = +ys, c = m[y][x]; if (c.length > 7) return;
+    const a = run(x, y, L, 0), b = run(x, y, -L, 0), up = run(x, y, 0, -1), dn = run(x, y, 0, 1);
+    const u = (a - 0.5) / Math.max(1, a + b - 1), v = (up - 0.5) / Math.max(1, up + dn - 1);
+    const n = (0.5 - u) * wx + (0.5 - v) * wy + bias + (bayer(x, y) - 0.5) * noise;
+    const t = n > 0.3 ? 0.13 : n > -0.08 ? 0 : n > -0.38 ? -0.13 : -0.24;
+    if (t) out.push([x, y, tone(c, t)]);
   }));
   out.forEach(o => { m[o[1]][o[0]] = o[2]; });
 }
+/* Desenha uma parte do corpo numa tela própria (que enxerga a de baixo, para o pescoço não cobrir a gola), dá volume
+   a ela e a assenta na tela de baixo, projetando sombra de `cast` px para baixo e para o lado oposto à luz sobre o
+   que já estava lá (o braço no tronco, a cabeça no pescoço), mais forte junto da borda. Onde a parte encosta em
+   outra, a borda de cima ganha um fio de luz e a de baixo um de sombra: as duas não se fundem mesmo com a mesma cor.
+   flat: desenho à mão, já sombreado. */
+function part(cv, draw, wx, wy, cast, flat, bias, noise) {
+  const sub = canvas(cv.flip, cv);
+  draw(sub);
+  const L = cv.flip ? 1 : -1, own = (x, y) => !!(sub.m[y] && sub.m[y][x]), dark = {};
+  const under = (x, y) => { const c = cv.m[y] && cv.m[y][x]; return !!c && c.length <= 7 && !own(x, y); };
+  if (!flat) {
+    shapeLight(sub, wx, wy, bias || 0, noise == null ? 0.12 : noise);
+    const edge = [];
+    Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => {
+      const x = +xs, y = +ys, c = sub.m[y][x]; if (c.length > 7) return;
+      let d = 0;
+      if (under(x, y + 1) || under(x - L, y)) d -= 0.12;
+      else if (under(x, y - 1) || under(x + L, y)) d += 0.1;
+      if (d) edge.push([x, y, tone(c, d)]);
+    }));
+    edge.forEach(e => { sub.m[e[1]][e[0]] = e[2]; });
+  }
+  Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => {
+    for (let k = 1; k <= cast; k++) {
+      const x = +xs - L * Math.ceil(k / 2), y = +ys + k, key = y + ',' + x;
+      if (under(x, y) && !(key in dark && dark[key][3] <= k)) dark[key] = [x, y, cv.m[y][x], k];
+    }
+  }));
+  Object.keys(dark).forEach(key => { const d = dark[key]; cv.m[d[1]][d[0]] = tone(d[2], d[3] === 1 ? -0.24 : -0.15); });
+  Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => cv.set(+xs, +ys, sub.m[ys][xs])));
+}
 /* Tela fina: pixels soltos em coordenadas locais (origem no quadril), copiados depois para a grade com espelho. */
-function canvas() {
+function canvas(flip, under) {
   const m = {};
   const set = (x, y, c) => { if (c === null) { if (m[y]) delete m[y][x]; } else if (c) (m[y] || (m[y] = {}))[x] = c; };
-  const get = (x, y) => m[y] && m[y][x];
+  const get = (x, y) => (m[y] && m[y][x]) || (under && under.get(x, y));
   /* Elipse amostrada no centro do pixel; keep(x, y) filtra. */
   const ell = (cx, cy, rx, ry, c, keep) => {
     for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
@@ -458,12 +486,14 @@ function canvas() {
       for (let k = 0; k <= n; k++) ell(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, r, r, c);
     }
   };
-  return { m: m, set: set, get: get, ell: ell, rect: rect, limb: limb };
+  return { m: m, flip: !!flip, set: set, get: get, ell: ell, rect: rect, limb: limb };
 }
 
 /* Cabeça em 3/4 (olhando para a esquerda) com centro do crânio em (cx, cy). back: vista de costas (só cabelo,
    orelha e nuca). Os olhos ficam fora: são uma camada própria, para piscar. */
-function drawHead(cv, p, cx, cy, back) {
+/* Cabeça: forma redonda (luz de lado e de cima), com sombra no pescoço e na gola. */
+function drawHead(cv, p, cx, cy, back) { part(cv, s => headShape(s, p, cx, cy, back), 0.75, 0.55, 2, !!p.art && !back, 0.22, 0.04); }
+function headShape(cv, p, cx, cy, back) {
   if (p.art && !back) { blit(cv, cx - 9, cy - 9, p.art.head, p.art.pal); return; }
   const S = p.pal.S, s = p.pal.s, H = p.pal.H, h = p.pal.h, Hd = shade(H, 0.35);
   /* Pescoço e crânio: calota larga em cima e queixo mais estreito, puxado para a frente. */
@@ -542,7 +572,9 @@ function drawEyes(cv, p, cx, cy, happy) {
   });
 }
 /* Tronco: ombros arredondados, sombra do lado de trás, gola em V e o detalhe da roupa do papel. */
-function drawTorso(cv, p, cx, top, bottom) {
+/* Tronco: cilindro de pé (luz mais de lado), escurecendo para baixo, onde a mesa cobre. */
+function drawTorso(cv, p, cx, top, bottom) { part(cv, s => torsoShape(s, p, cx, top, bottom), 0.95, 0.35, 0, !!p.art); }
+function torsoShape(cv, p, cx, top, bottom) {
   if (p.art && p.shirt) { blit(cv, cx - 9, top, p.art.shirt.slice(0, bottom - top + 1), p.art.pal); return; }
   const C = p.pal.C, c = p.pal.c, S = p.pal.S;
   for (let y = top; y <= bottom; y++) {
@@ -561,7 +593,9 @@ function drawTorso(cv, p, cx, top, bottom) {
   else if (sh === 'tie') { cv.rect(cx - 2, top + 2, cx - 1, top + 9, '#3f4a63'); cv.set(cx - 2, top + 10, '#3f4a63'); cv.rect(cx - 4, top, cx - 3, top + 1, WHITE); cv.rect(cx, top, cx + 1, top + 1, WHITE); }
 }
 /* Braço: manga do ombro ao cotovelo e até o pulso, mão na ponta; opcionalmente algo na mão (caneca). */
-function drawArm(cv, p, pts) {
+/* Braço: membro fino, iluminado por cima; projeta sombra no tronco. */
+function drawArm(cv, p, pts) { part(cv, s => armShape(s, p, pts), 0.6, 0.8, 2, !!p.art, 0.05, 0.06); }
+function armShape(cv, p, pts) {
   if (p.art) { armYou(cv, p.art.pal, pts); return; }
   const C = p.pal.C, c = p.pal.c, S = p.pal.S, s = p.pal.s, end = pts[pts.length - 1];
   cv.limb(pts, 2.1, C);
@@ -641,7 +675,6 @@ function walkerSprites(role, back, carry, frame) {
       cv.rect(5, 20, 18, 25, '#d9a441'); cv.rect(5, 19, 9, 19, '#e3ba6a'); cv.rect(7, 21, 16, 22, WHITE); cv.rect(5, 25, 18, 25, '#9c7226');
       cv.ell(6, 23, 1.8, 1.7, p.pal.S); cv.ell(17, 23, 1.8, 1.7, p.pal.S);
     } else { drawArm(cv, p, [[4, 18], [3, 23], [3, 27]]); drawArm(cv, p, [[19, 18], [20, 23], [20, 27]]); }
-    if (!p.art) volume(cv, false);
     if (!back) drawEyes(cv, p, 12, 8, false);
     t.fine(0, 0, cv, false);
   }));
@@ -652,11 +685,11 @@ function walkerSprites(role, back, carry, frame) {
    hands vai depois (braços que descansam no tampo). cls é a animação da camada do corpo. */
 function seatedParts(role, v, i) {
   const p = PEOPLE[role], g = geo(role), id = '-' + role;
-  const put = (draw, flat) => t => { const cv = canvas(); draw(cv); t.fine(g.seat[0] * R, g.seat[1] * R, cv, g.se, !flat && !p.art); };
+  const put = draw => t => { const cv = canvas(g.se); draw(cv); t.fine(g.seat[0] * R, g.seat[1] * R, cv, g.se); };
   const arm = pts => put(cv => drawArm(cv, p, pts));
   const body = [SO('torso' + id, '', '', put(cv => { drawTorso(cv, p, 0, -14, 8); drawHead(cv, p, HEAD_C[0], HEAD_C[1], false); }))];
   const hands = [];
-  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, p, HEAD_C[0], HEAD_C[1], happy), true)));
+  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, p, HEAD_C[0], HEAD_C[1], happy))));
   /* Na mesa de aprovação não há caneca (o canto é do vaso). */
   const desk = role !== 'approval', sip = desk && v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
   if (desk) hands.push(mug(role, sip ? 'a-sipA' : '', d));
