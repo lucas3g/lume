@@ -171,8 +171,10 @@ function iso(g) {
   };
   /* Carimbo ancorado num ponto do chão: (tx, ty, z) vira o centro da base do mapa. */
   const at = (tx, ty, z, lines, pal, flip) => stamp(g, Math.round(sx(tx, ty) - lines[0].length / 2), Math.round(sy(tx, ty, z)) - lines.length, lines, pal, flip);
+  /* Tela fina (canvas) copiada para a grade com origem em (ox, oy) pixels finos; flip espelha em x. */
+  const fine = (ox, oy, cv, flip) => Object.keys(cv.m).forEach(y => Object.keys(cv.m[y]).forEach(x => paint(g, flip ? ox - +x - 1 : ox + +x, oy + +y, 1, 1, cv.m[y][x])));
   const px = (x, y, w, h, c) => paint(g, Math.round(x * R), Math.round(y * R), Math.round(w * R), Math.round(h * R), c);
-  return { top: top, faceY: faceY, faceX: faceX, box: box, glow: glow, at: at, map: (x, y, lines, pal, flip) => stamp(g, x, y, lines, pal, flip), px: px };
+  return { top: top, faceY: faceY, faceX: faceX, box: box, glow: glow, fine: fine, at: at, map: (x, y, lines, pal, flip) => stamp(g, x, y, lines, pal, flip), px: px };
 }
 /* Os mesmos desenhos na moldura local de uma estação (o espelho 'se' troca os eixos e vira os carimbos). */
 function kit(t, g) {
@@ -225,50 +227,163 @@ function frames(n, dur, make) {
   return out;
 }
 
-/* Pessoas: uma por papel, com a roupa na cor do papel. Cabeças em 3/4 (10x8, a última linha é o pescoço), viradas
-   para a esquerda: front olha para sudoeste, back para noroeste; o espelho dá sudeste e nordeste. Olhos na linha 4. */
+/* Pessoas: uma por papel, com a roupa na cor do papel, desenhadas direto na grade fina (2x2 por px lógico) a partir
+   de formas: cabeça em 3/4 virada para a esquerda (olha para sudoeste; o espelho dá sudeste), tronco com gola e um
+   detalhe do papel, e braços como membros de verdade (ombro -> cotovelo -> mão), sempre presos ao ombro.
+   pal: S/s pele e sombra, H/h cabelo e brilho, C/c roupa e sombra, P calça. hair: estilo do cabelo; extra: acessório. */
 const PEOPLE = {
-  triage: { pal: { S: '#8d5a3b', s: '#6f4329', H: '#1c1a1e', h: '#3a3540', C: '#49b5b0', c: '#2c7f7b', P: '#3d4560' },
-    front: ['..HHHHHH..', '.HHhHHHHH.', 'HHHHHHHHHH', 'HHSSSSHHHH', '.SSSSSSSH.', '.SSSSSSsH.', '..SSSss...', '...sSS....'],
-    back: ['..HHHHHH..', '.HHHHhHHH.', 'HHHHHHHHHH', 'HHHHHHHHHH', 'sHHHHHHHHH', '.sHHHHHHH.', '..SSSSSS..', '...SSSS...'] },
-  planner: { pal: { S: '#f1c9a5', s: '#d9a982', H: '#b5532f', h: '#d0703f', C: '#6f7de0', c: '#4450a8', P: '#6b5a4a' },
-    front: ['..HHHHHH..', '.HHhhHHHH.', 'HHHHHHHHHH', 'HSSSSSHHHH', 'HSSSSSSHHH', 'HSSSSSSHHH', '.HSSSsHHHH', '...sSSHHH.'],
-    back: ['..HHHHHH..', '.HHHhHHHH.', 'HHHHHHHHHH', 'HHHHHHHHHH', 'SHHHHHHHHH', 'sHHHHHHHHH', '.HHHHHHHHH', '..HHHHHHH.'] },
-  implementer: { pal: { S: '#c68c5f', s: '#a8714a', H: '#2b2320', h: '#4a3a33', C: '#e0894e', c: '#a85f30', P: '#55607d', G: '#b4b8c0', g: '#5a5f69' },
-    front: ['..gggggg..', '.gHHHHHHg.', '.HHHhHHHGG', 'HHSSSSHGGG', '.SSSSSSGGG', '.SSSSSSGG.', '..SSSss...', '...sSS....'],
-    back: ['..gggggg..', '.gHHHHHHg.', 'GGHHHhHHHH', 'GGGHHHHHHH', 'GGGHHHHHHH', '.GGHHHHHH.', '..SSSSSS..', '...SSSS...'] },
-  reviewer: { pal: { S: '#f7dcc4', s: '#e0bea2', H: '#c9ccd4', h: '#e6e8ec', C: '#dd6a83', c: '#9c4257', P: '#5d6270' },
-    front: ['.....HHH..', '..HHHhHHH.', '.HHHHHHHHH', '.HSSSSHHHH', '.kSkkSkSH.', '.SSSSSSsH.', '..SSSss...', '...sSS....'],
-    back: ['....HHH...', '..HHhHHHH.', '.HHHHHHHHH', '.HHHHHHHHH', 'kSHHHHHHHH', '.sHHHHHHH.', '..SSSSSS..', '...SSSS...'] },
-  tester: { pal: { S: '#e0ac7e', s: '#c48f62', H: '#15161a', h: '#2c2e35', C: '#8fc45a', c: '#5c8a35', P: '#4a5578' },
-    front: ['..HHHHHH..', '.HHhHHHHH.', 'HbbHbbHHHH', 'HSSSSSHHHH', 'HSSSSSSHHH', 'HSSSSSSHH.', '.HSSSsHH..', '...sSS....'],
-    back: ['..HHHHHH..', '.HHHhHHHH.', 'bbbbbbbbbH', 'HHHHHHHHHH', 'SHHHHHHHHH', 'HHHHHHHHH.', '.HSSSSSH..', '...SSSS...'] },
-  reporter: { pal: { S: '#a9714b', s: '#8a5a3a', H: '#3a2a20', h: '#5a4232', C: '#b377d9', c: '#7d4a9e', P: '#6b5a4a' },
-    front: ['..CCCCCC..', '.CCCCCCCC.', 'ccccCCCCCC', '.HSSSSHHH.', '.SSSSSSSH.', '.SSSSSSsH.', '..SSSss...', '...sSS....'],
-    back: ['..CCCCCC..', '.CCCCCCCC.', 'CCCCCCCCCC', '.HHHHHHHH.', 'SHHHHHHHH.', '.sHHHHHH..', '..SSSSSS..', '...SSSS...'] },
-  /* Code review: coque no alto, óculos escuros de leitura e camisa âmbar. */
-  code_review: { pal: { S: '#d29a6e', s: '#b27d53', H: '#4a2c22', h: '#6e4434', C: '#d9a441', c: '#9c7226', P: '#3f4a63' },
-    front: ['...HHHH...', '..HhHHHH..', '.HHHHHHHH.', 'HHSSSSSHHH', '.kkSkkSSH.', '.SSSSSSsH.', '..SSSss...', '...sSS....'],
-    back: ['...HHHH...', '..HHHhHH..', '.HHHHHHHH.', 'HHHHHHHHHH', 'kHHHHHHHHH', '.sHHHHHHH.', '..SSSSSS..', '...SSSS...'] }
+  triage: { pal: { S: '#8d5a3b', s: '#6f4329', H: '#1c1a1e', h: '#3a3540', C: '#49b5b0', c: '#2c7f7b', P: '#3d4560' }, hair: 'curly', shirt: 'lanyard' },
+  planner: { pal: { S: '#f1c9a5', s: '#d9a982', H: '#b5532f', h: '#d9784a', C: '#6f7de0', c: '#4450a8', P: '#6b5a4a' }, hair: 'long', shirt: 'cardigan' },
+  implementer: { pal: { S: '#c68c5f', s: '#a8714a', H: '#2b2320', h: '#4a3a33', C: '#e0894e', c: '#a85f30', P: '#55607d' }, hair: 'short', extra: 'headset', shirt: 'hoodie' },
+  reviewer: { pal: { S: '#f7dcc4', s: '#e0bea2', H: '#c9ccd4', h: '#eef0f3', C: '#dd6a83', c: '#9c4257', P: '#5d6270' }, hair: 'bun', extra: 'glasses', shirt: 'pearls' },
+  tester: { pal: { S: '#e0ac7e', s: '#c48f62', H: '#15161a', h: '#34363e', C: '#8fc45a', c: '#5c8a35', P: '#4a5578' }, hair: 'short', extra: 'goggles', shirt: 'coat' },
+  reporter: { pal: { S: '#a9714b', s: '#8a5a3a', H: '#3a2a20', h: '#5a4232', C: '#b377d9', c: '#7d4a9e', P: '#6b5a4a' }, hair: 'beanie', shirt: 'scarf' },
+  /* Code review: coque no alto, óculos de leitura e camisa âmbar com gravata. */
+  code_review: { pal: { S: '#d29a6e', s: '#b27d53', H: '#4a2c22', h: '#7a4c3a', C: '#d9a441', c: '#9c7226', P: '#3f4a63' }, hair: 'topknot', extra: 'readers', shirt: 'tie' }
 };
-const EYES = ['e..e'];
-const TORSO = ['..CCCCCC..', '.CCCCCCCC.', '.cCCCCCCc.', '.cCCCCCCc.', '..CCCCCC..'];
-/* Sentada: o tronco desce atrás da mesa, que é pintada por cima (só aparece do tampo para cima). */
-const SEATED = ['..CCCCCC..', '.CCCCCCCC.', '.cCCCCCCc.', '.cCCCCCCc.', '.cCCCCCCc.', '.cCCCCCCc.', '.cCCCCCCc.', '.cCCCCCCc.', '.cCCCCCCc.', '.cCCCCCCc.', '.cCCCCCCc.'];
-/* Poses sentadas (dx, dy relativos ao quadril; mapas olhando para sudoeste). Antebraços sobre a mesa vão na camada da frente. */
-const HAND_L = ['..cc', 'SS..'];
-const HAND_R = ['...cc', '.cc..', 'SS...'];
-const ARMS_CROSSED = ['.cccccccc.', '.SccccccS.'];
-const MUG_SIP = ['.WW.......', '.WWSc.....', '.....c....', '......c...', '.......c..', '........c.'];
-const WAVE = [['...S', '...c', '..c.', '..c.', '.c..', '.c..', 'c...', 'c...'], ['..S.', '..c.', '..c.', '..c.', '.c..', '.c..', 'c...', 'c...']];
-const STRETCH = [['S........S', 'c........c', 'c........c', 'c........c', '.c......c.', '.c......c.', '.c......c.'], ['..........', 'S........S', 'c........c', 'c........c', 'c........c', '.c......c.', '.c......c.']];
-const FACEPALM = ['...SS.....', '..SSSc....', '.....cc...', '.......c..', '.......cc.', '........c.'];
-/* Caminhada (caixa 12x20, pés na última linha): quadris, ciclo de pernas e a pasta nas mãos. */
+const EYE = '#1a1b20', WHITE = '#f4f5f7';
+
+/* Tela fina: pixels soltos em coordenadas locais (origem no quadril), copiados depois para a grade com espelho. */
+function canvas() {
+  const m = {};
+  const set = (x, y, c) => { if (c === null) { if (m[y]) delete m[y][x]; } else if (c) (m[y] || (m[y] = {}))[x] = c; };
+  const get = (x, y) => m[y] && m[y][x];
+  /* Elipse amostrada no centro do pixel; keep(x, y) filtra. */
+  const ell = (cx, cy, rx, ry, c, keep) => {
+    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+      const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
+      if (dx * dx + dy * dy <= 1 && (!keep || keep(x, y))) set(x, y, typeof c === 'function' ? c(x, y) : c);
+    }
+  };
+  const rect = (x0, y0, x1, y1, c) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) set(x, y, c); };
+  /* Traço grosso por uma linha de pontos (membros): discos de raio r ao longo de cada trecho. */
+  const limb = (pts, r, c) => {
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) * 3));
+      for (let k = 0; k <= n; k++) ell(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, r, r, c);
+    }
+  };
+  return { m: m, set: set, get: get, ell: ell, rect: rect, limb: limb };
+}
+
+/* Cabeça em 3/4 (olhando para a esquerda) com centro do crânio em (cx, cy). back: vista de costas (só cabelo,
+   orelha e nuca). Os olhos ficam fora: são uma camada própria, para piscar. */
+function drawHead(cv, p, cx, cy, back) {
+  const S = p.pal.S, s = p.pal.s, H = p.pal.H, h = p.pal.h, Hd = shade(H, 0.35);
+  /* Pescoço e crânio: calota larga em cima e queixo mais estreito, puxado para a frente. */
+  /* O pescoço só preenche o vão até o tronco (não cobre a gola). */
+  for (let y = cy + 5; y <= cy + 11; y++) for (let x = cx - 3; x <= cx + 1; x++) if (!cv.get(x, y)) cv.set(x, y, s);
+  const skull = (x, y) => {
+    const a = (x + 0.5 - cx) / 8, b = (y + 0.5 - cy + 0.5) / 7.5, j = (x + 0.5 - cx + 0.5) / 6.5, k = (y + 0.5 - cy - 2.5) / 5;
+    return a * a + b * b <= 1 || j * j + k * k <= 1;
+  };
+  for (let y = cy - 9; y <= cy + 8; y++) for (let x = cx - 9; x <= cx + 9; x++) if (skull(x, y)) cv.set(x, y, x >= cx + 4 || y >= cy + 7 ? s : S);
+  /* Cabelo: tudo da calota acima da linha do cabelo; atrás da orelha desce até a nuca. hl(x) = linha do cabelo. */
+  const st = p.hair;
+  const cap = (hl, grow) => {
+    for (let y = cy - 10; y <= cy + 14; y++) for (let x = cx - 10; x <= cx + 10; x++) {
+      const a = (x + 0.5 - cx) / (8 + grow), b = (y + 0.5 - cy + 0.8) / (7.6 + grow);
+      if (a * a + b * b <= 1 && (back || y < hl(x))) cv.set(x, y, H);
+    }
+  };
+  const fringe = x => (x >= cx + 2 ? cy + 4 : x <= cx - 7 ? cy + 1 : cy - 2 - ((x + 40) % 3 === 0 ? 1 : 0));
+  if (st === 'curly') {
+    cap(fringe, 1);
+    for (let i = 0; i < 9; i++) { const th = Math.PI * (0.95 + i * 0.13); cv.ell(cx + Math.cos(th) * 8.6, cy - 1 + Math.sin(th) * 8, 1.7, 1.7, H); }
+  } else if (st === 'long') {
+    cap(x => (x >= cx + 1 ? cy + 13 : x <= cx - 7 ? cy + 6 : cy - 2 + (x > cx - 3 ? 0 : 1)), 1.2);
+    cv.rect(cx + 2, cy + 4, cx + 9, cy + 13, H);
+    for (let y = cy + 9; y <= cy + 13; y++) cv.set(cx + 9 - ((y - cy) % 2), y, null);
+  } else if (st === 'bun' || st === 'topknot') {
+    cap(fringe, 0.6);
+    if (st === 'bun') cv.ell(cx + 5, cy - 6, 3.4, 3.2, H); else cv.ell(cx, cy - 10, 3.2, 2.8, H);
+  } else if (st === 'beanie') {
+    cap(fringe, 0.4);
+    const C = p.pal.C, c = p.pal.c;
+    cv.ell(cx, cy - 3, 9, 7, C, (x, y) => y <= cy - 2);
+    cv.rect(cx - 9, cy - 3, cx + 9, cy - 2, c);
+    for (let x = cx - 8; x <= cx + 8; x += 2) cv.set(x, cy - 3, shade(c, 0.2));
+    cv.ell(cx + 1, cy - 10, 2, 1.8, WHITE);
+  } else cap(fringe, 0.5);
+  /* Brilho do cabelo: um arco claro no alto da cabeça. */
+  if (st !== 'beanie') for (let x = cx - 4; x <= cx + 3; x++) { const y = Math.round(cy - 6.6 + Math.pow((x - cx + 0.5) / 4.5, 2) * 2); if (cv.get(x, y) === H) cv.set(x, y, h); }
+  /* Orelha atrás da bochecha (de costas, dos dois lados). */
+  const ear = ex => { cv.ell(ex, cy + 1.5, 1.7, 2.3, S); cv.set(Math.floor(ex), cy + 1, s); cv.set(Math.floor(ex), cy + 2, s); };
+  if (st !== 'long') ear(cx + 4.5); if (back && st !== 'long') ear(cx - 6.5);
+  if (!back) {
+    /* Sobrancelhas, nariz, boca e bochechas. Os olhos ficam em (cx-6, cy+1) e (cx-1, cy+1). */
+    cv.rect(cx - 7, cy - 1, cx - 5, cy - 1, Hd); cv.rect(cx - 2, cy - 1, cx, cy - 1, Hd);
+    cv.set(cx - 4, cy + 3, s); cv.set(cx - 5, cy + 4, s);
+    cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, mix(S, '#6a2420', 0.55));
+    cv.set(cx - 8, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 1, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 2, cy + 4, mix(S, '#ff7a7a', 0.3));
+  }
+  /* Acessórios. */
+  const ex = p.extra;
+  if (ex === 'headset') {
+    for (let i = 0; i <= 12; i++) { const th = Math.PI * (1.05 + i * 0.075); cv.set(Math.round(cx + 0.5 + Math.cos(th) * 9), Math.round(cy + Math.sin(th) * 8.6), '#5a5f69'); }
+    cv.ell(cx + 4.5, cy + 1.5, 2.6, 3.2, '#3d424d'); cv.ell(cx + 4.2, cy + 1.2, 1.2, 1.6, '#e0894e');
+    if (!back) { cv.rect(cx - 2, cy + 6, cx + 3, cy + 6, '#3d424d'); cv.set(cx - 3, cy + 6, '#e0894e'); }
+  } else if (ex === 'goggles') {
+    cv.rect(cx - 8, cy - 4, cx + 8, cy - 3, '#5b6ad9');
+    if (!back) { cv.rect(cx - 8, cy - 5, cx - 5, cy - 2, '#a6b0f7'); cv.rect(cx - 3, cy - 5, cx, cy - 2, '#a6b0f7'); cv.set(cx - 7, cy - 4, WHITE); cv.set(cx - 2, cy - 4, WHITE); }
+  } else if ((ex === 'glasses' || ex === 'readers') && !back) {
+    const fr = ex === 'glasses' ? '#3a3e48' : '#7a3b2a';
+    [cx - 6, cx - 1].forEach(x => { cv.rect(x - 2, cy - 1, x + 2, cy - 1, fr); cv.rect(x - 2, cy + 3, x + 2, cy + 3, fr); cv.rect(x - 2, cy, x - 2, cy + 2, fr); cv.rect(x + 2, cy, x + 2, cy + 2, fr); });
+    cv.set(cx - 3, cy, fr); cv.rect(cx + 2, cy, cx + 4, cy, fr);
+  }
+}
+/* Olhos (camada própria): abertos com brilho, ou fechados e sorrindo. */
+function drawEyes(cv, cx, cy, happy) {
+  [cx - 6, cx - 1].forEach(x => {
+    if (happy) { cv.set(x - 1, cy + 2, EYE); cv.set(x, cy + 1, EYE); cv.set(x + 1, cy + 2, EYE); return; }
+    cv.rect(x - 1, cy + 1, x, cy + 2, EYE); cv.set(x - 1, cy + 1, WHITE);
+  });
+}
+/* Tronco: ombros arredondados, sombra do lado de trás, gola em V e o detalhe da roupa do papel. */
+function drawTorso(cv, p, cx, top, bottom) {
+  const C = p.pal.C, c = p.pal.c, S = p.pal.S;
+  for (let y = top; y <= bottom; y++) {
+    const r = y === top ? 5 : y === top + 1 ? 7 : 8;
+    for (let x = cx - r - 1; x <= cx + r; x++) cv.set(x, y, x >= cx + r - 2 ? c : x === cx - r - 1 ? lit(C, 0.18) : C);
+  }
+  cv.rect(cx - 3, top, cx + 1, top, S); cv.rect(cx - 2, top + 1, cx, top + 1, S); cv.set(cx - 1, top + 2, S);
+  cv.set(cx - 4, top, lit(C, 0.3)); cv.set(cx + 2, top, lit(C, 0.3));
+  const sh = p.shirt;
+  if (sh === 'lanyard') { for (let y = top; y <= top + 6; y++) cv.set(cx - 4 + Math.floor((y - top) / 3), y, '#e3ba6a'); cv.rect(cx - 4, top + 7, cx - 1, top + 10, WHITE); cv.rect(cx - 3, top + 8, cx - 2, top + 8, '#5b6ad9'); }
+  else if (sh === 'cardigan') { for (let y = top + 3; y <= bottom; y++) cv.set(cx - 1, y, c); for (let y = top + 4; y <= bottom; y += 3) cv.set(cx - 2, y, WHITE); }
+  else if (sh === 'hoodie') { cv.rect(cx + 1, top - 1, cx + 6, top, c); cv.rect(cx - 3, top + 2, cx - 3, top + 6, WHITE); cv.rect(cx, top + 2, cx, top + 5, WHITE); cv.rect(cx - 5, top + 9, cx + 3, top + 9, c); }
+  else if (sh === 'pearls') { [[-4, 1], [-3, 2], [-1, 3], [1, 2], [2, 1]].forEach(d => cv.set(cx + d[0], top + d[1], WHITE)); }
+  else if (sh === 'coat') { for (let y = top; y <= bottom; y++) { cv.set(cx - 5, y, WHITE); cv.set(cx - 4, y, '#d8dbe2'); cv.set(cx + 3, y, '#d8dbe2'); cv.set(cx + 4, y, WHITE); } cv.rect(cx + 5, top + 5, cx + 6, top + 6, '#5b6ad9'); }
+  else if (sh === 'scarf') { cv.rect(cx - 5, top, cx + 4, top + 2, '#e3ba6a'); cv.rect(cx - 4, top + 3, cx - 2, top + 8, '#e3ba6a'); for (let y = top; y <= top + 8; y += 2) cv.set(cx - 3, y, '#d9645a'); }
+  else if (sh === 'tie') { cv.rect(cx - 2, top + 2, cx - 1, top + 9, '#3f4a63'); cv.set(cx - 2, top + 10, '#3f4a63'); cv.rect(cx - 4, top, cx - 3, top + 1, WHITE); cv.rect(cx, top, cx + 1, top + 1, WHITE); }
+}
+/* Braço: manga do ombro ao cotovelo e até o pulso, mão na ponta; opcionalmente algo na mão (caneca). */
+function drawArm(cv, p, pts) {
+  const C = p.pal.C, c = p.pal.c, S = p.pal.S, s = p.pal.s, end = pts[pts.length - 1];
+  cv.limb(pts, 2.1, C);
+  /* Sombra da manga: o lado de baixo de cada trecho. */
+  cv.limb(pts.map(q => [q[0] + 0.6, q[1] + 0.9]), 1.1, (x, y) => (cv.get(x, y) === C && !(cv.get(x, y + 2) === C) ? c : cv.get(x, y)));
+  cv.ell(end[0], end[1], 1.9, 1.8, S); cv.set(Math.round(end[0]), Math.round(end[1]) + 1, s);
+}
+
+/* Poses dos braços (pontos finos relativos ao quadril, olhando para sudoeste). Ombros em L e R. */
+const SH_L = [-8, -11], SH_R = [6, -11];
+const POSE = {
+  restL: [SH_L, [-11, -4], [-14, 1]],
+  restR: [SH_R, [8, -3], [-3, 3]],
+  crossL: [SH_L, [-10, -4], [4, -6]],
+  crossR: [SH_R, [8, -3], [-6, -7]],
+  sipR: [SH_R, [9, -4], [-5, -17]],
+  palmL: [SH_L, [-12, -5], [-8, -22]],
+  stretch: [[[SH_L, [-12, -21], [-8, -35]], [SH_R, [10, -21], [6, -35]]], [[SH_L, [-13, -23], [-10, -38]], [SH_R, [11, -23], [8, -38]]]],
+  wave: [[SH_R, [12, -18], [11, -30]], [SH_R, [13, -17], [15, -28]]]
+};
+const HEAD_C = [-1, -25];
+
+/* Caminhada (caixa 12x20 px lógicos, pés na última linha): quadris e ciclo de pernas nos mapas; o resto na grade fina. */
 const HIPS = ['..PPPPPP..', '..PPPPPP..', '..PP..PP..'];
 const STEP = ['..PP..PP..', '..PP..PP..', '..PP..PP..', '..WW..WW..'];
 const LEG_FR = [STEP, ['..PP..PP..', '..PP..PP..', '..PP..WW..', '..WW......'], STEP, ['..PP..PP..', '..PP..PP..', '..WW..PP..', '......WW..']];
-const ARMS_WALK = ['.c......c.', '.S......S.'];
-const CARRY = ['..aa......', '.SaaaaaaS.', '.cAWWWWAc.', '..AAAAAA..'];
 
 function walkerSprites(role, back, carry, frame) {
   const p = PEOPLE[role], still = frame != null, out = [], id = role + (back ? '-b' : '-f');
@@ -276,49 +391,62 @@ function walkerSprites(role, back, carry, frame) {
   if (still) out.push(legs(frame)); else frames(4, 0.44, legs).forEach(s => out.push(s));
   const fold = carry && !back;
   out.push(SO('wk-up-' + id + (fold ? '-c' : ''), still ? '' : 'a-walkbob', '', t => {
-    t.map(1, 8, TORSO, p.pal); if (fold) t.map(1, 9, CARRY, p.pal); else t.map(1, 10, ARMS_WALK, p.pal);
-    t.map(1, 0, back ? p.back : p.front, p.pal); if (!back) t.map(3, 4, EYES, p.pal);
+    const cv = canvas();
+    drawTorso(cv, back ? Object.assign({}, p, { shirt: '' }) : p, 12, 16, 27);
+    drawHead(cv, p, 12, 8, back);
+    if (!back) drawEyes(cv, 12, 8, false);
+    if (fold) {
+      drawArm(cv, p, [[4, 18], [3, 23], [6, 23]]); drawArm(cv, p, [[19, 18], [20, 23], [17, 23]]);
+      cv.rect(5, 20, 18, 25, '#d9a441'); cv.rect(5, 19, 9, 19, '#e3ba6a'); cv.rect(7, 21, 16, 22, WHITE); cv.rect(5, 25, 18, 25, '#9c7226');
+      cv.ell(6, 23, 1.8, 1.7, p.pal.S); cv.ell(17, 23, 1.8, 1.7, p.pal.S);
+    } else { drawArm(cv, p, [[4, 18], [3, 23], [3, 27]]); drawArm(cv, p, [[19, 18], [20, 23], [20, 27]]); }
+    t.fine(0, 0, cv, false);
   }));
   return out;
 }
 
 /* Pessoa sentada atrás da mesa, de frente para a câmera. body vai antes da mesa (a mesa esconde o colo);
-   hands vai depois (antebraços e mãos sobre o tampo). cls é a animação da camada do corpo. */
+   hands vai depois (braços que descansam no tampo). cls é a animação da camada do corpo. */
 function seatedParts(role, v, i) {
   const p = PEOPLE[role], g = geo(role), id = '-' + role;
-  const put = (dx, dy, lines) => t => kit(t, g).body(dx, dy, lines, p.pal);
-  const body = [SO('torso' + id, '', '', t => { put(-5, -7, SEATED)(t); put(-5, -15, p.front)(t); })];
+  const put = draw => t => { const cv = canvas(); draw(cv); t.fine(g.seat[0] * R, g.seat[1] * R, cv, g.se); };
+  const arm = pts => put(cv => drawArm(cv, p, pts));
+  const body = [SO('torso' + id, '', '', put(cv => { drawTorso(cv, p, 0, -14, 8); drawHead(cv, p, HEAD_C[0], HEAD_C[1], false); }))];
   const hands = [];
-  const eyes = cls => body.push(S('eyes' + id, cls, '', put(-3, -11, EYES)));
+  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, HEAD_C[0], HEAD_C[1], happy))));
   const sip = v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
   hands.push(mug(role, sip ? 'a-sipA' : '', d));
   let cls = 'a-bob';
   if (v === 'working') {
     cls = ''; eyes('a-wink');
-    hands.push(SO('typeL' + id, 'a-tapL', '', put(-7, 0, HAND_L)));
-    hands.push(SO('typeR' + id, 'a-tapR', '', put(-3, 1, HAND_R)));
+    hands.push(SO('typeL' + id, 'a-tapL', '', arm(POSE.restL)));
+    hands.push(SO('typeR' + id, 'a-tapR', '', arm(POSE.restR)));
   } else if (v === 'waiting') {
     eyes('a-wink');
     if (sip) {
-      hands.push(SO('handL' + id, '', '', put(-7, 0, HAND_L)));
-      hands.push(SO('handR' + id, 'a-sipA', d, put(-3, 1, HAND_R)));
-      body.push(SO('sip' + id, 'a-sipB', d, put(-5, -11, MUG_SIP)));
-    } else body.push(SO('crossed' + id, '', '', put(-5, -4, ARMS_CROSSED)));
+      hands.push(SO('handL' + id, '', '', arm(POSE.restL)));
+      hands.push(SO('handR' + id, 'a-sipA', d, arm(POSE.restR)));
+      body.push(SO('sip' + id, 'a-sipB', d, put(cv => {
+        drawArm(cv, p, POSE.sipR);
+        cv.rect(-10, -21, -6, -16, WHITE); cv.rect(-10, -16, -6, -16, '#b4b8c0'); cv.rect(-5, -20, -5, -18, WHITE);
+        cv.ell(-5, -17, 1.9, 1.8, p.pal.S);
+      })));
+    } else body.push(SO('crossed' + id, '', '', put(cv => { drawArm(cv, p, POSE.crossR); drawArm(cv, p, POSE.crossL); })));
   } else if (v === 'you') {
     eyes('a-wink');
-    frames(2, 0.5, n => S('wave' + n + id, '', '', put(3, -15, WAVE[n]))).forEach(s => body.push(s));
-    hands.push(SO('handL' + id, '', '', put(-7, 0, HAND_L)));
+    frames(2, 0.5, n => SO('wave' + n + id, '', '', arm(POSE.wave[n]))).forEach(s => body.push(s));
+    hands.push(SO('handL' + id, '', '', arm(POSE.restL)));
   } else if (v === 'done') {
-    cls = ''; eyes('');
-    frames(2, 1.8, n => SO('stretch' + n + id, '', '', put(-5, -19, STRETCH[n]))).forEach(s => body.push(s));
+    cls = ''; eyes('', true);
+    frames(2, 1.8, n => SO('stretch' + n + id, '', '', put(cv => POSE.stretch[n].forEach(a => drawArm(cv, p, a))))).forEach(s => body.push(s));
   } else if (v === 'failed') {
-    cls = 'a-nod';
-    body.push(SO('facepalm' + id, '', '', put(-5, -14, FACEPALM)));
-    hands.push(SO('handL' + id, '', '', put(-7, 0, HAND_L)));
+    cls = 'a-nod'; eyes('');
+    body.push(SO('facepalm' + id, '', '', arm(POSE.palmL)));
+    hands.push(SO('handR' + id, '', '', arm(POSE.restR)));
   } else {
     eyes('a-wink');
-    hands.push(SO('handL' + id, '', '', put(-7, 0, HAND_L)));
-    hands.push(SO('handR' + id, '', '', put(-3, 1, HAND_R)));
+    hands.push(SO('handL' + id, '', '', arm(POSE.restL)));
+    hands.push(SO('handR' + id, '', '', arm(POSE.restR)));
   }
   return { cls: cls, body: body, hands: hands };
 }
@@ -474,7 +602,7 @@ function stationLayers(st, c) {
   if (c.folder) add([SO('folder' + id, '', '', t => drawFolder(kit(t, g)))], c.to ? 'g-from' : '', c.to ? at(c.arrive) : '');
   const badge = vis => {
     const b = { you: 'a-bounce', done: 'a-pop', returned: '', failed: '' }[vis];
-    return b == null ? [] : [SO('badge-' + vis + id, b, '', t => t.map(g.seat[0] - 5, g.seat[1] - 27, BADGE[vis]))];
+    return b == null ? [] : [SO('badge-' + vis + id, b, '', t => t.map(g.seat[0] - 5, g.seat[1] - (vis === 'done' ? 30 : 27), BADGE[vis]))];
   };
   slot(badge, c.away ? c.td : null);
   if (v === 'failed' && !you) add([0, 0.6, 1.2].map((d, n) => S('smoke' + n + id, 'a-smoke', d ? 'animation-delay:' + d + 's' : '', t => {
