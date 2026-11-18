@@ -161,6 +161,11 @@ pub trait VersionControl: Send + Sync {
     fn worktrees(&self, root: &str) -> AppResult<Vec<String>>;
     /// Diz se o repositório já tem o ramo local `branch` (ele fica depois que a cópia é removida).
     fn has_branch(&self, root: &str, branch: &str) -> bool;
+    /// Foto da pasta como está agora (versionados e novos, fora os ignorados), sem mexer no que o
+    /// usuário preparou para commit nem nos arquivos. `None` se não for repositório.
+    fn snapshot(&self, root: &str) -> Option<String>;
+    /// O que mudou entre duas fotos.
+    fn diff_between(&self, root: &str, from: &str, to: &str) -> AppResult<String>;
 }
 
 /// Lê um arquivo escolhido pelo usuário para uso como anexo.

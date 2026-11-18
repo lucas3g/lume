@@ -356,6 +356,8 @@ impl Workspace for FakeWorkspace {
 pub struct FakeVcs {
     /// Commits pedidos: (pasta, mensagem).
     pub commits: Mutex<Vec<(String, String)>>,
+    /// Fotos tiradas da pasta: cada uma é "foto<n>".
+    pub snapshots: Mutex<usize>,
 }
 
 impl VersionControl for FakeVcs {
@@ -364,6 +366,15 @@ impl VersionControl for FakeVcs {
     }
     fn diff(&self, _root: &str, _path: &str) -> AppResult<String> {
         Ok(String::new())
+    }
+    fn snapshot(&self, _root: &str) -> Option<String> {
+        let mut n = self.snapshots.lock().unwrap();
+        *n += 1;
+        Some(format!("foto{n}"))
+    }
+    /// O diff entre duas fotos diz quais são, para o teste conferir.
+    fn diff_between(&self, _root: &str, from: &str, to: &str) -> AppResult<String> {
+        Ok(format!("mudou de {from} para {to}"))
     }
     fn commit(&self, root: &str, message: &str) -> AppResult<()> {
         self.commits.lock().unwrap().push((root.to_owned(), message.to_owned()));

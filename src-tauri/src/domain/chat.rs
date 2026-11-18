@@ -198,6 +198,15 @@ pub const ARTIFACT_TOOL: &str = "Artifact";
 /// Marca (nas configurações, com o id da conversa) da conversa que usa o Claude Design: a etapa do Designer.
 pub const ARTIFACTS_PREFIX: &str = "artifacts:";
 
+/// Marca (nas configurações, com o id da conversa) da conversa que roda sem os conectores da conta do
+/// claude.ai (Atlassian, Gmail...): os nomes e as instruções deles entrariam em toda chamada ao modelo.
+pub const NO_ACCOUNT_CONNECTORS_PREFIX: &str = "sem_conectores_da_conta:";
+
+/// Marca (nas configurações, com o id da conversa, valendo o papel) da conversa em que uma etapa da
+/// esteira está rodando: o turno leva só as ferramentas do papel e nenhum contexto da conversa comum
+/// (trechos do histórico, guia de html).
+pub const PIPELINE_STAGE_PREFIX: &str = "etapa_da_esteira:";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnEvent {
     Session(String),
@@ -295,6 +304,9 @@ pub struct TurnRequest {
     /// Liga a ferramenta de artifacts (Claude Design) no CLI, que sem tela não a oferece; o turno para
     /// com aviso se ela não vier.
     pub artifacts: bool,
+    /// Carrega os conectores da conta do claude.ai. Desligados, saem do contexto de toda chamada;
+    /// os conectores locais e os do projeto continuam.
+    pub account_connectors: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

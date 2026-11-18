@@ -1,7 +1,7 @@
 // Esteira de bots: execuções, a que está aberta e as mensagens das conversas das etapas.
 
 import { api } from "../api";
-import type { JiraIssue, Message, PastedImage, PipelineDetail, PipelineRun } from "../types";
+import type { JiraIssue, Message, PastedImage, PipelineDetail, PipelineRun, StageRun } from "../types";
 import { loadConversations } from "./chat.svelte";
 
 export const pipelines = $state({
@@ -44,6 +44,19 @@ export async function loadDetail(): Promise<void> {
       .filter((s) => s.conversation_id && (s.status === "running" || !pipelines.messages[s.conversation_id]))
       .map((s) => loadStageMessages(s.conversation_id)),
   );
+}
+
+/**
+ * Mensagens de uma etapa. Quem roda de novo (Implementador, Revisor, Planejador, Designer) continua a
+ * sessão da passagem anterior: as passagens dividem a conversa, e cada uma mostra só o trecho dela.
+ */
+export function stageMessages(stage: StageRun): Message[] {
+  const all = pipelines.messages[stage.conversation_id] ?? [];
+  const sharing = pipelines.detail?.stages.filter((s) => s.conversation_id === stage.conversation_id) ?? [];
+  if (sharing.length < 2) return all;
+  const next = sharing.find((s) => s.started_at > stage.started_at);
+  const first = sharing[0]?.id === stage.id;
+  return all.filter((m) => (first || m.created_at >= stage.started_at) && (!next || m.created_at < next.started_at));
 }
 
 export async function loadStageMessages(conversationId: string): Promise<void> {

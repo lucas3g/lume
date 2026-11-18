@@ -14,7 +14,12 @@ pub struct GitCli;
 
 /// Saída padrão do git, se o comando teve sucesso.
 fn git(root: &str, args: &[&str]) -> Option<String> {
-    let output = hide_console(&mut Command::new("git")).arg("-C").arg(root).args(args).output().ok()?;
+    git_with(root, &[], args)
+}
+
+/// Como `git`, com variáveis de ambiente a mais (ex.: um índice temporário).
+fn git_with(root: &str, envs: &[(&str, &std::ffi::OsStr)], args: &[&str]) -> Option<String> {
+    let output = hide_console(&mut Command::new("git")).arg("-C").arg(root).envs(envs.iter().copied()).args(args).output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -121,6 +126,42 @@ impl VersionControl for GitCli {
         Ok(text.lines().take(MAX_NEW_FILE_DIFF_LINES).map(|l| format!("+{l}\n")).collect())
     }
 
+    fn snapshot(&self, root: &str) -> Option<String> {
+        // Um índice temporário recebe a pasta e vira uma árvore no repositório; o índice de verdade fica
+        // intocado. Ele começa como cópia do real, para o git não reler os arquivos que não mudaram.
+        // Dos arquivos novos, entram só os pequenos (como no diff) e no máximo `MAX_FILES`: cada um
+        // vira um objeto no repositório a cada foto, e uma pasta de build esquecida fora do .gitignore
+        // encheria o repositório.
+        let index = std::env::temp_dir().join(format!("lume-index-{}", uuid::Uuid::new_v4()));
+        let with_index = |args: &[&str]| git_with(root, &[("GIT_INDEX_FILE", index.as_os_str())], args).map(|o| o.trim().to_owned());
+        let tree = (|| {
+            let real = git(root, &["rev-parse", "--git-path", "index"])?;
+            let real = std::path::Path::new(root).join(real.trim());
+            if fs::copy(&real, &index).is_err() && has_commits(root) {
+                with_index(&["read-tree", "HEAD"])?;
+            }
+            with_index(&["add", "-u", "--", "."])?;
+            let others = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+            let small: Vec<&str> = others
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .filter(|p| fs::metadata(std::path::Path::new(root).join(p)).is_ok_and(|m| m.len() <= MAX_COUNTED_BYTES))
+                .take(MAX_FILES)
+                .collect();
+            for chunk in small.chunks(100) {
+                let args: Vec<&str> = ["add", "--"].into_iter().chain(chunk.iter().copied()).collect();
+                with_index(&args)?;
+            }
+            with_index(&["write-tree"])
+        })();
+        let _ = fs::remove_file(&index);
+        tree.filter(|t| !t.is_empty())
+    }
+
+    fn diff_between(&self, root: &str, from: &str, to: &str) -> AppResult<String> {
+        git_or_error(root, &["diff", from, to])
+    }
+
     fn commit(&self, root: &str, message: &str) -> AppResult<()> {
         git_or_error(root, &["add", "-A"])?;
         git_or_error(root, &["commit", "-m", message])?;
@@ -195,6 +236,38 @@ mod tests {
         assert_eq!(GitCli.worktrees(&root).unwrap().len(), 2);
         assert!(GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo").is_err(), "nome repetido é recusado");
         fs::remove_dir_all(&branch_dir).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Fotos da pasta: o diff entre elas traz só o que mudou no meio, arquivos novos inclusive,
+    /// sem tocar no que o usuário deixou preparado para commit.
+    #[test]
+    fn snapshots_show_only_what_changed_between_them() {
+        let dir = std::env::temp_dir().join(format!("lume-git-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        assert_eq!(GitCli.snapshot(&root), None, "pasta comum não tem foto");
+        git(&root, &["init", "-q"]).unwrap();
+        git(&root, &["config", "user.email", "teste@exemplo.com"]).unwrap();
+        git(&root, &["config", "user.name", "Teste"]).unwrap();
+        fs::write(dir.join("a.txt"), "um\n").unwrap();
+        GitCli.commit(&root, "Primeiro").unwrap();
+
+        fs::write(dir.join("a.txt"), "um\ndois\n").unwrap();
+        git(&root, &["add", "a.txt"]).unwrap();
+        let first = GitCli.snapshot(&root).unwrap();
+        fs::write(dir.join("a.txt"), "um\ndois\ntrês\n").unwrap();
+        fs::write(dir.join("novo.txt"), "novo\n").unwrap();
+        fs::write(dir.join("grande.bin"), vec![b'x'; MAX_COUNTED_BYTES as usize + 1]).unwrap();
+        let second = GitCli.snapshot(&root).unwrap();
+
+        let delta = GitCli.diff_between(&root, &first, &second).unwrap();
+        assert!(delta.contains("+três") && delta.contains("+novo"), "{delta}");
+        assert!(!delta.contains("+dois"), "o que já estava na primeira foto não aparece");
+        assert!(!delta.contains("grande.bin"), "arquivo novo grande não vai para o repositório");
+        let staged = git(&root, &["diff", "--cached", "--name-only"]).unwrap();
+        assert_eq!(staged.trim(), "a.txt", "o índice do usuário fica como estava");
+        assert!(GitCli.status(&root).files.iter().any(|f| f.path == "novo.txt" && f.status == "?"), "o arquivo novo continua fora do git");
         fs::remove_dir_all(dir).unwrap();
     }
 }

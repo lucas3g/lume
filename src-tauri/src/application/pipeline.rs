@@ -14,9 +14,9 @@ use crate::domain::mcp::server_rule;
 use crate::domain::permission::AUTO_APPROVE_PREFIX;
 use crate::domain::{
     account::Provider,
-    chat::{Attachment, Message, TokenUsage, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
+    chat::{Attachment, Message, TokenUsage, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, NO_ACCOUNT_CONNECTORS_PREFIX, PIPELINE_STAGE_PREFIX, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, starts_task, next_step, normalize_jira_key, implementer_round, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, created_task, is_generated, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, starts_task, next_step, normalize_jira_key, implementer_round, rounds, session_to_continue, spent_seconds, stage_prompt, uses_jira,
         suggested_commit, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -32,6 +32,11 @@ const EXTRA_BUDGET_MINUTES: i64 = 30;
 
 /// Configuração da esteira de cada projeto, guardada como texto: prefixo + id do projeto.
 const CONFIG_PREFIX: &str = "pipeline_config:";
+/// Foto da pasta que o Revisor revisou por último em cada execução: a próxima revisão recebe só o que mudou depois dela.
+const REVIEWED_PREFIX: &str = "pipeline_reviewed:";
+/// Sessão que já ocupa esta parte do contexto do modelo não é continuada: a etapa abre uma nova, com o
+/// resumo do que importa no prompt, em vez de reenviar uma conversa longa a cada chamada.
+const MAX_RESUME_CONTEXT_PERCENT: i64 = 50;
 /// Modelo de task do Jira de todos os projetos (o de cada projeto vem antes).
 const DEFAULT_TEMPLATE_KEY: &str = "pipeline_default_template";
 
@@ -387,21 +392,57 @@ impl ManagePipelines {
 
     async fn run_stage(&self, run: &mut PipelineRun, stages: &[StageRun], role: Role, runner: &dyn StageRunner) -> AppResult<()> {
         let mut ctx = context_for(stages);
+        // Rodando de novo, o papel continua a sessão da passagem anterior (o que já leu vem do cache),
+        // a não ser que ela não possa ser retomada ou já esteja grande demais.
+        let resumed = match session_to_continue(role, stages) {
+            Some(id) => self
+                .conversations
+                .get(id)?
+                .filter(|c| c.cli_session_id.is_some() && c.context_percent.unwrap_or(0) < MAX_RESUME_CONTEXT_PERCENT)
+                .map(|c| c.id),
+            None => None,
+        };
+        ctx.resumed = resumed.is_some();
+        let mut reviewed = None;
         if role == Role::Reviewer {
-            ctx.diff = self.diff(&run.workdir);
+            let now = self.vcs.snapshot(&run.workdir);
+            let before = self.settings.text(&format!("{REVIEWED_PREFIX}{}", run.id)).filter(|t| !t.is_empty());
+            // Só quem continua a sessão já viu o resto: numa sessão nova, o Revisor recebe a alteração inteira.
+            let since = match (before.filter(|_| ctx.resumed), now.as_deref()) {
+                (Some(from), Some(to)) => self.vcs.diff_between(&run.workdir, &from, to).ok(),
+                _ => None,
+            };
+            // Sem revisão anterior (ou sem git), vai o diff inteiro. Sem nada novo desde ela, nenhum diff:
+            // o Revisor confere nos arquivos o que tinha sido apontado.
+            ctx.diff_since_review = since.is_some();
+            ctx.diff = match since {
+                Some(d) if d.trim().is_empty() => None,
+                Some(d) => Some(clip_diff(&d)),
+                None => self.diff(&run.workdir),
+            };
+            reviewed = now;
         }
         let prompt = stage_prompt(role, run, &ctx);
-        let conversation_id = self.ids.new_id();
-        let label = run.jira_key.clone().unwrap_or_else(|| run.title.clone());
-        // Cada serviço tem os próprios modelos: o do Claude fica na conversa; os dos outros
-        // ficam na conversa também, para valer se a conta trocar para o ChatGPT ou o Gemini no meio.
-        let models = self.models();
-        let claude_model = models.model(Provider::Claude, role.tier()).unwrap_or_default();
-        self.conversations.insert(&conversation_id, &format!("🤖 {} · {label}", role.label()), &claude_model, &run.workdir, KIND_AGENT, None)?;
-        let others = models.others(role.tier());
-        if !others.is_empty() {
-            self.conversations.set_provider_models(&conversation_id, &others)?;
-        }
+        let conversation_id = match &resumed {
+            Some(id) => id.clone(),
+            None => {
+                let id = self.ids.new_id();
+                let label = run.jira_key.clone().unwrap_or_else(|| run.title.clone());
+                // Cada serviço tem os próprios modelos: o do Claude fica na conversa; os dos outros
+                // ficam na conversa também, para valer se a conta trocar para o ChatGPT ou o Gemini no meio.
+                let models = self.models();
+                let claude_model = models.model(Provider::Claude, role.tier()).unwrap_or_default();
+                self.conversations.insert(&id, &format!("🤖 {} · {label}", role.label()), &claude_model, &run.workdir, KIND_AGENT, None)?;
+                let others = models.others(role.tier());
+                if !others.is_empty() {
+                    self.conversations.set_provider_models(&id, &others)?;
+                }
+                id
+            }
+        };
+        // Na sessão continuada, o gasto que já estava nela (passagens anteriores e o que você conversou
+        // com o bot) não é desta etapa.
+        let spent_before = if resumed.is_some() { self.conversations.usage(&conversation_id)? } else { TokenUsage::default() };
         self.conversations.set_project(&conversation_id, Some(&run.project_id))?;
         self.conversations.set_permission_mode(&conversation_id, role.permission_mode())?;
         // Os pedidos de permissão que não são críticos o app aprova sozinho: só as perguntas, os planos e as
@@ -417,14 +458,21 @@ impl ManagePipelines {
         }
         // O agente do papel soma as instruções, o modelo e as skills dele às regras fixas do papel.
         // O agente é o escolhido quando a execução começou; se foi apagado depois, vale a regra padrão.
+        let mut with_agent = false;
         if let Some(agent) = run.agents.get(&role)
             && self.agents.get(&agent.id)?.is_some()
         {
             self.conversations.set_agent(&conversation_id, Some(&agent.id))?;
+            with_agent = true;
         }
         if let Some(effort) = run.efforts.get(&role) {
             self.conversations.set_effort(&conversation_id, effort)?;
         }
+        // Quem não usa o Jira roda sem os conectores da conta: os nomes das ferramentas e as instruções
+        // deles (uns 7 a 10 mil tokens) seriam relidos em toda chamada. Os do projeto continuam. A etapa
+        // com agente próprio fica com eles: as instruções dele podem contar com algum (Figma, Slack...).
+        // Vale só durante a etapa: conversar com o bot depois traz os conectores de volta.
+        let without_connectors = !uses_jira(role, run, &ctx) && !with_agent;
         // O Claude Design só para o Designer, que publica sem pedir. Quem planeja e implementa recebe a
         // especificação completa no prompt: não precisa (nem conseguiria, se o design é de outra conta) abrir
         // o artifact, e não pode sobrescrever o design aprovado.
@@ -451,13 +499,25 @@ impl ManagePipelines {
         run.rounds = round;
         self.touch(run)?;
 
+        // Durante a etapa, o turno leva só as ferramentas do papel e nada do contexto da conversa comum.
+        // Terminada ela, conversar com o bot volta a ter tudo. Nada que possa falhar fica entre ligar e
+        // desligar as marcas: um erro no meio as deixaria valendo para a conversa com o bot.
+        if without_connectors {
+            self.settings.set_flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{conversation_id}"), true)?;
+        }
+        self.settings.set_text(&format!("{PIPELINE_STAGE_PREFIX}{conversation_id}"), role.key())?;
         // Um cancelamento que chegou antes de o turno existir não teria turno para interromper.
         let result = if lock(&self.cancelled).contains(&run.id) {
             Err(AppError("Cancelada por você.".into()))
         } else {
-            let images = if role.sees_images() && run.image_count > 0 { self.pipelines.images(&run.id)? } else { vec![] };
-            runner.run(&conversation_id, &prompt, images).await
+            // A sessão continuada já viu as imagens.
+            let images = if role.sees_images() && run.image_count > 0 && !ctx.resumed { self.pipelines.images(&run.id) } else { Ok(vec![]) };
+            match images {
+                Ok(images) => runner.run(&conversation_id, &prompt, images).await,
+                Err(e) => Err(e),
+            }
         };
+        self.clear_stage_marks(&conversation_id)?;
         let cancelled = lock(&self.cancelled).contains(&run.id);
         (stage.status, stage.output) = match result {
             _ if cancelled => (StageStatus::Cancelled, Some("Cancelada por você.".into())),
@@ -470,8 +530,12 @@ impl ManagePipelines {
         };
         stage.finished_at = Some(self.clock.now());
         self.pipelines.save_stage(&stage)?;
+        // Só uma revisão que terminou conta como vista: a que falhou ou foi cancelada roda de novo com o mesmo diff.
+        if let Some(tree) = reviewed.filter(|_| matches!(stage.status, StageStatus::Done | StageStatus::Returned)) {
+            self.settings.set_text(&format!("{REVIEWED_PREFIX}{}", run.id), &tree)?;
+        }
         // O gasto da etapa é o da conversa agora: o que você conversar nela depois não conta para a execução.
-        let spent = self.conversations.usage(&conversation_id)?;
+        let spent = self.conversations.usage(&conversation_id)?.since(&spent_before);
         if spent.total() > 0 {
             self.pipelines.set_stage_usage(&stage.id, &spent)?;
         }
@@ -497,9 +561,12 @@ impl ManagePipelines {
         }
         // Tudo que é versionado sai num diff só; arquivos novos (ainda fora do git), um a um.
         let mut out = self.vcs.diff(workdir, ".").unwrap_or_default();
+        // Arquivo novo sai só com as linhas: o cabeçalho diz ao Revisor de que arquivo elas são.
         for file in status.files.iter().filter(|f| f.status == "?") {
-            if let Ok(diff) = self.vcs.diff(workdir, &file.path) {
-                out.push('\n');
+            if is_generated(&file.path) {
+                out.push_str(&format!("\ndiff --git a/{0} b/{0}\n(arquivo novo gerado)\n", file.path));
+            } else if let Ok(diff) = self.vcs.diff(workdir, &file.path) {
+                out.push_str(&format!("\ndiff --git a/{0} b/{0}\nnew file\n", file.path));
                 out.push_str(&diff);
             }
         }
@@ -741,7 +808,9 @@ impl ManagePipelines {
         if !run.status.is_finished() {
             return Err(AppError("Cancele a execução antes de apagá-la.".into()));
         }
-        self.pipelines.delete_run(run_id)
+        self.pipelines.delete_run(run_id)?;
+        // A foto da última revisão só serve à execução: apagada ela, não fica para trás.
+        self.settings.set_text(&format!("{REVIEWED_PREFIX}{run_id}"), "")
     }
 
     /// Ao abrir o app: etapas que estavam rodando quando ele fechou não terminam mais.
@@ -755,10 +824,18 @@ impl ManagePipelines {
                 let last_activity = self.conversations.messages(&stage.conversation_id).ok().and_then(|m| m.last().map(|m| m.created_at));
                 stage.finished_at = Some(last_activity.unwrap_or(stage.started_at).max(stage.started_at));
                 self.pipelines.save_stage(&stage)?;
+                // A etapa não chegou a desligar as marcas dela: conversar com o bot volta a ter tudo.
+                self.clear_stage_marks(&stage.conversation_id)?;
             }
             self.finish(&mut run, RunStatus::Failed, Some("O app foi fechado durante a execução; retome quando quiser.".into()))?;
         }
         Ok(())
+    }
+
+    /// Desliga as marcas que valem só durante a etapa (ferramentas do papel, sem conectores da conta).
+    fn clear_stage_marks(&self, conversation_id: &str) -> AppResult<()> {
+        self.settings.set_flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{conversation_id}"), false)?;
+        self.settings.set_text(&format!("{PIPELINE_STAGE_PREFIX}{conversation_id}"), "")
     }
 
     fn finish(&self, run: &mut PipelineRun, status: RunStatus, note: Option<String>) -> AppResult<()> {
@@ -795,12 +872,14 @@ mod tests {
         images: Mutex<Vec<usize>>,
         /// Onde cada resposta registra que gastou 10 tokens na conversa da etapa, como o turno real faria.
         spends_on: Option<Arc<crate::infrastructure::sqlite::SqliteStore>>,
+        /// Por chamada (com `spends_on`): a etapa rodou sem os conectores da conta.
+        connectors_off: Mutex<Vec<bool>>,
     }
 
     impl Bots {
         fn new(answers: Vec<AppResult<&str>>) -> Bots {
             let answers = answers.into_iter().rev().map(|a| a.map(str::to_owned)).collect();
-            Bots { answers: Mutex::new(answers), prompts: Mutex::default(), images: Mutex::default(), spends_on: None }
+            Bots { answers: Mutex::new(answers), prompts: Mutex::default(), images: Mutex::default(), spends_on: None, connectors_off: Mutex::default() }
         }
 
         fn spending(answers: Vec<AppResult<&str>>, world: &World) -> Bots {
@@ -813,6 +892,9 @@ mod tests {
         async fn run(&self, conversation_id: &str, prompt: &str, images: Vec<Attachment>) -> AppResult<String> {
             if let Some(store) = &self.spends_on {
                 store.add_usage(conversation_id, &TokenUsage { input: 10, cost_usd: Some(0.1), ..Default::default() }).unwrap();
+                self.connectors_off.lock().unwrap().push(store.flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{conversation_id}"), false));
+                // Como o turno real, a primeira resposta abre a sessão no provedor, que a próxima etapa do papel continua.
+                store.update(conversation_id, None, Some(&format!("sessao-{conversation_id}")), None).unwrap();
             }
             self.prompts.lock().unwrap().push(prompt.to_owned());
             self.images.lock().unwrap().push(images.len());
@@ -914,6 +996,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_connectors_load_only_in_the_stages_that_use_jira() {
+        let (world, uc, _) = setup(true);
+        let run = uc.start(input(Some("loja-7"))).unwrap();
+        let bots = Bots::spending(vec![Ok("VEREDITO: CLARO"), Ok("plano")], &world);
+        uc.advance(&run.id, &bots).await.unwrap();
+        uc.decide_plan(&run.id, None).unwrap();
+        let rest = Bots::spending(
+            vec![Ok("fiz"), Ok("VEREDITO: APROVADO"), Ok("VEREDITO: APROVADO"), Ok("```json\n[]\n```"), Ok("Escrevi a Solução\nCOMMIT: x")],
+            &world,
+        );
+        uc.advance(&run.id, &rest).await.unwrap();
+        let off: Vec<bool> = [bots.connectors_off.into_inner().unwrap(), rest.connectors_off.into_inner().unwrap()].concat();
+        // Triagem (lê a task), Planejador (a Triagem já leu), Implementador, Revisor, Testador, Code review, Relator.
+        assert_eq!(off, [false, true, true, true, true, true, false]);
+        let detail = uc.detail(&run.id).unwrap();
+        assert!(
+            detail.stages.iter().all(|s| !world.store.flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{}", s.conversation_id), false)),
+            "terminada a etapa, conversar com o bot traz os conectores de volta"
+        );
+        // Sem task do Jira, nem a Triagem nem o Planejador precisam deles; uma etapa com agente próprio fica com eles.
+        let agent = crate::domain::extension::Agent { id: "a1".into(), name: "Planejador com Figma".into(), instructions: "Leia o Figma.".into(), model: None };
+        AgentRepository::save(&*world.store, &agent).unwrap();
+        uc.save_config("p1", PipelineConfig { agents: BTreeMap::from([(Role::Planner, "a1".into())]), ..Default::default() }).unwrap();
+        let run = uc.start(StartInput { title: "Corrigir o frete".into(), ..input(None) }).unwrap();
+        let bots = Bots::spending(vec![Ok("VEREDITO: CLARO"), Ok("plano")], &world);
+        uc.advance(&run.id, &bots).await.unwrap();
+        assert_eq!(bots.connectors_off.into_inner().unwrap(), [true, false]);
+    }
+
+    #[tokio::test]
+    async fn a_session_too_big_is_not_continued() {
+        let (world, uc, _) = setup(true);
+        let run = uc.start(input(Some("loja-7"))).unwrap();
+        let bots = Bots::spending(vec![Ok("VEREDITO: CLARO"), Ok("plano v1")], &world);
+        uc.advance(&run.id, &bots).await.unwrap();
+        let planner = uc.detail(&run.id).unwrap().stages[1].conversation_id.clone();
+        world.store.set_context_percent(&planner, 70).unwrap();
+        uc.decide_plan(&run.id, Some("use CSV")).unwrap();
+        let bots = Bots::spending(vec![Ok("plano v2")], &world);
+        uc.advance(&run.id, &bots).await.unwrap();
+        let prompt = bots.prompts.lock().unwrap()[0].clone();
+        assert!(prompt.contains("<plano_anterior>\nplano v1") && prompt.contains("use CSV"), "sessão nova, com o plano anterior no prompt");
+        let detail = uc.detail(&run.id).unwrap();
+        assert_ne!(detail.stages.iter().rfind(|s| s.role == Role::Planner).unwrap().conversation_id, planner);
+    }
+
+    #[tokio::test]
     async fn versioned_project_runs_the_whole_sequence_in_a_worktree() {
         let (world, uc, vcs) = setup(true);
         assert!(uc.start(input(None)).is_err(), "sem chave nem pedido");
@@ -948,7 +1077,7 @@ mod tests {
         assert!(bots.prompts.lock().unwrap()[0].contains("use CSV"));
         assert!(uc.decide_plan(&run.id, None).is_ok());
 
-        let bots = Bots::new(vec![
+        let bots = Bots::spending(vec![
             Ok("mudei a.rs"),
             Ok("falta tratar erro\nVEREDITO: DEVOLVIDO"),
             Ok("tratei"),
@@ -956,12 +1085,27 @@ mod tests {
             Ok("tudo passou\nVEREDITO: APROVADO"),
             Ok("Dois achados.\n```json\n[{\"id\": \"A1\", \"title\": \"CSV sem cabeçalho\", \"file\": \"a.rs\", \"line\": 3, \"options\": []},\
                 {\"id\": \"A2\", \"title\": \"Separador\", \"options\": [\"vírgula\", \"ponto e vírgula\"]}]\n```"),
-        ]);
+        ], &world);
         uc.advance(&run.id, &bots).await.unwrap();
         let prompts = bots.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("plano com CSV") && prompts[2].contains("falta tratar erro"));
+        assert!(!prompts[1].contains("desde a sua última revisão"), "a primeira revisão vê a alteração inteira");
+        assert!(
+            prompts[3].contains("só o que mudou desde a sua última revisão") && prompts[3].contains("mudou de foto1 para foto2") && prompts[3].contains("falta tratar erro"),
+            "a revisão seguinte vê só o que mudou depois da anterior e confere o que tinha apontado"
+        );
         assert!(prompts[5].contains("chame a ferramenta Skill com `skill: \"code-review\"`") && prompts[5].contains("Não passe `--fix`"), "o Code review roda a skill do CLI, sem alterar nada");
+        assert!(
+            !prompts[2].contains("<plano_aprovado>") && !prompts[2].contains("Você é o Implementador"),
+            "na volta, o Implementador continua a sessão e recebe só o que foi devolvido"
+        );
         let detail = uc.detail(&run.id).unwrap();
+        let conversations = |role: Role| detail.stages.iter().filter(|s| s.role == role).map(|s| s.conversation_id.clone()).collect::<Vec<_>>();
+        let (implementer, reviewer) = (conversations(Role::Implementer), conversations(Role::Reviewer));
+        assert!(implementer.len() == 2 && implementer[0] == implementer[1], "as passagens do Implementador dividem a sessão");
+        assert!(reviewer.len() == 2 && reviewer[0] == reviewer[1], "as do Revisor também");
+        let pass = |role: Role, i: usize| &detail.stage_usage[&detail.stages.iter().filter(|s| s.role == role).nth(i).unwrap().id];
+        assert_eq!((pass(Role::Implementer, 0).input, pass(Role::Implementer, 1).input), (10, 10), "cada passagem conta só o que gastou");
         assert_eq!(detail.run.status, RunStatus::AwaitingChoice);
         let choice = detail.stages.last().unwrap();
         assert_eq!((choice.role, choice.status), (Role::ReviewChoice, StageStatus::Running));
@@ -979,6 +1123,7 @@ mod tests {
         uc.advance(&run.id, &bots).await.unwrap();
         let prompts = bots.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("Decisão do usuário: ponto e vírgula") && prompts[0].contains("mantenha a API") && !prompts[0].contains("CSV sem cabeçalho"));
+        assert!(prompts[1].contains("mudou de foto2 para foto3") && prompts[1].contains("ponto e vírgula"), "depois das correções do code review, o Revisor vê só elas");
         assert!(prompts[3].contains("<code_review>") && prompts[3].contains("Escolha do usuário"), "o Relator sabe o que o code review apontou");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 1), "as correções do code review não gastam voltas");

@@ -1,7 +1,7 @@
 import { api } from "./api";
 import { accounts, activeAccount } from "./state/accounts.svelte";
 import { chat } from "./state/chat.svelte";
-import { pipelines } from "./state/pipelines.svelte";
+import { pipelines, stageMessages } from "./state/pipelines.svelte";
 import {
   duration, isActive, isUserStep, passesByRole, stationPasses, stationRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
   type Station, type Visual,
@@ -71,7 +71,7 @@ export function stationCards(
         activity = turn?.status ?? null;
       }
       if (!account && last.conversation_id) {
-        const id = stageAccountId(pipelines.messages[last.conversation_id] ?? []);
+        const id = stageAccountId(stageMessages(last));
         account = accounts.list.find((a) => a.id === id)?.name ?? null;
       }
       if (station.gate || isUserStep(last.role)) account = "você";
@@ -80,7 +80,7 @@ export function stationCards(
     let model: string | null = null;
     if (!station.gate) {
       if (lastBot?.conversation_id) {
-        const id = stageAccountId(pipelines.messages[lastBot.conversation_id] ?? []);
+        const id = stageAccountId(stageMessages(lastBot));
         const live = lastBot.status === "running" ? chat.turns[lastBot.conversation_id]?.account : null;
         model = stageModelText(detail, lastBot, providerOf(live ? { name: live } : { id }));
       }

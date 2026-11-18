@@ -11,7 +11,8 @@ use super::{
     AppResult,
 };
 use crate::domain::{
-    chat::{transcript_prompt, Conversation, ARTIFACTS_PREFIX},
+    chat::{transcript_prompt, Conversation, ARTIFACTS_PREFIX, NO_ACCOUNT_CONNECTORS_PREFIX, PIPELINE_STAGE_PREFIX},
+    pipeline::Role,
     extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
     mcp::{turn_servers, McpServer},
     history::context_prompt,
@@ -56,6 +57,8 @@ pub struct TurnSetup {
     pub interactive: bool,
     /// A conversa usa o Claude Design (a etapa do Designer).
     pub artifacts: bool,
+    /// Carrega os conectores da conta do claude.ai (as etapas da esteira que não usam o Jira rodam sem).
+    pub account_connectors: bool,
     /// Títulos das conversas anteriores usadas como contexto.
     pub context_titles: Vec<String>,
     pub denied_skills: Vec<String>,
@@ -122,8 +125,11 @@ impl PrepareTurn {
             ProjectKnowledge::Inline(text) => (vec![], Some(text.clone()), Some(text)),
             ProjectKnowledge::None => (vec![], None, None),
         };
+        // Etapa da esteira em andamento: só as ferramentas do papel, sem o contexto da conversa comum.
+        let stage = self.settings.text(&format!("{PIPELINE_STAGE_PREFIX}{}", conversation.id)).and_then(|k| Role::parse(&k));
         let (tools, own_tools): (String, Vec<String>) = if conversation.is_agent() {
-            (AGENT_TOOLS.into(), conversation.allowed_tools.clone())
+            let tools = stage.map(|role| role.tools(agent.is_some())).unwrap_or_else(|| AGENT_TOOLS.into());
+            (tools, conversation.allowed_tools.clone())
         } else {
             let mut tools: Vec<&str> = CHAT_TOOLS.to_vec();
             if !read_dirs.is_empty() {
@@ -134,8 +140,9 @@ impl PrepareTurn {
         let allowed_tools = own_tools.into_iter().chain(connector_tools).collect();
 
         // O histórico ajuda a começar um assunto; no meio da conversa, ela mesma já é o contexto.
+        // Na esteira, os trechos seriam de outras etapas ("Você é o Testador..."): ruído para o bot.
         let starting = self.conversations.message_count(&conversation.id)? <= 1;
-        let snippets = if starting && self.settings.flag(flags::USE_HISTORY, true) {
+        let snippets = if starting && stage.is_none() && self.settings.flag(flags::USE_HISTORY, true) {
             self.history.search(text, CONTEXT_SNIPPETS, conversation.cli_session_id.as_deref())
         } else {
             vec![]
@@ -147,7 +154,7 @@ impl PrepareTurn {
         let earlier = self.earlier_dialogue(conversation)?;
         let rules = [project.as_ref().and_then(project_rules), instructions].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
         let rules = (!rules.is_empty()).then_some(rules);
-        let sections: Vec<String> = [Some(ARTIFACT_GUIDE.to_owned()), rules.clone(), knowledge.clone(), earlier, context_prompt(&snippets)]
+        let sections: Vec<String> = [stage.is_none().then(|| ARTIFACT_GUIDE.to_owned()), rules.clone(), knowledge.clone(), earlier, context_prompt(&snippets)]
             .into_iter()
             .flatten()
             .collect();
@@ -165,6 +172,7 @@ impl PrepareTurn {
             // Conectores da conta pedem aprovação em qualquer conversa; o resto já está liberado.
             interactive: true,
             artifacts: self.settings.flag(&format!("{ARTIFACTS_PREFIX}{}", conversation.id), false),
+            account_connectors: !self.settings.flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{}", conversation.id), false),
             context_titles: snippets.into_iter().map(|s| s.title).collect(),
             denied_skills: denied,
             denied_tools,
@@ -260,6 +268,28 @@ mod tests {
         let setup = prepare(&world).prepare(&world.conversation("s1"), "corrija").unwrap();
         assert_eq!((setup.tools.as_str(), setup.interactive), ("default", true));
         assert_eq!(setup.allowed_tools, ["Edit"]);
+    }
+
+    #[test]
+    fn pipeline_stage_gets_only_its_role_tools_and_no_chat_context() {
+        let world = World::with_accounts(vec![]);
+        ConversationRepository::insert(&*world.store, "s1", "🤖 Revisor", "opus", "/tmp/loja", KIND_AGENT, None).unwrap();
+        world.history.set(vec![Snippet { session_id: "h".into(), title: "Você é o Testador".into(), text: "outra execução".into() }]);
+        world.store.set_text("etapa_da_esteira:s1", "reviewer").unwrap();
+        let setup = prepare(&world).prepare(&world.conversation("s1"), "Revise").unwrap();
+        assert_eq!(setup.tools, "Read,Bash,Task,ToolSearch", "sem as ferramentas que o papel não usa nem as de edição");
+        assert!(setup.context_titles.is_empty(), "trechos de outras etapas só confundiriam o bot");
+        assert!(!setup.extra_system.unwrap_or_default().contains("```html"));
+
+        let agent = Agent { id: "a1".into(), name: "Revisor rigoroso".into(), instructions: "Seja rigoroso.".into(), model: None };
+        AgentRepository::save(&*world.store, &agent).unwrap();
+        world.store.set_agent("s1", Some("a1")).unwrap();
+        let setup = prepare(&world).prepare(&world.conversation("s1"), "Revise").unwrap();
+        assert_eq!(setup.tools, "Read,Bash,Task,ToolSearch,Skill", "o agente pode ter skills liberadas");
+
+        world.store.set_text("etapa_da_esteira:s1", "").unwrap();
+        let setup = prepare(&world).prepare(&world.conversation("s1"), "e agora?").unwrap();
+        assert_eq!(setup.tools, "default", "terminada a etapa, conversar com o bot volta a ter tudo");
     }
 
     #[test]

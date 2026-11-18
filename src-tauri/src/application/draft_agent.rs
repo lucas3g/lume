@@ -70,6 +70,7 @@ impl DraftAgent {
             read_dirs: vec![],
             mcp_servers: vec![],
             artifacts: false,
+            account_connectors: true,
         };
         let (mut control, _handle) = TurnControl::new();
         match self.engine.run_turn(&request, &mut control, &mut |_| {}).await {

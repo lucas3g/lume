@@ -125,6 +125,31 @@ impl Role {
         matches!(self, Role::Triage | Role::Designer | Role::Planner | Role::Implementer)
     }
 
+    /// Ferramentas internas do CLI na etapa, ou "default" (todas). O conjunto padrão traz dezenas que
+    /// nenhum bot usa (agendamentos, workflows, notificações...), e as definições delas entram em toda
+    /// chamada ao modelo: uns 13 mil tokens. Quem só lê fica também sem as de edição. As ferramentas
+    /// dos conectores (MCP) não dependem desta lista; o `ToolSearch` é o que as carrega.
+    /// Designer (Claude Design) e Code review (a skill, que abre subagentes) ficam com todas.
+    /// A etapa com agente ganha a `Skill`: o agente pode ter skills liberadas.
+    pub fn tools(self, with_agent: bool) -> String {
+        let tools = match self {
+            Role::Implementer => "Read,Edit,Write,NotebookEdit,Bash,Task,ToolSearch,WebFetch,WebSearch,LSP",
+            Role::Triage | Role::Planner => "Read,Bash,Task,ToolSearch,WebFetch,WebSearch",
+            Role::Reviewer => "Read,Bash,Task,ToolSearch",
+            Role::Tester | Role::Reporter => "Read,Bash,ToolSearch",
+            _ => return "default".to_owned(),
+        };
+        if with_agent { format!("{tools},Skill") } else { tools.to_owned() }
+    }
+
+    /// Ao rodar de novo na mesma execução, o papel continua a própria sessão e recebe só o que mudou:
+    /// o que já leu e escreveu vem do cache, em vez de reexplorar o código. O Testador roda os comandos
+    /// de novo de qualquer jeito (e a sessão dele acumularia saídas longas), e o Code review é uma skill
+    /// que começa do zero: esses abrem sessão nova.
+    pub fn continues_session(self) -> bool {
+        matches!(self, Role::Implementer | Role::Reviewer | Role::Planner | Role::Designer)
+    }
+
     /// Modo de permissão da sessão: só o Implementador e o Testador alteram a pasta
     /// sem perguntar; os demais pedem autorização para qualquer alteração.
     pub fn permission_mode(self) -> &'static str {
@@ -516,12 +541,20 @@ pub struct StageContext {
     pub returned: Option<String>,
     pub implementation: Option<String>,
     pub diff: Option<String>,
+    /// `diff` traz só o que mudou desde a última revisão (o resto o Revisor já viu).
+    pub diff_since_review: bool,
+    /// Devolução que a passagem mais recente do Implementador corrigiu (Revisor, Testador ou a sua
+    /// escolha do code review), para o Revisor conferir; nada se ela atendeu o seu ajuste.
+    pub answered_return: Option<String>,
     pub review: Option<String>,
     pub tests: Option<String>,
     /// Resumo do code review e as correções que o usuário escolheu.
     pub code_review: Option<String>,
     /// Ajuste mais recente que o usuário pediu ao reabrir a execução concluída.
     pub user_feedback: Option<String>,
+    /// A etapa continua a sessão da passagem anterior do mesmo papel: o bot já tem a task, o plano e
+    /// o que fez; o prompt leva só o que mudou.
+    pub resumed: bool,
 }
 
 /// O ajuste que o usuário pediu, como parte do objetivo (para Revisor e Testador).
@@ -559,6 +592,21 @@ fn design_block(ctx: &StageContext) -> String {
 /// Prompt de uma etapa. Cada papel recebe só o que precisa.
 /// A etapa é a primeira a pegar a task do Jira escolhida (a Triagem; desligada ela, o Designer
 /// ou o Planejador): ela move a task de "Selecionado para Desenvolvimento" para "Em andamento".
+/// A etapa usa o Jira, que chega pelos conectores da conta do claude.ai. Sem eles, os nomes das
+/// ferramentas e as instruções dos conectores (7 a 10 mil tokens) saem de cada chamada dela.
+/// - Relator: escreve a Solução na task ou cria uma (pela task modelo ou pela mais recente sua).
+/// - Triagem: lê a task escolhida; sem task, trabalha só com o pedido.
+/// - Designer e Planejador: sem Triagem, leem a task (e quem começa a move para "Em andamento").
+/// - Os demais trabalham com o plano e o código.
+pub fn uses_jira(role: Role, run: &PipelineRun, ctx: &StageContext) -> bool {
+    match role {
+        Role::Reporter => true,
+        Role::Triage => run.jira_key.is_some(),
+        Role::Designer | Role::Planner => run.jira_key.is_some() && ctx.triage.is_none(),
+        _ => false,
+    }
+}
+
 pub fn starts_task(role: Role, run: &PipelineRun, ctx: &StageContext) -> bool {
     run.jira_key.is_some()
         && matches!(role, Role::Triage | Role::Designer | Role::Planner)
@@ -567,7 +615,53 @@ pub fn starts_task(role: Role, run: &PipelineRun, ctx: &StageContext) -> bool {
         && ctx.plan.is_none()
 }
 
+/// Prompt de quem continua a própria sessão: só o que mudou desde a passagem anterior.
+fn resumed_prompt(role: Role, ctx: &StageContext) -> Option<String> {
+    let text = match role {
+        Role::Implementer => {
+            let adjust = ctx
+                .user_feedback
+                .as_deref()
+                .map(|f| format!(
+                    "O plano já foi executado e entregue. Depois, o usuário testou manualmente e pediu este ajuste; ele é a \
+                     prioridade agora. Mude só o necessário para atendê-lo, sem refazer o que já funciona:\n<ajuste_do_usuario>\n{f}\n</ajuste_do_usuario>\n"
+                ))
+                .unwrap_or_default();
+            let returned = ctx
+                .returned
+                .as_deref()
+                .map(|r| format!("O trabalho foi devolvido. Corrija estes problemas, sem refazer o que já está certo:\n<problemas>\n{r}\n</problemas>\n"))
+                .unwrap_or_default();
+            format!(
+                "{adjust}{returned}O plano aprovado e as regras do seu papel continuam os mesmos desta sessão. Leia de novo os \
+                 arquivos que for mudar: eles podem ter mudado. Termine com um resumo de tudo o que mudou na task até agora, \
+                 arquivo por arquivo (ele vai para o relatório final), dizendo o que mudou nesta passagem."
+            )
+        }
+        Role::Reviewer => return None,
+        Role::Planner => format!(
+            "O usuário pediu ajustes ao plano que você escreveu:\n<ajustes>\n{}\n</ajustes>\nAjuste o plano. Não altere nada no \
+             projeto. A sua última mensagem deve conter o plano completo atualizado (não só o que mudou), em Markdown, no mesmo formato.",
+            ctx.plan_feedback.as_deref()?
+        ),
+        Role::Designer => {
+            let url = ctx.design.as_deref().and_then(parse_design_url)?;
+            format!(
+                "O usuário pediu ajustes ao design que você publicou ({url}):\n<ajustes>\n{}\n</ajustes>\nAtualize esse mesmo artifact \
+                 (publique com o `url` dele, lendo-o antes). Responda com a especificação completa atualizada, como antes, e na \
+                 última linha `DESIGN: <link do artifact>`.",
+                ctx.design_feedback.as_deref()?
+            )
+        }
+        _ => return None,
+    };
+    Some(text)
+}
+
 pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String {
+    if ctx.resumed && let Some(prompt) = resumed_prompt(role, ctx) {
+        return prompt;
+    }
     let images = match run.image_count {
         n if n > 0 && role.sees_images() => format!("O pedido veio com {n} imagem(ns) anexada(s) a esta mensagem: use-as para entender a task.\n"),
         _ => String::new(),
@@ -668,7 +762,28 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             )
         }
         Role::Reviewer => {
+            let fixed = ctx
+                .answered_return
+                .as_deref()
+                .map(|r| format!("Estes problemas foram apontados e o Implementador diz que os corrigiu; confira:\n<problemas>\n{r}\n</problemas>\n"))
+                .unwrap_or_default();
             let diff = match ctx.diff.as_deref() {
+                // Nada mudou desde a última revisão: o que o Implementador diz ter corrigido não está nos arquivos.
+                d if ctx.diff_since_review && d.is_none_or(|d| d.trim().is_empty()) => {
+                    let check = if fixed.is_empty() {
+                        "Confira nos arquivos se a alteração atende o objetivo; se não atender, devolva."
+                    } else {
+                        "Confira nos arquivos se esses problemas ainda existem; se existirem, devolva."
+                    };
+                    format!("Você já revisou esta alteração, e nada mudou na pasta desde a sua última revisão.\n{fixed}{check}")
+                }
+                // Nas voltas, só o que mudou: reler o diff inteiro a cada chamada é o que mais gasta.
+                Some(d) if !d.trim().is_empty() && ctx.diff_since_review => {
+                    format!(
+                        "Você já revisou o resto desta alteração. O diff abaixo traz só o que mudou desde a sua última revisão; \
+                         leia os arquivos se precisar de contexto.\n{fixed}<diff_desde_a_ultima_revisao>\n{d}\n</diff_desde_a_ultima_revisao>"
+                    )
+                }
                 Some(d) if !d.trim().is_empty() => format!("<diff>\n{d}\n</diff>"),
                 _ => format!(
                     "Não há diff disponível (pasta sem git). Resumo do Implementador:\n<resumo>\n{}\n</resumo>\nLeia os arquivos citados.",
@@ -865,7 +980,7 @@ pub enum Next {
 
 /// Etapas que contam para decidir o próximo passo: falhas e cancelamentos ficam no
 /// registro, mas a etapa é refeita quando o usuário retoma a execução.
-fn effective(stages: &[StageRun]) -> impl Iterator<Item = &StageRun> {
+fn effective(stages: &[StageRun]) -> impl DoubleEndedIterator<Item = &StageRun> {
     stages.iter().filter(|s| !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled))
 }
 
@@ -906,7 +1021,7 @@ pub fn implementer_passes(stages: &[StageRun]) -> i64 {
 
 /// A próxima etapa é a passagem do Implementador que aplica as correções escolhidas no code review.
 pub fn fixing_review(stages: &[StageRun]) -> bool {
-    effective(stages).last().is_some_and(|s| s.role == Role::ReviewChoice && s.status == StageStatus::Returned)
+    effective(stages).next_back().is_some_and(|s| s.role == Role::ReviewChoice && s.status == StageStatus::Returned)
 }
 
 /// A contagem atual começou numa retomada: aí toda passagem do Implementador já corrige uma
@@ -942,7 +1057,7 @@ fn forward(from: Option<Role>, skipped: &[Role], stages: &[StageRun]) -> Next {
 /// Próximo passo da sequência: Triagem → Planejador → aprovação → Implementador
 /// ⇄ (Revisor, Testador) → Relator, pulando as etapas desligadas no projeto.
 pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
-    let Some(last) = effective(stages).last() else { return forward(None, skipped, stages) };
+    let Some(last) = effective(stages).next_back() else { return forward(None, skipped, stages) };
     if last.status == StageStatus::Running {
         return Next::Wait;
     }
@@ -973,11 +1088,31 @@ pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
     }
 }
 
+/// O que levou o Implementador a rodar por último: a etapa logo antes da passagem mais recente
+/// dele, se foi uma devolução.
+fn answered_return(stages: &[StageRun]) -> Option<String> {
+    let mut back = effective(stages).rev().skip_while(|s| s.role != Role::Implementer).skip_while(|s| s.role == Role::Implementer);
+    back.find(|s| s.role != Role::Resume)
+        .filter(|s| s.status == StageStatus::Returned && matches!(s.role, Role::Reviewer | Role::Tester | Role::ReviewChoice))
+        .and_then(|s| s.output.clone())
+}
+
+/// Conversa da passagem anterior do papel nesta execução, para a etapa continuar a sessão dela.
+pub fn session_to_continue(role: Role, stages: &[StageRun]) -> Option<&str> {
+    if !role.continues_session() {
+        return None;
+    }
+    effective(stages)
+        .rfind(|s| s.role == role)
+        .filter(|s| matches!(s.status, StageStatus::Done | StageStatus::Returned) && !s.conversation_id.is_empty())
+        .map(|s| s.conversation_id.as_str())
+}
+
 /// Entradas da próxima etapa, tiradas das saídas mais recentes de cada papel.
 pub fn context_for(stages: &[StageRun]) -> StageContext {
-    let latest = |role: Role| effective(stages).filter(|s| s.role == role).last().and_then(|s| s.output.clone());
+    let latest = |role: Role| effective(stages).rfind(|s| s.role == role).and_then(|s| s.output.clone());
     // A retomada não apaga a devolução: o Implementador recebe o que o Revisor ou o Testador apontou.
-    let last = effective(stages).filter(|s| s.role != Role::Resume).last();
+    let last = effective(stages).rfind(|s| s.role != Role::Resume);
     let returned_by = |roles: &[Role]| last.filter(|s| s.status == StageStatus::Returned && roles.contains(&s.role)).and_then(|s| s.output.clone());
     StageContext {
         triage: latest(Role::Triage),
@@ -988,6 +1123,8 @@ pub fn context_for(stages: &[StageRun]) -> StageContext {
         returned: returned_by(&[Role::Reviewer, Role::Tester, Role::ReviewChoice]),
         implementation: latest(Role::Implementer),
         diff: None,
+        diff_since_review: false,
+        answered_return: answered_return(stages),
         review: latest(Role::Reviewer),
         tests: latest(Role::Tester),
         // Só a escolha feita sobre este code review: a de um ciclo anterior não vale para ele.
@@ -996,12 +1133,13 @@ pub fn context_for(stages: &[StageRun]) -> StageContext {
             .rposition(|s| s.role == Role::CodeReview && !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled) && s.output.is_some())
             .map(|i| {
                 let review = stages[i].output.clone().unwrap_or_default();
-                match effective(&stages[i + 1..]).filter(|s| s.role == Role::ReviewChoice).last().and_then(|s| s.output.as_deref()) {
+                match effective(&stages[i + 1..]).rfind(|s| s.role == Role::ReviewChoice).and_then(|s| s.output.as_deref()) {
                     Some(choice) => format!("{review}\n\nEscolha do usuário:\n{choice}"),
                     None => review,
                 }
             }),
         user_feedback: latest(Role::Feedback),
+        resumed: false,
     }
 }
 
@@ -1139,8 +1277,48 @@ pub fn fix_request(findings: &[Finding], picks: &[ReviewPick], note: Option<&str
     Ok(Some(out))
 }
 
-/// Diff cortado no limite, com aviso do corte.
+/// Arquivo que ninguém revisa linha a linha: lockfile, minificado, snapshot ou saída de build.
+pub fn is_generated(path: &str) -> bool {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let name = parts.pop().unwrap_or(path);
+    matches!(
+        name,
+        "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lockb" | "Cargo.lock" | "composer.lock" | "Gemfile.lock"
+            | "poetry.lock" | "pubspec.lock" | "Podfile.lock" | "go.sum"
+    ) || name.contains(".min.")
+        || name.ends_with(".snap")
+        || name.ends_with(".map")
+        // Só pastas que quase sempre são saída; `build` e `target` às vezes guardam código (ex.: `src/build/`).
+        || parts.iter().any(|d| matches!(*d, "dist" | "node_modules" | ".svelte-kit"))
+}
+
+/// Tira do diff os arquivos gerados (ficam só os nomes): eles gastariam o limite e a atenção do Revisor
+/// sem nada para revisar.
+fn without_generated(diff: &str) -> String {
+    let mut out = String::new();
+    let mut left_out = Vec::new();
+    let mut keep = true;
+    for line in diff.split_inclusive('\n') {
+        if let Some(header) = line.strip_prefix("diff --git ") {
+            let path = header.rsplit_once(" b/").map_or(header, |(_, b)| b).trim_end();
+            keep = !is_generated(path);
+            if !keep {
+                left_out.push(path.to_owned());
+            }
+        }
+        if keep {
+            out.push_str(line);
+        }
+    }
+    if !left_out.is_empty() {
+        out.push_str(&format!("\n(arquivos gerados que mudaram, fora do diff: {})\n", left_out.join(", ")));
+    }
+    out
+}
+
+/// Diff para o Revisor: sem os arquivos gerados e cortado no limite, com aviso do corte.
 pub fn clip_diff(diff: &str) -> String {
+    let diff = without_generated(diff);
     match diff.char_indices().nth(MAX_DIFF_CHARS) {
         Some((cut, _)) => format!("{}\n… (diff cortado; leia os arquivos para ver o resto)", &diff[..cut]),
         None => diff.to_owned(),
@@ -1175,6 +1353,37 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn a_role_that_runs_again_continues_its_session_with_only_what_changed() {
+        let r = run(WorkMode::Worktree, Some("LOJA-7"));
+        let ctx = StageContext { plan: Some("plano longo".into()), returned: Some("falta tratar erro".into()), resumed: true, ..Default::default() };
+        let p = stage_prompt(Role::Implementer, &r, &ctx);
+        assert!(p.contains("falta tratar erro") && !p.contains("plano longo") && !p.contains("Você é o"), "sem repetir o plano nem as regras");
+        assert!(p.contains("tudo o que mudou na task até agora"), "o resumo segue completo para o relatório");
+        let ctx = StageContext { plan: Some("plano v1".into()), plan_feedback: Some("use CSV".into()), resumed: true, ..Default::default() };
+        let p = stage_prompt(Role::Planner, &r, &ctx);
+        assert!(p.contains("use CSV") && !p.contains("plano v1") && p.contains("plano completo atualizado"));
+        // Quem não tem prompt curto (ou sem o que ajustar) recebe o prompt inteiro.
+        let ctx = StageContext { resumed: true, ..Default::default() };
+        assert!(stage_prompt(Role::Planner, &r, &ctx).contains("Você é o Planejador"));
+        assert!(stage_prompt(Role::Tester, &r, &ctx).contains("Você é o Testador"));
+
+        let stage = |role: Role, status: StageStatus, conv: &str| StageRun {
+            id: conv.into(), run_id: "r1".into(), role, round: 0, status, conversation_id: conv.into(),
+            input: String::new(), output: Some("x".into()), started_at: 0, finished_at: Some(1),
+        };
+        let stages = [
+            stage(Role::Implementer, StageStatus::Done, "c1"),
+            stage(Role::Reviewer, StageStatus::Returned, "c2"),
+            stage(Role::Tester, StageStatus::Done, "c3"),
+            stage(Role::Implementer, StageStatus::Failed, "c4"),
+        ];
+        assert_eq!(session_to_continue(Role::Implementer, &stages), Some("c1"), "a passagem que falhou não conta");
+        assert_eq!(session_to_continue(Role::Reviewer, &stages), Some("c2"));
+        assert_eq!(session_to_continue(Role::Tester, &stages), None, "o Testador sempre abre sessão nova");
+        assert_eq!(session_to_continue(Role::Planner, &stages), None);
     }
 
     #[test]
@@ -1484,6 +1693,11 @@ mod tests {
         assert_eq!(suggested_commit("nada"), None);
         let big = "x".repeat(MAX_DIFF_CHARS + 10);
         assert!(clip_diff(&big).ends_with("resto)"));
+        let diff = "diff --git a/src/a.rs b/src/a.rs\n+fn a() {}\ndiff --git a/Cargo.lock b/Cargo.lock\n+versao\ndiff --git a/web/dist/app.js b/web/dist/app.js\n+x\n";
+        let clipped = clip_diff(diff);
+        assert!(clipped.contains("+fn a() {}") && !clipped.contains("+versao") && !clipped.contains("+x\n"));
+        assert!(clipped.contains("fora do diff: Cargo.lock, web/dist/app.js"), "o Revisor sabe que eles mudaram");
+        assert!(!is_generated("src/build.rs") && !is_generated("src/build/mod.rs") && !is_generated("tools/target/a.rs") && is_generated("app.min.js"));
         assert_eq!(clip_diff("curto"), "curto");
     }
 

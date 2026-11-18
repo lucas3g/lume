@@ -222,8 +222,10 @@ impl CodexMcp for CodexMcpLogins {
 /// O que o Codex pode fazer sozinho no turno. Fora do terminal ele não pergunta nada:
 /// o que passa do permitido é recusado pelo próprio CLI.
 fn sandbox(request: &TurnRequest) -> &'static str {
-    // Conversa comum não mexe em arquivos; "default" é a sessão de agente em uma pasta.
-    if request.tools != "default" {
+    // Conversa comum não mexe em arquivos; "default" (ou uma lista com o Bash ou a edição, como a das
+    // etapas da esteira) é a sessão de agente em uma pasta.
+    let agent = request.tools == "default" || request.tools.split(',').any(|t| matches!(t.trim(), "Bash" | "Edit" | "Write"));
+    if !agent {
         return "read-only";
     }
     match request.permission_mode.as_str() {
@@ -692,6 +694,9 @@ mod tests {
         assert!(!args.iter().any(|a| a.starts_with("model_reasoning_effort")), "esforço fora da lista fica com o padrão do CLI");
         assert_eq!(args[args.len() - 3..], ["resume", "0199-abc", "-"]);
 
+        request.tools = "Read,Bash,ToolSearch".into();
+        assert_eq!(sandbox(&request), "workspace-write", "a etapa da esteira com o Bash roda na pasta, como antes");
+        request.tools = "default".into();
         request.permission_mode = "plan".into();
         assert_eq!(sandbox(&request), "read-only");
         request.permission_mode = "bypassPermissions".into();

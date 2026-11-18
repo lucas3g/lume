@@ -146,6 +146,7 @@ impl JiraIssues {
                 read_dirs: vec![],
                 mcp_servers: vec![],
                 artifacts: false,
+                account_connectors: true,
             };
             let (mut control, _handle) = TurnControl::new();
             let cancel = control.cancel.clone();

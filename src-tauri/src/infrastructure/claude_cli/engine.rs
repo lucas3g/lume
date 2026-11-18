@@ -24,6 +24,9 @@ const ARTIFACT_ENV: &str = "CLAUDE_CODE_ARTIFACT";
 pub const NO_ARTIFACT_TOOL: &str = "Esta versão do Claude Code não oferece o Claude Design (a ferramenta Artifact) na esteira. \
 Atualize o Claude Code ou rode a execução sem o design.";
 
+/// Desligada (`false`), o CLI não carrega os conectores da conta do claude.ai; os locais continuam.
+const NO_ACCOUNT_CONNECTORS_ENV: &str = "ENABLE_CLAUDEAI_MCP_SERVERS";
+
 /// O turno usa a ferramenta de artifacts: ela foi liberada para ele.
 fn wants_artifacts(request: &TurnRequest) -> bool {
     request.artifacts
@@ -69,6 +72,9 @@ impl ClaudeCliEngine {
             "--effort",
             &request.effort,
         ]);
+        if !request.account_connectors {
+            cmd.env(NO_ACCOUNT_CONNECTORS_ENV, "false");
+        }
         if wants_artifacts(request) {
             // Sem tela, o CLI não oferece a ferramenta de artifacts (e o Claude Design) a não ser com esta variável.
             cmd.env(ARTIFACT_ENV, "1");
@@ -356,6 +362,7 @@ mod tests {
             read_dirs: vec![],
             mcp_servers: vec![],
             artifacts: false,
+            account_connectors: true,
         }
     }
 
@@ -381,6 +388,18 @@ mod tests {
         let TurnEnd::Done { text, .. } = end else { panic!("{end:?}") };
         eprintln!("{text}");
         assert!(parse_design_url(&text).is_some(), "o Designer devolve o link do design");
+    }
+
+    #[test]
+    fn account_connectors_are_left_out_only_when_the_turn_says_so() {
+        let off = |req: &TurnRequest| {
+            let cmd = ClaudeCliEngine::new("claude".into()).command(req);
+            cmd.as_std().get_envs().any(|(k, v)| k == NO_ACCOUNT_CONNECTORS_ENV && v.is_some_and(|v| v == "false"))
+        };
+        let mut req = request("oi", None);
+        assert!(!off(&req));
+        req.account_connectors = false;
+        assert!(off(&req));
     }
 
     #[test]

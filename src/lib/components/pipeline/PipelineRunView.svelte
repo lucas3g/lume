@@ -9,7 +9,7 @@
   import PlanCard from "../PlanCard.svelte";
   import QuestionCard from "../QuestionCard.svelte";
   import { projectName, projects } from "../../state/projects.svelte";
-  import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
+  import { loadDetail, loadPipelines, openPipeline, pipelines, stageMessages } from "../../state/pipelines.svelte";
   import {
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, triageQuestions, usageHint, usageText, VISUAL,
@@ -64,7 +64,7 @@
   const designer = $derived(designing ? (detail.stages.findLast((s) => s.role === "designer" && s.status === "done") ?? null) : null);
   const designAccount = $derived.by(() => {
     if (!designer) return null;
-    const id = stageAccountId(pipelines.messages[designer.conversation_id] ?? []);
+    const id = stageAccountId(stageMessages(designer));
     return accounts.list.find((a) => a.id === id)?.name ?? null;
   });
   /** Parada da sua escolha sobre o code review, e a passagem do Code review que a abriu. */
@@ -108,7 +108,7 @@
   const panelStation = $derived(panelRole ? STATION[panelRole] : null);
   /** Agente do papel nesta execução: o modelo dele, quando tem, substitui o do papel. */
   const panelAgent = $derived(panelRole ? (detail.agents[panelRole] ?? null) : null);
-  const panelMessages = $derived(panelStage?.conversation_id ? (pipelines.messages[panelStage.conversation_id] ?? []) : []);
+  const panelMessages = $derived(panelStage ? stageMessages(panelStage) : []);
   const panelAsking = $derived(!!panelStage && panelStage.status === "running" && !!chat.permissions[panelStage.conversation_id]);
   const panelVisual = $derived(panelStage ? stageVisual(panelStage, panelAsking) : null);
   const panelPermission = $derived(panelAsking && panelStage ? chat.permissions[panelStage.conversation_id] : undefined);
@@ -162,7 +162,7 @@
   const panelModel = $derived.by(() => {
     if (!panelStage?.conversation_id) return null;
     const live = panelStage.status === "running" ? chat.turns[panelStage.conversation_id]?.account : null;
-    const id = stageAccountId(pipelines.messages[panelStage.conversation_id] ?? []);
+    const id = stageAccountId(stageMessages(panelStage));
     const account = accounts.list.find((a) => (live ? a.name === live : a.id === id));
     return stageModelText(detail, panelStage, account?.provider ?? "claude");
   });
@@ -184,8 +184,8 @@
   function stageAccount(stage: StageRun): string {
     if (isUserStep(stage.role)) return "você";
     const live = stage.status === "running" ? chat.turns[stage.conversation_id]?.account : null;
-    const name = live ?? accountName(stageAccountId(pipelines.messages[stage.conversation_id] ?? []));
-    const swapped = switchedAccount(pipelines.messages[stage.conversation_id] ?? []);
+    const name = live ?? accountName(stageAccountId(stageMessages(stage)));
+    const swapped = switchedAccount(stageMessages(stage));
     return name ? (swapped ? `${name} (após troca)` : name) : "—";
   }
   const stageSeconds = (s: StageRun) => (s.finished_at ?? now) - s.started_at;
