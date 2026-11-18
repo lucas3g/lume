@@ -14,7 +14,7 @@ use crate::domain::mcp::server_rule;
 use crate::domain::permission::AUTO_APPROVE_PREFIX;
 use crate::domain::{
     account::Provider,
-    chat::{Attachment, Message, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
+    chat::{Attachment, Message, TokenUsage, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, starts_task, next_step, normalize_jira_key, implementer_round, rounds, spent_seconds, stage_prompt,
         suggested_commit, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
@@ -83,6 +83,10 @@ pub struct RunDetail {
     pub round_limit: bool,
     /// Modelo de cada etapa (por id) em cada serviço.
     pub stage_models: BTreeMap<String, StageModels>,
+    /// Tokens que cada etapa (por id) gastou; ausente se ainda nenhum turno dela terminou.
+    pub stage_usage: BTreeMap<String, TokenUsage>,
+    /// Tokens de todas as etapas somados.
+    pub usage: TokenUsage,
 }
 
 /// Modelo com que a etapa roda em cada serviço: no Claude, o do agente (se tiver) ou o do
@@ -123,13 +127,25 @@ impl ManagePipelines {
             .find(|s| s.role == Role::Reporter && s.status == StageStatus::Done)
             .and_then(|s| s.output.as_deref().and_then(suggested_commit));
         let mut stage_models = BTreeMap::new();
+        // A etapa terminada tem o gasto guardado; a que roda ainda soma na conversa dela.
+        let mut stage_usage = self.pipelines.stage_usage(id)?;
+        for stage in stages.iter().filter(|s| s.status == StageStatus::Running && !s.conversation_id.is_empty()) {
+            let spent = self.conversations.usage(&stage.conversation_id)?;
+            if spent.total() > 0 {
+                stage_usage.insert(stage.id.clone(), spent);
+            }
+        }
+        let usage = stage_usage.values().fold(TokenUsage::default(), |mut sum, u| {
+            sum.add(u);
+            sum
+        });
         for stage in stages.iter().filter(|s| !s.conversation_id.is_empty()) {
             let Some(conversation) = self.conversations.get(&stage.conversation_id)? else { continue };
             let claude = run.agents.get(&stage.role).and_then(|a| a.model.clone()).unwrap_or(conversation.model);
             let others = conversation.provider_models;
             stage_models.insert(stage.id.clone(), StageModels { claude, others });
         }
-        Ok(RunDetail { stage_models, max_rounds: MAX_ROUNDS, round_limit: hit_round_limit(&stages), spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+        Ok(RunDetail { stage_models, stage_usage, usage, max_rounds: MAX_ROUNDS, round_limit: hit_round_limit(&stages), spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
     }
 
     /// Como a esteira roda no projeto; sem configuração, todos os papéis com as regras padrão.
@@ -454,6 +470,11 @@ impl ManagePipelines {
         };
         stage.finished_at = Some(self.clock.now());
         self.pipelines.save_stage(&stage)?;
+        // O gasto da etapa é o da conversa agora: o que você conversar nela depois não conta para a execução.
+        let spent = self.conversations.usage(&conversation_id)?;
+        if spent.total() > 0 {
+            self.pipelines.set_stage_usage(&stage.id, &spent)?;
+        }
         // Sem task para o pedido, o Relator cria uma pelo modelo do projeto: ela passa a ser a da execução.
         if role == Role::Reporter && run.jira_key.is_none() && stage.status == StageStatus::Done
             && let Some((key, url)) = stage.output.as_deref().and_then(created_task)
@@ -772,18 +793,27 @@ mod tests {
         prompts: Mutex<Vec<String>>,
         /// Imagens recebidas por chamada.
         images: Mutex<Vec<usize>>,
+        /// Onde cada resposta registra que gastou 10 tokens na conversa da etapa, como o turno real faria.
+        spends_on: Option<Arc<crate::infrastructure::sqlite::SqliteStore>>,
     }
 
     impl Bots {
         fn new(answers: Vec<AppResult<&str>>) -> Bots {
             let answers = answers.into_iter().rev().map(|a| a.map(str::to_owned)).collect();
-            Bots { answers: Mutex::new(answers), prompts: Mutex::default(), images: Mutex::default() }
+            Bots { answers: Mutex::new(answers), prompts: Mutex::default(), images: Mutex::default(), spends_on: None }
+        }
+
+        fn spending(answers: Vec<AppResult<&str>>, world: &World) -> Bots {
+            Bots { spends_on: Some(world.store.clone()), ..Bots::new(answers) }
         }
     }
 
     #[async_trait]
     impl StageRunner for Bots {
-        async fn run(&self, _conversation_id: &str, prompt: &str, images: Vec<Attachment>) -> AppResult<String> {
+        async fn run(&self, conversation_id: &str, prompt: &str, images: Vec<Attachment>) -> AppResult<String> {
+            if let Some(store) = &self.spends_on {
+                store.add_usage(conversation_id, &TokenUsage { input: 10, cost_usd: Some(0.1), ..Default::default() }).unwrap();
+            }
             self.prompts.lock().unwrap().push(prompt.to_owned());
             self.images.lock().unwrap().push(images.len());
             self.answers.lock().unwrap().pop().unwrap_or_else(|| Err(AppError("sem resposta".into())))
@@ -894,7 +924,7 @@ mod tests {
         assert_eq!((run.mode, run.workdir.as_str(), run.branch.as_deref()), (WorkMode::Worktree, "/dev/loja-esteira-loja-7", Some("lume/esteira-loja-7")));
         assert_eq!(vcs.commits.lock().unwrap()[0].1, "worktree /dev/loja-esteira-loja-7 lume/esteira-loja-7");
 
-        let bots = Bots::new(vec![Ok("VEREDITO: CLARO"), Ok("## Plano\nfazer X")]);
+        let bots = Bots::spending(vec![Ok("VEREDITO: CLARO"), Ok("## Plano\nfazer X")], &world);
         uc.advance(&run.id, &bots).await.unwrap();
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!(detail.run.status, RunStatus::AwaitingApproval);
@@ -905,6 +935,11 @@ mod tests {
         assert_eq!(planner_conv.provider_models.get("chatgpt").map(String::as_str), Some("gpt-forte"), "o Planejador usa o modelo forte do ChatGPT");
         let planner = &detail.stage_models[&detail.stages[1].id];
         assert_eq!((planner.claude.as_str(), planner.others.get("chatgpt").map(String::as_str)), ("opus", Some("gpt-forte")));
+        assert_eq!(detail.stage_usage[&detail.stages[1].id].input, 10, "cada etapa com o que a conversa dela gastou");
+        assert_eq!((detail.usage.input, detail.usage.cost_usd.map(|c| (c * 10.0).round())), (20, Some(2.0)), "e o total da execução");
+        // Conversar com o Planejador depois não é gasto da execução.
+        world.store.add_usage(&detail.stages[1].conversation_id, &TokenUsage { input: 500, ..Default::default() }).unwrap();
+        assert_eq!(uc.detail(&run.id).unwrap().usage.input, 20);
         assert_eq!((triage_conv.cwd.as_str(), triage_conv.model.as_str(), triage_conv.permission_mode.as_str()), ("/dev/loja-esteira-loja-7", "haiku", "manual"));
 
         uc.decide_plan(&run.id, Some("use CSV")).unwrap();

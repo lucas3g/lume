@@ -87,6 +87,92 @@ pub struct Switch {
     pub conversation_title: String,
 }
 
+/// Tokens que um turno gastou, somados entre os modelos (os subagentes entram) e entre as
+/// tentativas (a troca de conta no meio do turno é outro processo, com o próprio resultado).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, serde::Deserialize)]
+pub struct TokenUsage {
+    /// Entrada nova: nem lida do cache nem gravada nele.
+    pub input: u64,
+    pub output: u64,
+    /// Entrada lida do cache (a mais barata).
+    pub cache_read: u64,
+    /// Entrada gravada no cache (um pouco mais cara que a nova).
+    pub cache_write: u64,
+    /// Custo equivalente na API, quando o provedor informa (o Claude informa; o Codex, não).
+    pub cost_usd: Option<f64>,
+    /// Parte dos tokens veio sem preço (do Codex, ou de um turno interrompido antes do resultado):
+    /// o custo, se houver, não cobre tudo.
+    #[serde(default)]
+    pub unpriced: bool,
+}
+
+impl TokenUsage {
+    pub fn add(&mut self, other: &TokenUsage) {
+        self.unpriced = self.lacks_price() || other.lacks_price();
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.cost_usd = match (self.cost_usd, other.cost_usd) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+        };
+    }
+
+    /// O que este total acumulado tem a mais que um anterior do mesmo processo ou sessão.
+    pub fn since(&self, earlier: &TokenUsage) -> TokenUsage {
+        TokenUsage {
+            input: self.input.saturating_sub(earlier.input),
+            output: self.output.saturating_sub(earlier.output),
+            cache_read: self.cache_read.saturating_sub(earlier.cache_read),
+            cache_write: self.cache_write.saturating_sub(earlier.cache_write),
+            cost_usd: match (self.cost_usd, earlier.cost_usd) {
+                (Some(now), Some(before)) => Some((now - before).max(0.0)),
+                (now, _) => now,
+            },
+            unpriced: self.unpriced,
+        }
+    }
+
+    /// Todos os tokens processados: entrada (nova e do cache) e saída.
+    pub fn total(&self) -> u64 {
+        self.input + self.output + self.cache_read + self.cache_write
+    }
+
+    /// Há tokens sem preço: o custo, se houver, é parcial.
+    fn lacks_price(&self) -> bool {
+        self.unpriced || (self.total() > 0 && self.cost_usd.is_none())
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::TokenUsage;
+
+    fn usage(input: u64, cost_usd: Option<f64>) -> TokenUsage {
+        TokenUsage { input, cost_usd, ..Default::default() }
+    }
+
+    #[test]
+    fn cost_is_partial_when_some_tokens_came_without_price() {
+        let mut total = TokenUsage::default();
+        total.add(&usage(10, Some(1.0)));
+        assert!(!total.unpriced, "começar do zero não deixa o custo parcial");
+        total.add(&usage(5, None));
+        assert_eq!((total.input, total.cost_usd, total.unpriced), (15, Some(1.0), true));
+        let mut codex_only = TokenUsage::default();
+        codex_only.add(&usage(5, None));
+        assert_eq!(codex_only.cost_usd, None);
+    }
+
+    #[test]
+    fn since_is_what_a_running_total_grew() {
+        let grown = usage(150, Some(1.5)).since(&usage(100, Some(1.0)));
+        assert_eq!((grown.input, grown.cost_usd), (50, Some(0.5)));
+        assert_eq!(usage(150, Some(1.5)).since(&usage(100, None)).cost_usd, Some(1.5), "o que antes não tinha preço não desconta");
+    }
+}
+
 /// Situação do limite de uso informada pelo provedor durante um turno.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RateInfo {
@@ -163,6 +249,11 @@ pub enum TurnEvent {
         used_tokens: u64,
         window_tokens: u64,
     },
+    /// Tokens gastos pelo processo até aqui, com o custo (acumulado do processo, não só desta resposta).
+    Spent(TokenUsage),
+    /// Tokens de uma chamada ao modelo, ao terminar; não tem custo. Conta o que um processo
+    /// interrompido antes do resultado gastou.
+    Call(TokenUsage),
     /// Erro de API anexado a uma mensagem do assistente (ex.: "rate_limit").
     ApiError(String),
     Result {

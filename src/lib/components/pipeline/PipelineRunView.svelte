@@ -12,7 +12,7 @@
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
-    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, triageQuestions, VISUAL,
+    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, triageQuestions, usageHint, usageText, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
@@ -336,6 +336,10 @@
         <span class="value">{clock(spent)} <small>de {detail.budget_minutes} min</small></span>
         <span class="meter" aria-hidden="true"><span style:width={`${budgetPercent.toFixed(1)}%`}></span></span>
       </div>
+      <div class="num" title={totalTokens(detail.usage) ? `Todas as etapas somadas, contadas quando cada turno termina.\n${usageHint(detail.usage)}` : "Contados quando o primeiro turno de uma etapa termina."}>
+        <span class="label">Tokens</span>
+        <span class="value">{tokenCount(totalTokens(detail.usage))}{#if costText(detail.usage)} <small>{costText(detail.usage)}</small>{/if}</span>
+      </div>
       <div class="num"><span class="label">Voltas</span><span class="value">{detail.rounds}<small>/{detail.max_rounds}</small></span></div>
       {#if active}
         <div class="cancel">
@@ -511,7 +515,7 @@
                 <span class="r-body">
                   <span class="r-l1">
                     <b>{STATION[s.role].name}</b>{#if tag}<span class="tag">{tag}</span>{/if}
-                    <span class="r-right"><span class="mono">{duration(stageSeconds(s))}</span><span class="sep">·</span>{stageAccount(s)}{#if STATION[s.role].model}<span class="sep">·</span>{detail.agents[s.role]?.model ? `${detail.agents[s.role]?.model} no Claude` : STATION[s.role].model}{/if}</span>
+                    <span class="r-right"><span class="mono">{duration(stageSeconds(s))}</span>{#if detail.stage_usage[s.id]}<span class="sep">·</span><span class="mono" title={usageHint(detail.stage_usage[s.id])}>{tokenCount(totalTokens(detail.stage_usage[s.id]))} tok</span>{/if}<span class="sep">·</span>{stageAccount(s)}{#if STATION[s.role].model}<span class="sep">·</span>{detail.agents[s.role]?.model ? `${detail.agents[s.role]?.model} no Claude` : STATION[s.role].model}{/if}</span>
                   </span>
                   <span class="r-l2"><span class="io">{inputSummary(s, detail)}</span>{@html icon("arrow", 11)}<span class="io out o-{v.visual}">{outputSummary(s)}</span></span>
                 </span>
@@ -535,6 +539,7 @@
             {#if panelAgent}agente <b>{panelAgent.name}</b> · {/if}{#if panelModel}modelo <b>{panelModel}</b> · {:else if panelStation.model}{panelStation.model.toLowerCase()} · {/if}{#if panelEffort}esforço <b>{panelEffort}</b> · {/if}{panelStation.perm}
             {#if panelStage && !isUserStep(panelStage.role)} · conta <b>{stageAccount(panelStage)}</b>{/if}
             {#if panelStage} · <span class="mono">{duration(stageSeconds(panelStage))}</span>{/if}
+            {#if panelStage && detail.stage_usage[panelStage.id]} · <span class="mono" title={usageHint(detail.stage_usage[panelStage.id])}>{usageText(detail.stage_usage[panelStage.id])}</span>{/if}
           </div>
           {#if passes[panelStation.role].length > 1 || (!follow && latest)}
             <div class="p-bar">

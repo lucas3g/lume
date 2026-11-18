@@ -4,7 +4,7 @@
 use super::{AppResult, ChatEvent, TurnControl};
 use crate::domain::{
     account::{Account, Identity, Provider, UsageLimit},
-    chat::{Attachment, Conversation, Message, RateInfo, Switch, TurnEnd, TurnEvent, TurnRequest},
+    chat::{Attachment, Conversation, Message, RateInfo, Switch, TokenUsage, TurnEnd, TurnEvent, TurnRequest},
     extension::{AccountConnector, Agent, Connector, Skill, SkillRules},
     mcp::McpServer,
     history::{HistSession, HistoryStatus, ImportedSession, Snippet},
@@ -46,6 +46,10 @@ pub trait ConversationRepository: Send + Sync {
     fn set_agent(&self, id: &str, agent_id: Option<&str>) -> AppResult<()>;
     fn set_project(&self, id: &str, project_id: Option<&str>) -> AppResult<()>;
     fn set_context_percent(&self, id: &str, percent: i64) -> AppResult<()>;
+    /// Soma os tokens de um turno aos que a conversa já gastou.
+    fn add_usage(&self, id: &str, usage: &TokenUsage) -> AppResult<()>;
+    /// Tokens que a conversa gastou até agora (vazio se ainda nenhum turno informou).
+    fn usage(&self, id: &str) -> AppResult<TokenUsage>;
     fn set_effort(&self, id: &str, effort: &str) -> AppResult<()>;
     /// Modelo da conversa em cada serviço que não é o Claude.
     fn set_provider_models(&self, id: &str, models: &std::collections::BTreeMap<String, String>) -> AppResult<()>;
@@ -106,6 +110,10 @@ pub trait PipelineRepository: Send + Sync {
     /// Guarda as imagens coladas no pedido, na ordem.
     fn save_images(&self, run_id: &str, images: &[Attachment]) -> AppResult<()>;
     fn images(&self, run_id: &str) -> AppResult<Vec<Attachment>>;
+    /// Guarda o que a etapa gastou ao terminar: a conversa dela pode continuar depois, fora da execução.
+    fn set_stage_usage(&self, stage_id: &str, usage: &TokenUsage) -> AppResult<()>;
+    /// Gasto guardado de cada etapa (por id) da execução.
+    fn stage_usage(&self, run_id: &str) -> AppResult<std::collections::BTreeMap<String, TokenUsage>>;
 }
 
 /// Roda uma etapa da esteira: um turno na conversa dela, com troca de conta quando o

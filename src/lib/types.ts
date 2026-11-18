@@ -514,6 +514,17 @@ export interface StageRun {
   finished_at: number | null;
 }
 
+/** Tokens gastos: entrada nova, saída, lida do cache e gravada nele; custo equivalente na API, se o provedor informa. */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
+  /** Parte dos tokens veio sem preço (Codex, ou turno interrompido antes do resultado): o custo é parcial. */
+  unpriced: boolean;
+}
+
 export interface PipelineDetail extends PipelineRun {
   stages: StageRun[];
   spent_seconds: number;
@@ -524,6 +535,10 @@ export interface PipelineDetail extends PipelineRun {
   round_limit: boolean;
   /** Modelo de cada etapa (por id) em cada serviço: o do Claude e o dos outros (ausente = padrão do CLI). */
   stage_models: Record<string, { claude: string; others: Partial<Record<Provider, string>> }>;
+  /** Tokens de cada etapa (por id); ausente enquanto nenhum turno dela terminou. */
+  stage_usage: Record<string, TokenUsage>;
+  /** Tokens de todas as etapas somados. */
+  usage: TokenUsage;
 }
 
 /** Nível de modelo de um papel da esteira. */

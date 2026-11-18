@@ -9,7 +9,7 @@ use crate::application::{
 };
 use crate::domain::{
     account::{Account, Identity, Provider},
-    chat::{Attachment, AttachmentKind, Conversation, Message, RateInfo, Switch, DEFAULT_PERMISSION_MODE},
+    chat::{Attachment, AttachmentKind, Conversation, Message, RateInfo, Switch, TokenUsage, DEFAULT_PERMISSION_MODE},
     extension::{connector_key, Agent, Connector},
     pipeline::{PipelineRun, Role, RunStatus, StageRun, StageStatus, WorkMode},
     project::{Project, ProjectFile},
@@ -83,7 +83,7 @@ const ACCOUNT_COLUMNS: &str =
 const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider,provider_models";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 21] = [
+const MIGRATIONS: [&str; 23] = [
     "ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE conversations ADD COLUMN session_provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
@@ -106,6 +106,8 @@ const MIGRATIONS: [&str; 21] = [
     "ALTER TABLE conversations ADD COLUMN provider_models TEXT NOT NULL DEFAULT '{}'",
     "ALTER TABLE pipeline_runs ADD COLUMN efforts TEXT NOT NULL DEFAULT '{}'",
     "ALTER TABLE pipeline_runs ADD COLUMN design INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE conversations ADD COLUMN usage TEXT",
+    "ALTER TABLE pipeline_stages ADD COLUMN usage TEXT",
 ];
 
 impl From<rusqlite::Error> for AppError {
@@ -362,6 +364,19 @@ impl ConversationRepository for SqliteStore {
         self.conn()
             .execute("UPDATE conversations SET context_percent=? WHERE id=?", params![percent, id])?;
         Ok(())
+    }
+
+    fn add_usage(&self, id: &str, usage: &TokenUsage) -> AppResult<()> {
+        // A conexão fica presa até o fim: ler e gravar não se misturam com outra soma.
+        let conn = self.conn();
+        let mut total = conversation_usage(&conn, id)?;
+        total.add(usage);
+        conn.execute("UPDATE conversations SET usage=? WHERE id=?", params![usage_json(&total)?, id])?;
+        Ok(())
+    }
+
+    fn usage(&self, id: &str) -> AppResult<TokenUsage> {
+        conversation_usage(&self.conn(), id)
     }
 
     fn set_provider_models(&self, id: &str, models: &std::collections::BTreeMap<String, String>) -> AppResult<()> {
@@ -700,6 +715,24 @@ fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
     })
 }
 
+/// Gasto gravado em JSON. Um registro ilegível é erro: somar por cima dele apagaria o acumulado.
+fn parse_usage(text: &str) -> AppResult<TokenUsage> {
+    serde_json::from_str(text).map_err(|e| AppError(format!("Uso de tokens gravado ilegível: {e}")))
+}
+
+fn usage_json(usage: &TokenUsage) -> AppResult<String> {
+    serde_json::to_string(usage).map_err(|e| AppError(format!("Não foi possível gravar o uso de tokens: {e}")))
+}
+
+/// Tokens que a conversa gastou (vazio se ainda nenhum turno informou).
+fn conversation_usage(conn: &Connection, id: &str) -> AppResult<TokenUsage> {
+    let stored: Option<String> = conn
+        .query_row("SELECT usage FROM conversations WHERE id=?", params![id], |r| r.get(0))
+        .optional()?
+        .flatten();
+    stored.as_deref().map_or(Ok(TokenUsage::default()), parse_usage)
+}
+
 fn stage_row(r: &Row<'_>) -> rusqlite::Result<Option<StageRun>> {
     let Some(role) = Role::parse(&r.get::<_, String>(2)?) else { return Ok(None) };
     Ok(Some(StageRun {
@@ -777,6 +810,22 @@ impl PipelineRepository for SqliteStore {
             )?;
         }
         Ok(())
+    }
+
+    fn set_stage_usage(&self, stage_id: &str, usage: &TokenUsage) -> AppResult<()> {
+        self.conn().execute("UPDATE pipeline_stages SET usage=? WHERE id=?", params![usage_json(usage)?, stage_id])?;
+        Ok(())
+    }
+
+    fn stage_usage(&self, run_id: &str) -> AppResult<std::collections::BTreeMap<String, TokenUsage>> {
+        let c = self.conn();
+        let mut st = c.prepare("SELECT id,usage FROM pipeline_stages WHERE run_id=? AND usage IS NOT NULL")?;
+        let rows = st.query_map([run_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.map(|row| {
+            let (id, text) = row?;
+            Ok((id, parse_usage(&text)?))
+        })
+        .collect()
     }
 
     fn images(&self, run_id: &str) -> AppResult<Vec<Attachment>> {

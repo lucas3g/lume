@@ -1,6 +1,6 @@
 //! Protocolo stream-json do Claude Code: leitura dos eventos e desfecho do turno.
 
-use crate::domain::chat::{RateInfo, SubagentStep, TurnEnd, TurnEvent};
+use crate::domain::chat::{RateInfo, SubagentStep, TokenUsage, TurnEnd, TurnEvent};
 use chrono::{DateTime, Datelike, TimeZone};
 use serde_json::Value;
 
@@ -24,6 +24,7 @@ pub fn parse_line(line: &str) -> Vec<TurnEvent> {
         "control_request" => single(parse_permission(&v)),
         "result" => parse_context(&v)
             .into_iter()
+            .chain(parse_spent(&v))
             .chain([TurnEvent::Result {
                 is_error: v["is_error"].as_bool().unwrap_or(false),
                 text: result_text(&v),
@@ -96,6 +97,59 @@ fn parse_context(v: &Value) -> Option<TurnEvent> {
     Some(TurnEvent::Context { used_tokens, window_tokens })
 }
 
+/// Tokens de um objeto `usage` da API (`input_tokens`, `cache_read_input_tokens`...), sem custo.
+fn api_usage(u: &Value) -> TokenUsage {
+    let n = |key: &str| u[key].as_u64().unwrap_or(0);
+    TokenUsage {
+        input: n("input_tokens"),
+        output: n("output_tokens"),
+        cache_read: n("cache_read_input_tokens"),
+        cache_write: n("cache_creation_input_tokens"),
+        ..Default::default()
+    }
+}
+
+/// Tokens gastos pelo processo até aqui (o CLI informa o acumulado do processo, não só desta
+/// resposta). Vale o `modelUsage` (cada modelo usado, subagentes inclusive); se ele vier sem
+/// tokens, o `usage` do turno; se este também vier sem, as chamadas em `usage.iterations`.
+fn parse_spent(v: &Value) -> Option<TurnEvent> {
+    let n = |m: &Value, key: &str| m[key].as_u64().unwrap_or(0);
+    let by_model = v["modelUsage"].as_object().map(|models| {
+        models.values().fold(TokenUsage::default(), |mut sum, m| {
+            sum.add(&TokenUsage {
+                input: n(m, "inputTokens"),
+                output: n(m, "outputTokens"),
+                cache_read: n(m, "cacheReadInputTokens"),
+                cache_write: n(m, "cacheCreationInputTokens"),
+                cost_usd: m["costUSD"].as_f64(),
+                unpriced: false,
+            });
+            sum
+        })
+    });
+    let overall = || {
+        let top = api_usage(&v["usage"]);
+        let usage = if top.total() > 0 {
+            top
+        } else {
+            let calls = v["usage"]["iterations"].as_array().map(Vec::as_slice).unwrap_or_default();
+            calls.iter().fold(TokenUsage::default(), |mut sum, c| {
+                sum.add(&api_usage(c));
+                sum
+            })
+        };
+        TokenUsage { cost_usd: v["total_cost_usd"].as_f64(), ..usage }
+    };
+    let usage = by_model.filter(|u| u.total() > 0).unwrap_or_else(overall);
+    (usage.total() > 0).then_some(TurnEvent::Spent(usage))
+}
+
+/// Uso de uma chamada ao modelo, no fim dela (`message_delta` traz a entrada e a saída completas).
+fn parse_call(e: &Value) -> Option<TurnEvent> {
+    let usage = api_usage(&e["usage"]);
+    (e["type"] == "message_delta" && usage.total() > 0).then_some(TurnEvent::Call(usage))
+}
+
 fn parse_init(v: &Value) -> Vec<TurnEvent> {
     let names = |key: &str| -> Vec<String> {
         v[key].as_array().map(|list| list.iter().filter_map(Value::as_str).map(Into::into).collect()).unwrap_or_default()
@@ -115,6 +169,7 @@ fn parse_init(v: &Value) -> Vec<TurnEvent> {
 
 fn parse_stream_event(e: &Value) -> Option<TurnEvent> {
     match e["type"].as_str()? {
+        "message_delta" => parse_call(e),
         "content_block_delta" => match e["delta"]["type"].as_str()? {
             "text_delta" => e["delta"]["text"].as_str().map(|t| TurnEvent::Delta(t.into())),
             "thinking_delta" => e["delta"]["thinking"].as_str().map(|t| TurnEvent::Thinking(t.into())),
@@ -185,10 +240,11 @@ fn parse_subagent_message(v: &Value) -> Vec<TurnEvent> {
         .collect()
 }
 
-/// De um subagente só interessa o texto, para mostrar o andamento.
+/// De um subagente interessa o texto, para mostrar o andamento, e o gasto de cada chamada.
 fn parse_subagent_event(e: &Value) -> Option<TurnEvent> {
     match parse_stream_event(e)? {
         TurnEvent::Delta(text) => Some(TurnEvent::SubagentDelta(text)),
+        call @ TurnEvent::Call(_) => Some(call),
         _ => None,
     }
 }
@@ -482,7 +538,33 @@ mod tests {
         let result = r#"{"type":"result","is_error":false,"result":"ok","usage":{"iterations":[{"input_tokens":2,"output_tokens":4,"cache_read_input_tokens":11875,"cache_creation_input_tokens":6472}]},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}}}"#;
         let events = parse_line(result);
         assert_eq!(events[0], TurnEvent::Context { used_tokens: 18353, window_tokens: 1_000_000 });
-        assert!(matches!(events[1], TurnEvent::Result { is_error: false, .. }));
+        assert!(matches!(events.last(), Some(TurnEvent::Result { is_error: false, .. })));
+    }
+
+    #[test]
+    fn result_reports_the_tokens_spent_by_every_model() {
+        // Campos como emitidos pelo CLI: o modelo principal e um subagente.
+        let result = r#"{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.5,"usage":{"input_tokens":2,"output_tokens":4,"cache_read_input_tokens":100,"cache_creation_input_tokens":50},"modelUsage":{"claude-opus-5-5":{"inputTokens":2,"outputTokens":4,"cacheReadInputTokens":100,"cacheCreationInputTokens":50,"costUSD":0.25,"contextWindow":1000000},"claude-haiku-5-5":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":300,"cacheCreationInputTokens":0,"costUSD":0.25,"contextWindow":200000}}}"#;
+        let spent = parse_line(result).into_iter().find_map(|e| match e { TurnEvent::Spent(u) => Some(u), _ => None }).unwrap();
+        assert_eq!(spent, TokenUsage { input: 12, output: 24, cache_read: 400, cache_write: 50, cost_usd: Some(0.5), unpriced: false });
+        // Sem `modelUsage`: o uso do turno.
+        let plain = r#"{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":4}}"#;
+        assert!(parse_line(plain).contains(&TurnEvent::Spent(TokenUsage { input: 1, output: 2, cache_read: 3, cache_write: 4, cost_usd: Some(0.1), unpriced: false })));
+        // `modelUsage` só com a janela e `usage` só com as chamadas: soma as chamadas.
+        let calls = r#"{"type":"result","is_error":false,"result":"ok","usage":{"iterations":[{"input_tokens":2,"output_tokens":4,"cache_read_input_tokens":10,"cache_creation_input_tokens":0},{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":20,"cache_creation_input_tokens":5}]},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}}}"#;
+        assert!(parse_line(calls).contains(&TurnEvent::Spent(TokenUsage { input: 3, output: 5, cache_read: 30, cache_write: 5, cost_usd: None, unpriced: true })));
+        // Um erro antes de chamar o modelo não gastou nada.
+        assert!(!parse_line(r#"{"type":"result","is_error":true,"result":"x"}"#).iter().any(|e| matches!(e, TurnEvent::Spent(_))));
+    }
+
+    #[test]
+    fn each_finished_model_call_reports_its_tokens() {
+        // `message_delta` como emitido pelo CLI: a entrada e a saída completas da chamada.
+        let delta = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"cache_creation_input_tokens":8152,"cache_read_input_tokens":14845,"output_tokens":4}},"parent_tool_use_id":null}"#;
+        let call = TurnEvent::Call(TokenUsage { input: 2, output: 4, cache_read: 14845, cache_write: 8152, ..Default::default() });
+        assert_eq!(parse_line(delta), std::slice::from_ref(&call));
+        let of_subagent = delta.replace(r#""parent_tool_use_id":null"#, r#""parent_tool_use_id":"t9""#);
+        assert_eq!(parse_line(&of_subagent), [call], "o subagente também gasta");
     }
 
     #[test]

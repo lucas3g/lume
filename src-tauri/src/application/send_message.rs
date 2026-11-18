@@ -18,7 +18,7 @@ use crate::domain::{
     account::{earliest_reset, pick_next, Account, Provider},
     workspace::context_percent,
     chat::{
-        tool_message, Attachment, APP_NOTE_CLOSE, APP_NOTE_OPEN, Conversation, Injection, PermissionDecision, SubagentStep, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
+        tool_message, Attachment, APP_NOTE_CLOSE, APP_NOTE_OPEN, Conversation, Injection, PermissionDecision, SubagentStep, TokenUsage, TurnEnd, TurnEvent, TurnRequest, ROLE_ASSISTANT, ROLE_NOTICE,
         ROLE_TOOL, ROLE_USER,
     },
 };
@@ -64,6 +64,11 @@ struct Journal {
     session: Option<String>,
     /// A resposta já foi entregue e gravada; o processo segue só pelos agentes em segundo plano.
     answered: bool,
+    /// Gasto do processo já gravado: o último acumulado que ele informou.
+    counted: TokenUsage,
+    /// Chamadas ao modelo terminadas depois do último acumulado; viram gasto (sem preço) se o
+    /// processo acabar sem informar o acumulado (cancelado, travado, morto).
+    uncounted: TokenUsage,
 }
 
 impl Journal {
@@ -296,6 +301,10 @@ impl SendMessage {
                 }
             };
             control.decisions = yours;
+            // O processo acabou sem informar o gasto das últimas chamadas: grava o que elas somaram, sem preço.
+            if journal.uncounted.total() > 0 {
+                let _ = self.conversations.add_usage(conversation_id, &journal.uncounted);
+            }
 
             // Interrompido pelo vigia: grava o que veio, avisa e continua a mesma sessão na mesma conta.
             if let (Some(culprit), TurnEnd::Cancelled) = (stalled, &end) {
@@ -564,6 +573,14 @@ impl SendMessage {
                     let _ = self.conversations.set_context_percent(conversation_id, percent);
                 }
             }
+            // O acumulado do processo cresce a cada resposta dele: grava só a diferença.
+            TurnEvent::Spent(total) => {
+                if self.conversations.add_usage(conversation_id, &total.since(&journal.counted)).is_ok() {
+                    journal.counted = *total;
+                    journal.uncounted = TokenUsage::default();
+                }
+            }
+            TurnEvent::Call(usage) => journal.uncounted.add(usage),
             TurnEvent::Environment { skills, connectors, .. } => {
                 let _ = self.skills.remember(skills);
                 for (key, status) in connectors {
@@ -685,7 +702,7 @@ mod tests {
 
     use super::*;
     use crate::application::fakes::*;
-    use crate::domain::{account::{sample, Provider}, chat::{AttachmentKind, RateInfo, TurnRequest}, history::Snippet};
+    use crate::domain::{account::{sample, Provider}, chat::{AttachmentKind, RateInfo, TokenUsage, TurnRequest}, history::Snippet};
 
     fn use_case(world: &World, engine: ScriptedEngine) -> SendMessage {
         SendMessage {
@@ -857,20 +874,21 @@ mod tests {
         let mut gpt = sample("gpt", 2);
         gpt.provider = Provider::ChatGpt;
         let world = World::with_accounts(vec![sample("claude", 1), gpt]);
-        let engine = ScriptedEngine::new(|req, call| match call {
+        let spent = |input, cost_usd| TurnEvent::Spent(TokenUsage { input, cost_usd, ..Default::default() });
+        let engine = ScriptedEngine::new(move |req, call| match call {
             1 => {
                 assert_eq!((req.provider, req.resume.as_deref()), (Provider::Claude, None));
-                (vec![], TurnEnd::Done { session_id: Some("sessao-claude".into()), text: "o número é 417".into() })
+                (vec![spent(100, Some(0.5))], TurnEnd::Done { session_id: Some("sessao-claude".into()), text: "o número é 417".into() })
             }
             2 => {
                 assert_eq!(req.resume.as_deref(), Some("sessao-claude"), "o mesmo serviço retoma a sessão");
-                (vec![], TurnEnd::Limited { resets_at: Some(5000) })
+                (vec![spent(10, Some(0.25))], TurnEnd::Limited { resets_at: Some(5000) })
             }
             _ => {
                 assert_eq!(req.provider, Provider::ChatGpt);
                 assert_eq!(req.resume, None, "a sessão do Claude não existe no Codex");
                 assert!(req.extra_system.as_deref().unwrap().contains("417"), "o diálogo anterior vai como contexto");
-                (vec![], TurnEnd::Done { session_id: Some("sessao-codex".into()), text: "417".into() })
+                (vec![spent(1, None)], TurnEnd::Done { session_id: Some("sessao-codex".into()), text: "417".into() })
             }
         });
         let uc = use_case(&world, engine);
@@ -881,6 +899,27 @@ mod tests {
         let conversation = world.conversation("c1");
         assert_eq!(conversation.cli_session_id.as_deref(), Some("sessao-codex"));
         assert_eq!(conversation.session_provider, Provider::ChatGpt, "a próxima mensagem retoma a sessão do Codex");
+        let usage = ConversationRepository::usage(&*world.store, "c1").unwrap();
+        assert_eq!((usage.input, usage.cost_usd), (111, Some(0.75)), "os turnos e as tentativas que pararam no limite somam");
+    }
+
+    #[tokio::test]
+    async fn spend_counts_once_per_process_and_survives_a_cancelled_turn() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let usage = |input, cost_usd| TokenUsage { input, cost_usd, ..Default::default() };
+        let engine = ScriptedEngine::new(move |_, call| match call {
+            // O processo responde duas vezes (mensagem no fim do turno): cada resultado traz o acumulado.
+            1 => (vec![TurnEvent::Call(usage(100, None)), TurnEvent::Spent(usage(100, Some(1.0))), TurnEvent::Call(usage(50, None)), TurnEvent::Spent(usage(150, Some(1.5)))], TurnEnd::Done { session_id: Some("s1".into()), text: "ok".into() }),
+            // Cancelado depois de duas chamadas, antes do resultado.
+            _ => (vec![TurnEvent::Call(usage(30, None)), TurnEvent::Call(usage(20, None))], TurnEnd::Cancelled),
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "oi", &[], vec![], TurnControl::new().0).await.unwrap();
+        let spent = ConversationRepository::usage(&*world.store, "c1").unwrap();
+        assert_eq!((spent.input, spent.cost_usd, spent.unpriced), (150, Some(1.5), false), "o acumulado não soma duas vezes");
+        uc.execute("c1", "faça mais", &[], vec![], TurnControl::new().0).await.unwrap();
+        let spent = ConversationRepository::usage(&*world.store, "c1").unwrap();
+        assert_eq!((spent.input, spent.cost_usd, spent.unpriced), (200, Some(1.5), true), "o cancelado conta as chamadas, sem preço");
     }
 
     #[tokio::test]

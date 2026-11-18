@@ -11,7 +11,7 @@ use crate::application::{
 };
 use crate::domain::{
     account::{Identity, Provider},
-    chat::{RateInfo, TurnEnd, TurnEvent, TurnRequest},
+    chat::{RateInfo, TokenUsage, TurnEnd, TurnEvent, TurnRequest},
     mcp::{codex_servers, toml_array, McpServer},
 };
 use super::cli_output::{failure_detail, run_login};
@@ -289,6 +289,8 @@ pub(crate) struct CodexTurn {
     completed: bool,
     /// Itens cuja chamada de ferramenta já foi anunciada.
     announced: HashSet<String>,
+    /// Acumulado da sessão antes deste turno (o `turn.completed` informa o da sessão inteira).
+    baseline: TokenUsage,
 }
 
 impl CodexTurn {
@@ -306,7 +308,10 @@ impl CodexTurn {
             "item.completed" => self.item(&v["item"], true),
             "turn.completed" => {
                 self.completed = true;
-                vec![]
+                // O acumulado da sessão menos o de antes do turno; se ele encolheu, a sessão recomeçou a conta.
+                let total = codex_usage(&v["usage"]);
+                let usage = if total.total() >= self.baseline.total() { total.since(&self.baseline) } else { total };
+                if usage.total() > 0 { vec![TurnEvent::Spent(usage)] } else { vec![] }
             }
             "turn.failed" => {
                 self.error = v["error"]["message"].as_str().map(str::to_owned).or(self.error.take());
@@ -371,6 +376,13 @@ impl CodexTurn {
     }
 }
 
+/// Uso no formato do Codex (`input_tokens` inclui os `cached_input_tokens`). O Codex não informa custo.
+fn codex_usage(u: &Value) -> TokenUsage {
+    let n = |key: &str| u[key].as_u64().unwrap_or(0);
+    let cached = n("cached_input_tokens");
+    TokenUsage { input: n("input_tokens").saturating_sub(cached), output: n("output_tokens"), cache_read: cached, ..Default::default() }
+}
+
 pub struct CodexEngine;
 
 #[async_trait]
@@ -406,7 +418,9 @@ impl ChatEngine for CodexEngine {
         };
 
         let mut lines = BufReader::new(stdout).lines();
-        let mut turn = CodexTurn::default();
+        // Retomando, o Codex soma o turno ao acumulado que a sessão já tinha.
+        let baseline = request.resume.as_deref().and_then(|id| recorded_usage(&home_of(request.config_dir.as_deref()), id));
+        let mut turn = CodexTurn { baseline: baseline.unwrap_or_default(), ..Default::default() };
         loop {
             tokio::select! {
                 _ = control.cancel.notified() => {
@@ -494,18 +508,30 @@ fn rate_in_file(path: &Path, now: i64) -> Option<RateInfo> {
     })
 }
 
+/// Arquivo de uma sessão, pelo id no fim do nome.
+fn session_file(files: &[PathBuf], id: &str) -> Option<PathBuf> {
+    let suffix = format!("{id}.jsonl");
+    files.iter().find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&suffix))).cloned()
+}
+
 /// Uso da conta segundo o que o Codex gravou: na sessão indicada ou, sem ela, nas mais recentes.
 fn recorded_rate(home: &Path, session: Option<&str>, now: i64) -> Option<RateInfo> {
     const RECENT: usize = 5;
     let files = session_files(home);
     match session {
-        Some(id) => {
-            let suffix = format!("{id}.jsonl");
-            let file = files.iter().find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&suffix)))?;
-            rate_in_file(file, now)
-        }
+        Some(id) => rate_in_file(&session_file(&files, id)?, now),
         None => files.iter().take(RECENT).find_map(|p| rate_in_file(p, now)),
     }
+}
+
+/// Tokens que a sessão acumulou até o último `token_count` gravado.
+fn recorded_usage(home: &Path, session: &str) -> Option<TokenUsage> {
+    let text = std::fs::read_to_string(session_file(&session_files(home), session)?).ok()?;
+    text.lines().rev().find_map(|line| {
+        let v: Value = serde_json::from_str(line).ok()?;
+        let total = &v["payload"]["info"]["total_token_usage"];
+        (v["payload"]["type"] == "token_count" && total.is_object()).then(|| codex_usage(total))
+    })
 }
 
 /// Uso da conta do ChatGPT. O Codex só o informa durante um turno, então vale o último que ele gravou.
@@ -565,7 +591,14 @@ mod tests {
         assert_eq!(events[1], TurnEvent::Thinking("pensando".into()));
         assert_eq!(events[2], TurnEvent::ToolCall { id: "item_1".into(), name: "Bash".into(), input: r#"{"command":"bash -lc ls"}"#.into() });
         assert_eq!(events[3], TurnEvent::ToolResult { id: "item_1".into(), output: "a.txt\n".into(), is_error: false });
-        assert_eq!(events.len(), 6, "a chamada é anunciada uma vez só");
+        assert_eq!(events.len(), 7, "a chamada é anunciada uma vez só");
+        assert_eq!(events[6], TurnEvent::Spent(TokenUsage { input: 10, output: 2, ..Default::default() }));
+        // Retomando: o turno gasta o que o acumulado da sessão cresceu.
+        let mut resumed = CodexTurn { baseline: TokenUsage { input: 6, cache_read: 4, output: 1, ..Default::default() }, ..Default::default() };
+        let done = r#"{"type":"turn.completed","usage":{"input_tokens":30,"cached_input_tokens":12,"output_tokens":5}}"#;
+        assert_eq!(resumed.feed(done), [TurnEvent::Spent(TokenUsage { input: 12, cache_read: 8, output: 4, ..Default::default() })]);
+        let mut restarted = CodexTurn { baseline: TokenUsage { input: 500, ..Default::default() }, ..Default::default() };
+        assert_eq!(restarted.feed(done), [TurnEvent::Spent(TokenUsage { input: 18, cache_read: 12, output: 5, ..Default::default() })], "acumulado menor: a sessão recomeçou a conta");
         let end = turn.into_end("", 0);
         assert_eq!(end, TurnEnd::Done { session_id: Some("0199-abc".into()), text: "Há um arquivo.\n\nPronto.".into() });
     }
@@ -695,6 +728,12 @@ mod tests {
         assert_eq!(recorded_rate(&home, Some("aaa"), 0).unwrap().util_5h, Some(0.2), "vale o último registro da sessão");
         assert!(recorded_rate(&home, Some("bbb"), 0).is_none());
         assert_eq!(recorded_rate(&home, None, 0).unwrap().util_5h, Some(0.2), "sem sessão, procura nas mais recentes");
+        // Formato gravado pelo Codex: o primeiro `token_count` do turno vem sem `info`.
+        let total = |input: u64| json!({"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": input, "cached_input_tokens": 100, "output_tokens": 7}}}}).to_string();
+        let blank = json!({"type": "event_msg", "payload": {"type": "token_count", "info": null}}).to_string();
+        std::fs::write(day.join("rollout-2026-11-13T11-00-00-ccc.jsonl"), format!("{}\n{}\n{}\n", total(300), total(900), blank)).unwrap();
+        assert_eq!(recorded_usage(&home, "ccc"), Some(TokenUsage { input: 800, cache_read: 100, output: 7, ..Default::default() }));
+        assert_eq!(recorded_usage(&home, "aaa"), None, "sem total gravado, não há base");
         std::fs::remove_dir_all(home).unwrap();
     }
 

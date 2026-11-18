@@ -2,7 +2,7 @@
 
 import { parseToolUse, summarize } from "./tools";
 import { modelLabel } from "./types";
-import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, ReviewFinding, StageRun } from "./types";
+import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, ReviewFinding, StageRun, TokenUsage } from "./types";
 
 export interface Station {
   role: PipelineRole;
@@ -449,6 +449,45 @@ export function clock(seconds: number): string {
 export function duration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Todos os tokens processados: entrada (nova e do cache) e saída. */
+export const totalTokens = (u: TokenUsage) => u.input + u.output + u.cache_read + u.cache_write;
+
+/** Quantidade curta: "850", "12 mil", "1,4 mi". Arredonda antes de escolher a unidade: 999.600 é "1 mi". */
+export function tokenCount(n: number): string {
+  const round = (v: number) => (v < 10 ? Math.round(v * 10) / 10 : Math.round(v));
+  const short = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+  if (n < 1000) return String(n);
+  const thousands = round(n / 1000);
+  if (thousands < 1000) return `${short(thousands)} mil`;
+  return `${short(round(n / 1_000_000))} mi`;
+}
+
+/** Custo equivalente na API: "US$ 0,42". */
+export const usd = (v: number) => `US$ ${v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/** Custo para exibir: "US$ 1,24", "US$ 1,24+" quando parte dos tokens veio sem preço; null sem custo informado. */
+export const costText = (u: TokenUsage) => (u.cost_usd != null ? `${usd(u.cost_usd)}${u.unpriced ? "+" : ""}` : null);
+
+/** Resumo do gasto: "312 mil tokens · US$ 1,24" (sem custo quando o provedor não informa). */
+export function usageText(u: TokenUsage): string {
+  const tokens = `${tokenCount(totalTokens(u))} tokens`;
+  const cost = costText(u);
+  return cost ? `${tokens} · ${cost}` : tokens;
+}
+
+/** Detalhe do gasto, para a dica: de onde vieram os tokens. */
+export function usageHint(u: TokenUsage): string {
+  const parts = [
+    `Entrada nova: ${u.input.toLocaleString("pt-BR")}`,
+    `Lida do cache: ${u.cache_read.toLocaleString("pt-BR")}`,
+    `Gravada no cache: ${u.cache_write.toLocaleString("pt-BR")}`,
+    `Saída: ${u.output.toLocaleString("pt-BR")}`,
+  ];
+  if (u.cost_usd != null) parts.push(`Custo equivalente na API: ${usd(u.cost_usd)} (com assinatura não há cobrança; serve para comparar as etapas)`);
+  if (u.cost_usd != null && u.unpriced) parts.push("Custo parcial: parte dos tokens veio sem preço (Codex, ou etapa interrompida antes do fim)");
+  return parts.join("\n");
 }
 
 /** Nome do serviço e do CLI que o atende. */
