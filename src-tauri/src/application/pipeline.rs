@@ -274,13 +274,7 @@ impl ManagePipelines {
         if jira_key.is_none() && request.is_empty() && title.chars().count() < 12 {
             return Err(AppError("Descreva o que os bots devem fazer.".into()));
         }
-        if input.images.len() > MAX_IMAGES {
-            return Err(AppError(format!("Cole no máximo {MAX_IMAGES} imagens.")));
-        }
-        // Base64: 4 caracteres para cada 3 bytes.
-        if input.images.iter().any(|i| i.data.len() / 4 * 3 > MAX_IMAGE_BYTES) {
-            return Err(AppError(format!("Cada imagem pode ter até {} MB.", MAX_IMAGE_BYTES / (1024 * 1024))));
-        }
+        check_images(&input.images)?;
         let stored = self.stored_config(&project.id);
         // Sem modelo no projeto, vale o padrão: o Relator cria a task quando não há uma escolhida.
         let jira_template = stored.jira_template.or_else(|| self.default_template());
@@ -436,7 +430,19 @@ impl ManagePipelines {
             };
             reviewed = now;
         }
-        let prompt = stage_prompt(role, run, &ctx);
+        // Os prints do último ajuste vão ao Implementador na primeira passagem depois dele, mesmo na
+        // sessão continuada (que já viu as imagens do pedido, mas não estas).
+        let feedback_images = match feedback_awaiting_implementer(role, stages) {
+            Some(stage_id) => self.pipelines.images(&feedback_images_key(&run.id, stage_id))?,
+            None => vec![],
+        };
+        let mut prompt = stage_prompt(role, run, &ctx);
+        if !feedback_images.is_empty() {
+            prompt.push_str(&format!(
+                "\nO usuário anexou ao ajuste {} imagem(ns) (prints do que não funcionou): use-as para entender o problema.",
+                feedback_images.len()
+            ));
+        }
         let conversation_id = match &resumed {
             Some(id) => id.clone(),
             None => {
@@ -527,7 +533,10 @@ impl ManagePipelines {
             // A sessão continuada já viu as imagens.
             let images = if role.sees_images() && run.image_count > 0 && !ctx.resumed { self.pipelines.images(&run.id) } else { Ok(vec![]) };
             match images {
-                Ok(images) => runner.run(&conversation_id, &prompt, images).await,
+                Ok(mut images) => {
+                    images.extend(feedback_images);
+                    runner.run(&conversation_id, &prompt, images).await
+                }
                 Err(e) => Err(e),
             }
         };
@@ -765,15 +774,19 @@ impl ManagePipelines {
     /// Reabre uma execução concluída com um ajuste do usuário (algo que não funcionou ao
     /// testar): o Implementador corrige, o Revisor e o Testador conferem e o Relator comenta
     /// na mesma task do Jira, sem criar outra. A condução recomeça com `advance`.
-    pub fn reopen(&self, run_id: &str, feedback: &str) -> AppResult<()> {
+    /// As imagens coladas no ajuste (prints do problema) vão ao Implementador junto com o texto.
+    pub fn reopen(&self, run_id: &str, feedback: &str, images: &[Attachment]) -> AppResult<()> {
         let mut run = self.get(run_id)?;
         if run.status != RunStatus::Done {
             return Err(AppError("Só dá para reabrir uma execução concluída.".into()));
         }
-        let feedback = feedback.trim();
-        if feedback.is_empty() {
-            return Err(AppError("Descreva o que precisa mudar.".into()));
-        }
+        let feedback = match feedback.trim() {
+            "" if images.is_empty() => return Err(AppError("Descreva o que precisa mudar.".into())),
+            // Só o Implementador recebe os prints: quem vem depois precisa saber que o ajuste veio só neles.
+            "" => "(só prints do problema, sem texto; o Implementador os recebeu e descreve o que corrigiu)",
+            text => text,
+        };
+        check_images(images)?;
         let stages = self.pipelines.stages(run_id)?;
         let now = self.clock.now();
         let stage = StageRun {
@@ -788,6 +801,8 @@ impl ManagePipelines {
             started_at: now,
             finished_at: Some(now),
         };
+        // As imagens antes da etapa: um ajuste gravado sem os prints seguiria sem eles.
+        self.pipelines.save_images(&feedback_images_key(run_id, &stage.id), images)?;
         self.pipelines.save_stage(&stage)?;
         // O ajuste ganha tempo próprio: a folga conta a partir do que já foi gasto, para que o
         // orçamento não acabe no meio do ciclo (ex.: depois do Implementador, antes do Revisor).
@@ -869,6 +884,35 @@ impl ManagePipelines {
     fn get(&self, id: &str) -> AppResult<PipelineRun> {
         self.pipelines.run(id)?.ok_or_else(|| AppError("Execução não encontrada.".into()))
     }
+}
+
+/// Recusa imagens além do limite de quantidade ou de tamanho.
+fn check_images(images: &[Attachment]) -> AppResult<()> {
+    if images.len() > MAX_IMAGES {
+        return Err(AppError(format!("Cole no máximo {MAX_IMAGES} imagens.")));
+    }
+    // Base64: 4 caracteres para cada 3 bytes.
+    if images.iter().any(|i| i.data.len() / 4 * 3 > MAX_IMAGE_BYTES) {
+        return Err(AppError(format!("Cada imagem pode ter até {} MB.", MAX_IMAGE_BYTES / (1024 * 1024))));
+    }
+    Ok(())
+}
+
+/// Onde ficam as imagens de um ajuste: junto das da execução, com o id do ajuste depois da barra
+/// (apagar a execução apaga as duas).
+pub fn feedback_images_key(run_id: &str, feedback_stage_id: &str) -> String {
+    format!("{run_id}/{feedback_stage_id}")
+}
+
+/// O último ajuste do usuário, se o Implementador ainda não terminou uma passagem depois dele
+/// (a que falhou ou foi cancelada não conta: ao retomar, os prints vão de novo).
+fn feedback_awaiting_implementer(role: Role, stages: &[StageRun]) -> Option<&str> {
+    if role != Role::Implementer {
+        return None;
+    }
+    let at = stages.iter().rposition(|s| s.role == Role::Feedback)?;
+    let finished = |s: &StageRun| s.role == Role::Implementer && !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled);
+    (!stages[at + 1..].iter().any(finished)).then(|| stages[at].id.as_str())
 }
 
 #[cfg(test)]
@@ -1263,7 +1307,7 @@ mod tests {
         })
         .unwrap();
         let run = uc.start(StartInput { request: "Exportar pedidos em CSV".into(), ..input(None) }).unwrap();
-        assert!(uc.reopen(&run.id, "x").is_err(), "só concluída");
+        assert!(uc.reopen(&run.id, "x", &[]).is_err(), "só concluída");
         uc.advance(&run.id, &Bots::new(vec![Ok("plano")])).await.unwrap();
         uc.decide_plan(&run.id, None).unwrap();
         let first = Bots::new(vec![
@@ -1278,12 +1322,15 @@ mod tests {
         uc.advance(&run.id, &first).await.unwrap();
         assert_eq!(uc.detail(&run.id).unwrap().run.rounds, 1);
 
-        assert!(uc.reopen(&run.id, "  ").is_err());
-        uc.reopen(&run.id, "O botão exporta o arquivo vazio").unwrap();
+        assert!(uc.reopen(&run.id, "  ", &[]).is_err());
+        let print = Attachment { name: "print.png".into(), kind: crate::domain::chat::AttachmentKind::Image, media_type: "image/png".into(), data: "iVBO".into() };
+        uc.reopen(&run.id, "O botão exporta o arquivo vazio", std::slice::from_ref(&print)).unwrap();
         let again = Bots::new(vec![Ok("ajustei"), Ok("VEREDITO: APROVADO"), Ok("VEREDITO: APROVADO"), Ok("```json\n[]\n```"), Ok("Escrevi a Solução na EI-6001\nCOMMIT: y")]);
         uc.advance(&run.id, &again).await.unwrap();
         let prompts = again.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("<ajuste_do_usuario>\nO botão exporta o arquivo vazio") && !prompts[0].contains("falta X"), "o Implementador recebe o ajuste, não a devolução antiga");
+        assert!(prompts[0].contains("anexou ao ajuste 1 imagem"), "o Implementador sabe dos prints do ajuste");
+        assert_eq!(again.images.lock().unwrap()[..2], [1, 0], "o print do ajuste vai só ao Implementador");
         assert!(prompts[1].contains("Ajuste pedido pelo usuário depois de testar: O botão exporta o arquivo vazio"));
         assert!(prompts[3].contains("os caminhos dos arquivos que o Implementador alterou"), "cada reabertura é um ciclo novo, com o seu code review");
         assert!(prompts[4].contains("Escreva na task EI-6001") && prompts[4].contains("não comente") && !prompts[4].contains("crie uma no Jira"), "escreve a Solução na mesma task, sem criar outra");

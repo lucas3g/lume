@@ -796,7 +796,8 @@ impl PipelineRepository for SqliteStore {
     fn delete_run(&self, id: &str) -> AppResult<()> {
         let c = self.conn();
         c.execute("DELETE FROM pipeline_stages WHERE run_id=?", [id])?;
-        c.execute("DELETE FROM pipeline_images WHERE run_id=?", [id])?;
+        // As imagens dos ajustes ficam em "<execução>/<ajuste>".
+        c.execute("DELETE FROM pipeline_images WHERE run_id=? OR substr(run_id, 1, length(?) + 1) = ? || '/'", [id, id, id])?;
         c.execute("DELETE FROM pipeline_runs WHERE id=?", [id])?;
         Ok(())
     }

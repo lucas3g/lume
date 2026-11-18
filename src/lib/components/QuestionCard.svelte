@@ -1,22 +1,23 @@
 <script lang="ts">
-  import type { PermissionRequest } from "../state/chat.svelte";
-  import { parseInput } from "../tools";
+  import type { Question } from "../types";
+  import { isRecommended, withoutRecommended } from "../tools";
 
   interface Props {
-    request: PermissionRequest;
+    questions: Question[];
     onanswer: (answers: [string, string][]) => void;
     oncancel: () => void;
+    title?: string;
+    submitLabel?: string;
+    cancelLabel?: string;
+    /** Deixa enviar com perguntas em branco (a resposta fica vazia para completar depois). */
+    allowPartial?: boolean;
   }
-  let { request, onanswer, oncancel }: Props = $props();
+  let {
+    questions, onanswer, oncancel,
+    title = "O agente precisa da sua resposta", submitLabel = "Responder", cancelLabel = "Não responder", allowPartial = false,
+  }: Props = $props();
 
-  interface Question {
-    question: string;
-    header?: string;
-    multiSelect?: boolean;
-    options: { label: string; description?: string }[];
-  }
 
-  const questions = $derived((parseInput(request.input).questions as Question[] | undefined) ?? []);
   /** Opções marcadas por pergunta, e texto livre ("Outro") por pergunta. */
   let chosen = $state<Record<string, string[]>>({});
   let other = $state<Record<string, string>>({});
@@ -36,7 +37,9 @@
     return [...picked, ...(free ? [free] : [])].join(", ");
   }
 
-  const complete = $derived(questions.length > 0 && questions.every((q) => answerOf(q) !== ""));
+  const complete = $derived(
+    questions.length > 0 && (allowPartial ? questions.some((q) => answerOf(q) !== "") : questions.every((q) => answerOf(q) !== "")),
+  );
 
   function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -45,8 +48,8 @@
   }
 </script>
 
-<form class="card" onsubmit={submit} aria-label="Perguntas do agente">
-  <strong>O agente precisa da sua resposta</strong>
+<form class="card" onsubmit={submit} aria-label={title}>
+  <strong>{title}</strong>
   {#each questions as q (q.question)}
     <fieldset>
       <legend>
@@ -54,23 +57,23 @@
         {q.question}
         {#if q.multiSelect}<span class="muted small">(pode marcar mais de uma)</span>{/if}
       </legend>
-      <div class="options">
+      {#if q.options.length}<div class="options">
         {#each q.options as o (o.label)}
           <label class="option" class:on={(chosen[q.question] ?? []).includes(o.label)}>
             <input type={q.multiSelect ? "checkbox" : "radio"} name={q.question} value={o.label} checked={(chosen[q.question] ?? []).includes(o.label)} onchange={() => toggle(q, o.label)} />
             <span>
-              <span class="label">{o.label}</span>
+              <span class="label">{withoutRecommended(o.label)}{#if isRecommended(o.label)}<span class="tag rec">Recomendado</span>{/if}</span>
               {#if o.description}<span class="muted small">{o.description}</span>{/if}
             </span>
           </label>
         {/each}
-      </div>
-      <input class="input" placeholder="Outra resposta (opcional)" bind:value={other[q.question]} aria-label={`Outra resposta para: ${q.question}`} />
+      </div>{/if}
+      <input class="input" placeholder={q.options.length ? "Outra resposta (opcional)" : "Sua resposta"} bind:value={other[q.question]} aria-label={`Outra resposta para: ${q.question}`} />
     </fieldset>
   {/each}
   <div class="actions">
-    <button type="submit" class="btn primary" disabled={!complete}>Responder</button>
-    <button type="button" class="btn" onclick={oncancel}>Não responder</button>
+    <button type="submit" class="btn primary" disabled={!complete}>{submitLabel}</button>
+    <button type="button" class="btn" onclick={oncancel}>{cancelLabel}</button>
   </div>
 </form>
 
@@ -84,7 +87,8 @@
   .option:hover, .option.on { background: var(--hover); border-color: var(--border-strong); }
   .option input { margin-top: 3px; }
   .option > span { display: flex; flex-direction: column; gap: 2px; }
-  .label { font-weight: 500; }
+  .label { font-weight: 500; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .tag.rec { color: var(--accent, var(--muted)); border-color: currentColor; font-weight: 400; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .actions .btn { min-height: 40px; }
 </style>

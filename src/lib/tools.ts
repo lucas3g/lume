@@ -1,5 +1,7 @@
 // Como apresentar ao usuário o uso de uma ferramenta pelo agente.
 
+import type { Question } from "./types";
+
 export interface ToolUse {
   /** Id da chamada (mensagens antigas não têm). */
   id?: string;
@@ -71,6 +73,25 @@ export function editDiff(input: Record<string, unknown>): { before: string; afte
   }
   if (typeof input.content === "string") return { before: "", after: input.content };
   return null;
+}
+
+const RECOMMENDED_SUFFIX = /\s*\((recomendad[oa]|recommended)\)(?=,|\s*$)/gi;
+
+/** O rótulo traz o sufixo "(Recomendado)" que marca a opção sugerida. */
+export const isRecommended = (label: string) => new RegExp(RECOMMENDED_SUFFIX.source, "i").test(label);
+
+/** Texto sem o sufixo "(Recomendado)" (de um rótulo ou de várias respostas separadas por vírgula). */
+export const withoutRecommended = (text: string) => text.replace(RECOMMENDED_SUFFIX, "");
+
+/** Perguntas de um pedido do AskUserQuestion (vazio se o pedido não traz nenhuma). */
+export function questionsOf(request: { input: string }): Question[] {
+  const list = parseInput(request.input).questions;
+  if (!Array.isArray(list)) return [];
+  // Sem repetição: a pergunta é a chave do formulário (e um each com chave repetida quebra a tela).
+  const seen = new Set<string>();
+  return (list as Question[])
+    .filter((q) => !!q && typeof q === "object" && typeof q.question === "string" && !seen.has(q.question) && !!seen.add(q.question))
+    .map((q) => ({ ...q, options: Array.isArray(q.options) ? q.options.filter((o, i, all) => all.findIndex((x) => x.label === o.label) === i) : [] }));
 }
 
 export function parseInput(json: string): Record<string, unknown> {

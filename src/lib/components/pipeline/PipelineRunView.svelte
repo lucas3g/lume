@@ -3,16 +3,18 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api, errorMessage } from "../../api";
   import { formatTime, fullDate, renderMarkdown } from "../../format";
+  import { addPastedImages, type PreviewImage } from "../../paste";
   import { accounts } from "../../state/accounts.svelte";
   import { chat, decideFor, openConversation, type DecisionExtras } from "../../state/chat.svelte";
   import PermissionCard from "../PermissionCard.svelte";
   import PlanCard from "../PlanCard.svelte";
+  import { questionsOf, withoutRecommended } from "../../tools";
   import QuestionCard from "../QuestionCard.svelte";
   import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines, stageMessages } from "../../state/pipelines.svelte";
   import {
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
-    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, triageQuestions, usageHint, usageText, VISUAL,
+    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, triageQuestions, triageSummary, usageHint, usageText, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
@@ -38,6 +40,14 @@
   /** Reabrir uma execução concluída com um ajuste. */
   let reopening = $state(false);
   let adjustment = $state("");
+  /** Prints colados no ajuste, com a miniatura. */
+  let adjustImages = $state<PreviewImage[]>([]);
+
+  /** Imagens coladas no campo do ajuste viram anexos dele, com miniatura. */
+  async function onAdjustPaste(event: ClipboardEvent) {
+    const added = await addPastedImages(event, adjustImages);
+    if (added) ({ images: adjustImages, error } = added);
+  }
   /** Estação aberta no painel; `follow` acompanha a etapa ativa. */
   let panelRole = $state<PipelineRole | null>(null);
   let panelStageId = $state<string | null>(null);
@@ -239,9 +249,10 @@
     await api.cancelPipeline(detail.id);
   });
   const reopen = () => act(async () => {
-    if (!adjustment.trim()) return;
-    await api.reopenPipeline(detail.id, adjustment.trim());
+    if (!adjustment.trim() && !adjustImages.length) return;
+    await api.reopenPipeline(detail.id, adjustment.trim(), adjustImages.map(({ name, media_type, data }) => ({ name, media_type, data })));
     adjustment = "";
+    adjustImages = [];
     reopening = false;
     committed = false;
     follow = true;
@@ -278,21 +289,26 @@
   const jiraResult = $derived(jiraOutcome(passes.reporter.at(-1)?.output ?? ""));
   const createdTask = $derived(!!detail.jira_key && /TASK_CRIADA:/i.test(passes.reporter.at(-1)?.output ?? ""));
 
-  /** Espaço para responder: cada pergunta da Triagem com a sua linha de resposta. */
-  function answersTemplate(): string {
-    const questions = triageQuestions(passes.triage.at(-1)?.output ?? "");
-    if (!questions.length) return "Respostas às dúvidas da Triagem:\n- ";
-    return `Respostas às dúvidas da Triagem:\n\n${questions.map((q, i) => `${i + 1}. ${q}\n   Resposta: `).join("\n\n")}`;
+  /** Perguntas da última Triagem (com opções, quando ela as trouxe). */
+  const questions = $derived(triageQuestions(passes.triage.at(-1)?.output ?? ""));
+
+  /** Respostas às perguntas da Triagem; sem `answers`, cada pergunta com a sua linha de resposta em branco. */
+  function answersTemplate(answers?: [string, string][]): string {
+    // O "(Recomendado)" do rótulo é só etiqueta da tela; não vai para o pedido.
+    const list: [string, string][] = answers?.map(([q, a]) => [q, withoutRecommended(a)])
+      ?? questions.map((q) => [q.question, ""]);
+    if (!list.length) return "Respostas às dúvidas da Triagem:\n- ";
+    return `Respostas às dúvidas da Triagem:\n\n${list.map(([q, a], i) => `${i + 1}. ${q}\n   Resposta: ${a}`).join("\n\n")}`;
   }
 
-  function complete() {
+  function complete(answers?: [string, string][]) {
     // O pedido volta ao formulário com espaço para responder ao que a Triagem achou vago.
     // A task escolhida segue escolhida; o título igual à chave é o padrão e não precisa voltar.
     const key = detail.jira_key;
     pipelines.draft = {
       projectId: detail.project_id,
       title: key && detail.title === key ? "" : detail.title,
-      request: `${detail.request}\n\n${answersTemplate()}`.trimStart(),
+      request: `${detail.request}\n\n${answersTemplate(answers)}`.trimStart(),
       images: $state.snapshot(images),
       task: key ? { key, site: detail.jira_url?.split("/browse/")[0] ?? null, issue: null } : null,
     };
@@ -476,23 +492,40 @@
             {#if reopening}
               <div class="adjust">
                 <label class="label" for="pl-adjust">O que não funcionou ao testar</label>
-                <textarea id="pl-adjust" class="input area" rows="3" bind:value={adjustment}
-                  placeholder="Ex.: o botão Exportar gera o arquivo vazio quando a conversa tem imagens."
+                <textarea id="pl-adjust" class="input area" rows="3" bind:value={adjustment} onpaste={onAdjustPaste}
+                  placeholder="Ex.: o botão Exportar gera o arquivo vazio quando a conversa tem imagens. Cole prints aqui."
                   onkeydown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && reopen()}></textarea>
+                {#if adjustImages.length}
+                  <div class="thumbs" role="list" aria-label="Prints colados no ajuste">
+                    {#each adjustImages as image, i (i)}
+                      <span class="thumb" role="listitem" title={image.name}>
+                        <img src={image.preview} alt={image.name} />
+                        <button type="button" aria-label={`Remover a imagem ${image.name}`} title={`Remover a imagem ${image.name}`} onclick={() => (adjustImages = adjustImages.filter((_, j) => j !== i))}>×</button>
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
                 <div class="row-w">
-                  <button type="button" class="btn primary small" disabled={busy || !adjustment.trim()} onclick={reopen}>Enviar aos bots</button>
+                  <button type="button" class="btn primary small" disabled={busy || (!adjustment.trim() && !adjustImages.length)} onclick={reopen}>Enviar aos bots</button>
                   <button type="button" class="btn small" onclick={() => (reopening = false)}>Voltar</button>
                 </div>
                 <p class="muted small">
-                  O Implementador corrige a partir do seu texto, o Revisor e o Testador conferem de novo e o Relator atualiza a Solução na
+                  O Implementador corrige a partir do seu texto{adjustImages.length ? " e dos prints" : ""}, o Revisor e o Testador conferem de novo e o Relator atualiza a Solução na
                   {detail.jira_key ? ` mesma task ${detail.jira_key}` : " task do Jira (sem criar outra, se ela já existir)"}.
                 </p>
               </div>
             {/if}
           {:else if detail.status === "needs_info"}
             <div class="o-top"><span class="pill bad">Precisa de informação</span><h2>A Triagem achou a task vaga demais para seguir</h2></div>
-            <div class="o-body md">{@html renderMarkdown(passes.triage.at(-1)?.output ?? "")}</div>
-            <div class="row-w acts"><button type="button" class="btn primary" onclick={complete}>Completar o pedido</button></div>
+            <div class="o-body md">{@html renderMarkdown(triageSummary(passes.triage.at(-1)?.output ?? ""))}</div>
+            {#if questions.length}
+              <div class="o-body">
+                <QuestionCard {questions} title="Responda às dúvidas da Triagem" submitLabel="Completar o pedido" cancelLabel="Escrever do meu jeito" allowPartial
+                  onanswer={(answers) => complete(answers)} oncancel={() => complete()} />
+              </div>
+            {:else}
+              <div class="row-w acts"><button type="button" class="btn primary" onclick={() => complete()}>Completar o pedido</button></div>
+            {/if}
           {:else}
             <div class="o-top"><span class="pill {status.tone}">{status.label}</span><h2>{detail.status === "cancelled" ? "Execução cancelada por você" : "A esteira parou"}</h2></div>
             {#if detail.note}<p class="o-body">{detail.note}</p>{/if}
@@ -570,7 +603,7 @@
                 <p class="ask">{@html icon("you", 13)}<span>A etapa pede sua autorização.</span>
                   <button type="button" class="btn small" onclick={() => openStageConversation(cid)}>Abrir conversa</button></p>
                 {#if panelPermission.tool === "AskUserQuestion"}
-                  <QuestionCard request={panelPermission} onanswer={(answers) => answerStage(cid, true, false, { answers })} oncancel={() => answerStage(cid, false, false)} />
+                  <QuestionCard questions={questionsOf(panelPermission)} onanswer={(answers) => answerStage(cid, true, false, { answers })} oncancel={() => answerStage(cid, false, false)} />
                 {:else if panelPermission.tool === "ExitPlanMode"}
                   <PlanCard request={panelPermission} ondecide={(mode) => (mode ? answerStage(cid, true, false, { nextMode: mode }) : answerStage(cid, false, false))} />
                 {:else}
@@ -724,6 +757,9 @@
   .ap-title { flex: 1 1 300px; min-width: 0; }
   .note { margin-top: 4px; font-size: 12.5px; color: var(--text-2); }
   .adjust { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .adjust .thumbs { margin-bottom: 0; }
+  .adjust .thumb { position: relative; cursor: default; }
+  .adjust .thumb button { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 13px; line-height: 1; }
   .area { width: 100%; min-height: 72px; padding: 9px 11px; resize: vertical; line-height: 1.5; }
   .plan { margin-top: 12px; padding: 14px 16px; max-height: 52vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
 

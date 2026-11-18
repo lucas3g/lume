@@ -831,10 +831,15 @@ pub fn decide_pipeline_review(app: App<'_>, id: String, picks: Vec<ReviewPick>, 
     Ok(())
 }
 
-/// Reabre uma execução concluída com o ajuste que o usuário encontrou ao testar.
+/// Reabre uma execução concluída com o ajuste que o usuário encontrou ao testar (texto e prints).
 #[tauri::command]
-pub fn reopen_pipeline(app: App<'_>, id: String, feedback: String) -> AppResult<()> {
-    app.pipelines.reopen(&id, &feedback)?;
+pub fn reopen_pipeline(app: App<'_>, id: String, feedback: String, images: Option<Vec<PastedImage>>) -> AppResult<()> {
+    let images: Vec<Attachment> = images
+        .unwrap_or_default()
+        .into_iter()
+        .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
+        .collect();
+    app.pipelines.reopen(&id, &feedback, &images)?;
     app.spawn_pipeline(id);
     Ok(())
 }

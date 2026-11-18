@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { pastedImageFiles, readPastedImage, type PreviewImage } from "../paste";
+  import { addPastedImages, type PreviewImage } from "../paste";
   import { api, errorMessage } from "../api";
   import PipelineRunView from "../components/pipeline/PipelineRunView.svelte";
   import PipelineModelsCard from "../components/pipeline/PipelineModelsCard.svelte";
@@ -44,25 +44,11 @@
   let config = $state<PipelineConfig | null>(null);
   /** Imagens coladas na descrição, com a miniatura (data URL). */
   let images = $state<PreviewImage[]>([]);
-  const MAX_IMAGES = 8;
-  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
   /** Imagens coladas no campo viram anexos do pedido, com miniatura. */
   async function onPaste(event: ClipboardEvent) {
-    const files = pastedImageFiles(event);
-    if (!files.length) return;
-    error = null;
-    for (const file of files) {
-      if (images.length >= MAX_IMAGES) {
-        error = `Cole no máximo ${MAX_IMAGES} imagens.`;
-        break;
-      }
-      if (file.size > MAX_IMAGE_BYTES) {
-        error = "Cada imagem pode ter até 5 MB.";
-        continue;
-      }
-      images = [...images, await readPastedImage(file)];
-    }
+    const added = await addPastedImages(event, images);
+    if (added) ({ images, error } = added);
   }
 
   const withFolder = $derived(projects.list.filter((p) => p.folder));

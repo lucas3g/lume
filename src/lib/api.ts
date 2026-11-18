@@ -118,7 +118,7 @@ export const api = {
   pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),
   decidePipelinePlan: (id: string, feedback: string | null) => invoke<void>("decide_pipeline_plan", { id, feedback }),
   decidePipelineReview: (id: string, picks: ReviewPick[], note: string | null) => invoke<void>("decide_pipeline_review", { id, picks, note }),
-  reopenPipeline: (id: string, feedback: string) => invoke<void>("reopen_pipeline", { id, feedback }),
+  reopenPipeline: (id: string, feedback: string, images: PastedImage[] = []) => invoke<void>("reopen_pipeline", { id, feedback, images }),
   cancelPipeline: (id: string) => invoke<void>("cancel_pipeline", { id }),
   retryPipeline: (id: string) => invoke<void>("retry_pipeline", { id }),
   commitPipeline: (id: string, message: string) => invoke<void>("commit_pipeline", { id, message }),

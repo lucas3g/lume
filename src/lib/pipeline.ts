@@ -2,7 +2,7 @@
 
 import { parseToolUse, summarize } from "./tools";
 import { modelLabel } from "./types";
-import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, ReviewFinding, StageRun, TokenUsage } from "./types";
+import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, Question, ReviewFinding, StageRun, TokenUsage } from "./types";
 
 export interface Station {
   role: PipelineRole;
@@ -135,11 +135,63 @@ function lastJsonBlock(text: string): string | null {
 
 const LIST_ITEM = /^(\s*)(?:[-*+]|\d+[.)])\s+/;
 
+/** Perguntas com opções do último bloco ```json da Triagem; `null` sem bloco válido. */
+function triageJsonQuestions(text: string): Question[] | null {
+  const block = lastJsonBlock(text);
+  if (block === null) return null;
+  let items: unknown;
+  try {
+    items = JSON.parse(block.trim());
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(items)) return null;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const out: Question[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const q = item as Record<string, unknown>;
+    const question = str(q.question);
+    if (!question || out.some((o) => o.question === question)) continue;
+    const seen = new Set<string>();
+    const options = (Array.isArray(q.options) ? q.options : [])
+      .map((o: unknown) => {
+        if (typeof o === "string") return { label: o.trim() };
+        const r = (o ?? {}) as Record<string, unknown>;
+        return { label: str(r.label), description: str(r.description) || undefined };
+      })
+      .filter((o) => {
+        if (!o.label || seen.has(o.label)) return false;
+        seen.add(o.label);
+        return true;
+      });
+    out.push({ question, header: str(q.header) || undefined, multiSelect: q.multiSelect === true, options });
+  }
+  return out.length ? out : null;
+}
+
 /**
- * Perguntas que a Triagem deixou para o usuário quando achou a task vaga: os itens do bloco `PERGUNTAS:`;
- * sem o bloco (respostas antigas), as linhas que terminam em interrogação.
+ * Perguntas que a Triagem deixou para o usuário quando achou a task vaga: as do bloco ```json, com opções;
+ * sem ele (respostas antigas), os itens do bloco `PERGUNTAS:` ou as linhas que terminam em interrogação, só com
+ * o campo livre.
  */
-export function triageQuestions(text: string): string[] {
+export function triageQuestions(text: string): Question[] {
+  const structured = triageJsonQuestions(text);
+  if (structured) return structured;
+  // Sem repetição: a pergunta é a chave do formulário.
+  return [...new Set(triageListQuestions(text))].map((question) => ({ question, options: [] }));
+}
+
+/** Análise da Triagem sem o bloco ```json das perguntas (que a tela mostra como formulário). */
+export function triageSummary(text: string): string {
+  if (!triageJsonQuestions(text)) return text;
+  const start = text.lastIndexOf(JSON_FENCE);
+  const end = text.indexOf("```", start + JSON_FENCE.length);
+  const before = text.slice(0, start).replace(/(^|\n)\W*perguntas\W*:?\W*\s*$/i, "\n");
+  return `${before.trimEnd()}\n\n${end < 0 ? "" : text.slice(end + 3).trim()}`.trim();
+}
+
+function triageListQuestions(text: string): string[] {
   const clean = (line: string) => line.replace(LIST_ITEM, "").replace(/^>\s*/, "").replace(/\*\*/g, "").trim();
   const lines = text.split("\n");
   // O bloco fica logo antes do veredito: vale o último cabeçalho `PERGUNTAS:` do texto.

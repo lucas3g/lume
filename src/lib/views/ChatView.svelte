@@ -12,6 +12,7 @@
   import TerminalPanel from "../components/panel/TerminalPanel.svelte";
   import PermissionCard from "../components/PermissionCard.svelte";
   import PlanCard from "../components/PlanCard.svelte";
+  import { questionsOf } from "../tools";
   import QuestionCard from "../components/QuestionCard.svelte";
   import CodeView from "../components/CodeView.svelte";
   import SubagentPanel from "../components/SubagentPanel.svelte";
@@ -623,7 +624,7 @@
         {/each}
 
         {#if permission?.tool === "AskUserQuestion"}
-          <QuestionCard request={permission} onanswer={(answers) => decide(true, false, { answers })} oncancel={() => decide(false, false)} />
+          <QuestionCard questions={questionsOf(permission)} onanswer={(answers) => decide(true, false, { answers })} oncancel={() => decide(false, false)} />
         {:else if permission?.tool === "ExitPlanMode"}
           <PlanCard request={permission} ondecide={(mode) => (mode ? decide(true, false, { nextMode: mode }) : decide(false, false))} />
         {:else if permission}

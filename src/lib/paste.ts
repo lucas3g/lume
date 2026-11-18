@@ -26,3 +26,33 @@ export async function readPastedImage(file: File): Promise<PreviewImage> {
   pasteCount += 1;
   return { name: file.name || `imagem-${pasteCount}.${ext}`, media_type: file.type, data: preview.split(",")[1] ?? "", preview };
 }
+
+/** Limites das imagens de um pedido à esteira (os mesmos do backend). */
+export const MAX_PIPELINE_IMAGES = 8;
+const MAX_PIPELINE_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Junta as imagens coladas às que já estavam, dentro dos limites da esteira; `error` diz o que ficou de fora.
+ * Sem imagem na colagem, devolve `null` (o campo recebe o texto normalmente).
+ */
+export async function addPastedImages(
+  event: ClipboardEvent,
+  current: PreviewImage[],
+): Promise<{ images: PreviewImage[]; error: string | null } | null> {
+  const files = pastedImageFiles(event);
+  if (!files.length) return null;
+  const images = [...current];
+  let error: string | null = null;
+  for (const file of files) {
+    if (images.length >= MAX_PIPELINE_IMAGES) {
+      error = `Cole no máximo ${MAX_PIPELINE_IMAGES} imagens.`;
+      break;
+    }
+    if (file.size > MAX_PIPELINE_IMAGE_BYTES) {
+      error = "Cada imagem pode ter até 5 MB.";
+      continue;
+    }
+    images.push(await readPastedImage(file));
+  }
+  return { images, error };
+}
