@@ -1,6 +1,6 @@
 [package]
 name = "lume"
-version = "0.2.0"
+version = "0.2.1"
 description = "Cliente desktop do Claude com várias contas"
 authors = ["you"]
 edition = "2024"
