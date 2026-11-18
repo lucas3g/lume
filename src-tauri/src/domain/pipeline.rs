@@ -674,23 +674,31 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             adjustment(ctx)
         ),
         Role::CodeReview => {
-            let level = run.efforts.get(&Role::CodeReview).map(|e| format!(" (argumento `{e}`)")).unwrap_or_default();
-            // Sem git, a skill (que lê o diff) não vê nada: a revisão é feita nos arquivos citados.
-            let how = match run.mode {
-                WorkMode::Worktree => format!(
-                    "Rode a skill de code review do CLI: chame a ferramenta Skill com a skill `code-review`{level} para revisar as \
-                     alterações ainda não commitadas da pasta de trabalho. Se a skill não existir neste CLI, revise você mesmo \
-                     essas alterações,"
+            // O nível de esforço escolhido para a etapa vai como primeiro argumento da skill.
+            let level = run.efforts.get(&Role::CodeReview).map(|e| format!("{e} ")).unwrap_or_default();
+            // A skill revisa o diff; sem git não há diff, então ela recebe os arquivos alterados como alvo.
+            let diff = "Sem alvo, ela revisa as alterações ainda não commitadas da pasta de trabalho, que são o que deve ser revisado.";
+            let (args, target) = match run.mode {
+                WorkMode::Worktree if level.is_empty() => ("sem `args`".to_owned(), diff),
+                WorkMode::Worktree => (format!("`args: \"{}\"`", level.trim_end()), diff),
+                WorkMode::Direct => (
+                    format!("`args: \"{level}<caminhos dos arquivos alterados>\"`"),
+                    "A pasta não tem git, então não há diff: passe como alvo, depois do nível, os caminhos dos arquivos que o \
+                     Implementador alterou, tirados do resumo abaixo.",
                 ),
-                WorkMode::Direct => "A pasta não tem git, então não há diff para a skill de code review: revise você mesmo os arquivos citados no resumo do Implementador,"
-                    .to_owned(),
             };
             format!(
                 "Objetivo da task: {}\n{}<resumo_da_implementacao>\n{}\n</resumo_da_implementacao>\n\n\
-                 {how} procurando bugs de correção, casos não tratados e problemas de segurança. Não altere nada: quem decide o que \
-                 corrigir é o usuário.\n\
-                 Responda com um resumo curto e termine com um bloco ```json com a lista dos achados que valem correção \
-                 (ignore gosto pessoal), do mais grave ao menos grave:\n\
+                 Seu trabalho é rodar a skill `code-review` do CLI e me devolver os erros que ela encontrar.\n\
+                 1. Antes de qualquer outra coisa, chame a ferramenta Skill com `skill: \"code-review\"` e {args}. {target} \
+                 Não passe `--fix` nem `--comment`: nada pode ser alterado nem publicado, quem decide o que corrigir é o usuário. \
+                 Não revise por conta própria no lugar da skill.\n\
+                 2. Siga as instruções da skill até o fim e junte todos os achados que ela reportar, inclusive os entregues pela \
+                 ferramenta ReportFindings, sem descartar nenhum e sem inventar outros.\n\
+                 3. Só se a ferramenta Skill não tiver a skill `code-review`, diga isso na primeira linha da resposta e revise você \
+                 mesmo as alterações, procurando bugs de correção, casos não tratados e problemas de segurança.\n\
+                 Responda com um resumo curto do que a skill encontrou e termine com um bloco ```json com a lista dos achados, do \
+                 mais grave ao menos grave:\n\
                  [{{\"id\": \"A1\", \"title\": \"o problema em uma frase\", \"file\": \"src/arquivo.ts\", \"line\": 42, \
                  \"severity\": \"alta\", \"detail\": \"o cenário em que falha e a correção\", \"options\": []}}]\n\
                  `severity` é \"alta\", \"média\" ou \"baixa\". Use `options` só quando a correção depende de uma decisão do \

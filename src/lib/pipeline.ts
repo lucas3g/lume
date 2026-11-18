@@ -37,7 +37,7 @@ export const STATIONS: Station[] = [
     does: "Roda as verificações do projeto (tipos, testes, lint) e relata o resultado. Não corrige código.",
     receives: "A pasta de trabalho com as alterações aprovadas.", delivers: "Cada comando rodado, o resultado e os erros." },
   { role: "code_review", name: "Code review", model: "Modelo forte", tier: "strong", perm: "só leitura",
-    does: "Roda a skill de code review do CLI e lista os achados. Você escolhe o que corrigir e decide os que têm mais de um caminho.",
+    does: "Sempre roda a skill code-review do CLI (sem projeto versionado, nos arquivos alterados) e lista todos os achados dela. Você escolhe o que corrigir e decide os que têm mais de um caminho.",
     receives: "As alterações aprovadas e testadas.", delivers: "Os achados, com a gravidade e, quando há, os caminhos possíveis." },
   { role: "reporter", name: "Relator", model: "Modelo rápido", tier: "fast", perm: "Jira",
     does: "Comenta o resultado na task, move para revisão e sugere a mensagem de commit. Não faz commit nem push.",

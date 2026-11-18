@@ -919,7 +919,7 @@ mod tests {
         uc.advance(&run.id, &bots).await.unwrap();
         let prompts = bots.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("plano com CSV") && prompts[2].contains("falta tratar erro"));
-        assert!(prompts[5].contains("skill `code-review`"), "o Code review roda a skill do CLI");
+        assert!(prompts[5].contains("chame a ferramenta Skill com `skill: \"code-review\"`") && prompts[5].contains("Não passe `--fix`"), "o Code review roda a skill do CLI, sem alterar nada");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!(detail.run.status, RunStatus::AwaitingChoice);
         let choice = detail.stages.last().unwrap();
@@ -1085,7 +1085,7 @@ mod tests {
         let prompts = again.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("<ajuste_do_usuario>\nO botão exporta o arquivo vazio") && !prompts[0].contains("falta X"), "o Implementador recebe o ajuste, não a devolução antiga");
         assert!(prompts[1].contains("Ajuste pedido pelo usuário depois de testar: O botão exporta o arquivo vazio"));
-        assert!(prompts[3].contains("revise você mesmo os arquivos citados"), "cada reabertura é um ciclo novo, com o seu code review");
+        assert!(prompts[3].contains("os caminhos dos arquivos que o Implementador alterou"), "cada reabertura é um ciclo novo, com o seu code review");
         assert!(prompts[4].contains("Comente na task EI-6001") && !prompts[4].contains("crie uma no Jira"), "não cria outra task");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!((detail.run.status, detail.run.rounds, detail.run.jira_key.as_deref()), (RunStatus::Done, 0, Some("EI-6001")));
