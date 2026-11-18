@@ -334,6 +334,17 @@ export function inputSummary(stage: StageRun, detail: PipelineDetail): string {
 
 const VERDICT_LINE = /^\W*VEREDITO\W.*$/im;
 
+/** O que o Relator diz que fez no Jira: a linha `JIRA:` e, se a criação falhou, o motivo de `TASK_CRIADA: nenhuma`. */
+export function jiraOutcome(report: string): { failed: boolean; text: string } | null {
+  const line = (tag: string) =>
+    report.split("\n").map((l) => l.trim().replace(/^[*`_ ]+|[*`_ ]+$/g, "")).findLast((l) => l.toUpperCase().startsWith(tag))?.slice(tag.length).trim();
+  const created = line("TASK_CRIADA:");
+  if (created && /^nenhuma\b/i.test(created)) return { failed: true, text: created.replace(/^nenhuma\s*/i, "").replace(/^\((.*)\)$/, "$1") || "sem motivo informado" };
+  const jira = line("JIRA:");
+  if (!jira) return null;
+  return /^falhou\b/i.test(jira) ? { failed: true, text: jira.replace(/^falhou\s*/i, "").replace(/^\((.*)\)$/, "$1") || "sem motivo informado" } : { failed: false, text: jira };
+}
+
 /** A entrega da etapa em poucas palavras: o veredito ou a primeira linha com conteúdo. */
 export function outputSummary(stage: StageRun): string {
   if (stage.status === "running") return isUserStep(stage.role) ? "esperando você" : "trabalhando…";

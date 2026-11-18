@@ -715,25 +715,38 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 Some(f) => format!("Esta é uma rodada de ajuste pedida pelo usuário depois da entrega ({f}). O relatório e o comentário falam do que foi ajustado.\n"),
                 None => String::new(),
             };
+            // A task vai para teste (é o que vem depois da entrega no quadro); sem esse status, para revisão.
+            let to_test = "mova a task para o status de teste: veja as transições disponíveis da task e use a que leva a \
+                \"Teste\", \"Em teste\", \"Testes\" ou \"QA\"; só se não houver nenhuma de teste, use a de revisão (ex.: \
+                \"Em revisão\", \"Code review\"). Não feche a task.";
+            let outcome = "Antes da linha do commit, escreva `JIRA: <o que foi feito na task: comentário e status novo>`, ou \
+                `JIRA: falhou (<o que deu errado>)` se não houver acesso ao Jira ou o comentário ou a transição falhar.";
             let jira = match &run.jira_key {
                 Some(key) => format!(
-                    "Comente na task {key} do Jira (conector do Atlassian) um relatório curto do que foi feito e, se existir \
-                     uma transição para revisão (ex.: \"Em revisão\", \"Code review\"), mova a task para ela. Não feche a task."
+                    "Comente na task {key} do Jira (conector do Atlassian) um relatório do que foi feito: o que mudou, os arquivos \
+                     principais, como foi verificado e o que ficou pendente. Depois, {to_test}\n{outcome}"
                 ),
-                None => match &run.jira_template {
-                    Some(template) => format!(
-                        "Não há task do Jira para este pedido: crie uma no Jira com o conector do Atlassian, seguindo o modelo \
-                         {template}. Leia o modelo e use o mesmo projeto, o mesmo tipo de issue e os mesmos valores dos campos \
+                None => {
+                    // Sem modelo configurado (o padrão fica salvo só no computador em que foi preenchido), a task
+                    // mais recente do usuário serve de modelo: o mesmo projeto e tipo em que ele trabalha.
+                    let model = match &run.jira_template {
+                        Some(template) => format!("seguindo o modelo {template}. Leia o modelo e use"),
+                        None => "usando como modelo a task mais recente do usuário: busque com JQL \
+                                 `assignee = currentUser() ORDER BY updated DESC` (sem resultado, `reporter = currentUser() ORDER BY \
+                                 updated DESC`), leia a primeira e use"
+                            .to_owned(),
+                    };
+                    format!(
+                        "Não há task do Jira para este pedido: crie uma no Jira com o conector do Atlassian, {model} o mesmo projeto, o mesmo tipo de issue e os mesmos valores dos campos \
                          personalizados (ex.: Sistema, Nível de dificuldade). O resumo é o título do pedido. A descrição segue \
                          exatamente os itens da descrição do modelo, na mesma ordem: preencha cada um com o que se sabe pelo \
                          pedido, pelo plano, pela implementação e pelos testes (ex.: Descrição/Problema, Solução, Testes, Caminho, \
                          Módulo). O que não se sabe (ex.: cliente, gestor, responsável), escreva \"Não informado\": nunca invente. \
-                         Depois de criar, se existir uma transição para revisão, mova a task para ela.\n\
+                         Depois de criar, {to_test}\n\
                          Antes da linha do commit, escreva `TASK_CRIADA: <link completo da task criada>`, ou \
-                         `TASK_CRIADA: nenhuma (<motivo>)` se não houver acesso ao Jira ou a criação falhar."
-                    ),
-                    None => "Não há task do Jira para comentar.".to_owned(),
-                },
+                         `TASK_CRIADA: nenhuma (<motivo>)` se não houver acesso ao Jira ou a criação falhar.\n{outcome}"
+                    )
+                }
             };
             format!(
                 "{task}\n{round}<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n{}\n\
@@ -1404,7 +1417,9 @@ mod tests {
         let with_template = PipelineRun { jira_template: template.clone(), ..run(WorkMode::Direct, None) };
         let prompt = stage_prompt(Role::Reporter, &with_template, &StageContext::default());
         assert!(prompt.contains("seguindo o modelo https://elinfo.atlassian.net/browse/EI-5198") && prompt.contains("Não informado"));
-        assert!(stage_prompt(Role::Reporter, &run(WorkMode::Direct, None), &StageContext::default()).contains("Não há task do Jira para comentar"));
+        let no_model = stage_prompt(Role::Reporter, &run(WorkMode::Direct, None), &StageContext::default());
+        assert!(no_model.contains("crie uma no Jira") && no_model.contains("assignee = currentUser()"), "sem modelo, a task mais recente do usuário serve de modelo");
+        assert!(no_model.contains("\"Teste\"") && no_model.contains("JIRA: falhou"), "a task vai para teste e o resultado no Jira é relatado");
         let found = PipelineRun { jira_template: template, ..run(WorkMode::Direct, Some("EI-7")) };
         assert!(stage_prompt(Role::Reporter, &found, &StageContext::default()).contains("Comente na task EI-7"));
 

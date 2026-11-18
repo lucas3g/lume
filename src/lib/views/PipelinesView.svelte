@@ -238,7 +238,7 @@
               {:else if config?.jira_template || config?.default_jira_template}
                 No fim, o Relator cria uma task no Jira pelo modelo {config.jira_template ? "do projeto" : "padrão"} e mostra o link.
               {:else if config}
-                <span class="warn-text">Nenhuma task vai ser criada no Jira: preencha o modelo de task do Jira na esteira do projeto ou o modelo padrão em Configurações.</span>
+                No fim, o Relator cria uma task no Jira usando como modelo a sua task mais recente (sem modelo no projeto nem em Configurações) e mostra o link.
               {/if}
             {/if}
           </p>

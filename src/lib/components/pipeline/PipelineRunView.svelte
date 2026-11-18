@@ -11,7 +11,7 @@
   import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
-    choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
+    choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, triageQuestions, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
@@ -275,6 +275,7 @@
   const imageSrc = (i: PastedImage) => `data:${i.media_type};base64,${i.data}`;
 
   /** A task foi criada pelo Relator (a execução começou sem task). */
+  const jiraResult = $derived(jiraOutcome(passes.reporter.at(-1)?.output ?? ""));
   const createdTask = $derived(!!detail.jira_key && /TASK_CRIADA:/i.test(passes.reporter.at(-1)?.output ?? ""));
 
   /** Espaço para responder: cada pergunta da Triagem com a sua linha de resposta. */
@@ -445,10 +446,9 @@
                   {createdTask ? "Task criada no Jira pelo Relator:" : "Task do Jira comentada pelo Relator:"}
                   {#if detail.jira_url}<button type="button" class="lnk inline" onclick={() => openUrl(detail.jira_url!)}>{detail.jira_key} ↗</button>{:else}<b>{detail.jira_key}</b>{/if}
                 </li>
-              {:else if detail.jira_template && !detail.skipped.includes("reporter")}
-                <li class="warn-text">O Relator não criou a task no Jira; veja o motivo no relatório dele.</li>
+                {#if jiraResult}<li class:warn-text={jiraResult.failed}>{jiraResult.failed ? `Falhou no Jira: ${jiraResult.text}` : `No Jira: ${jiraResult.text}`}</li>{/if}
               {:else if !detail.skipped.includes("reporter")}
-                <li class="warn-text">Nenhuma task criada no Jira: sem task escolhida e sem modelo de task (do projeto ou padrão) quando a execução começou.</li>
+                <li class="warn-text">O Relator não criou a task no Jira{jiraResult?.failed ? `: ${jiraResult.text}` : "; veja o motivo no relatório dele"}.</li>
               {/if}
             </ul>
             {#if detail.mode === "worktree"}

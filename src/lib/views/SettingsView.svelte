@@ -106,7 +106,7 @@
           <span class="muted small">
             Vale para todos os projetos sem modelo próprio (o de cada projeto fica na tela do projeto). Quando a execução começa sem task
             escolhida, o Relator cria uma no fim copiando o projeto, o tipo, os campos e a estrutura da descrição deste modelo. Vazio no
-            projeto e aqui: nenhuma task é criada.
+            projeto e aqui, o modelo é a sua task mais recente no Jira. Este campo fica salvo só neste computador.
           </span>
         </label>
         <input id="default-jira-template" class="input tpl" bind:value={template} placeholder="https://empresa.atlassian.net/browse/EI-5198"
