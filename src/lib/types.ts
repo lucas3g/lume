@@ -399,7 +399,7 @@ export const SCOPE_ALL = "all";
 // ---- esteira de bots
 
 export type PipelineRole =
-  | "triage" | "designer" | "design_approval" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "code_review" | "reporter" | "feedback" | "review_choice";
+  | "triage" | "designer" | "design_approval" | "planner" | "approval" | "implementer" | "reviewer" | "tester" | "code_review" | "reporter" | "feedback" | "review_choice" | "resume";
 export type PipelineStatus = "running" | "awaiting_approval" | "awaiting_choice" | "needs_info" | "done" | "failed" | "cancelled";
 
 /** Achado do code review, para você escolher o que corrigir. */

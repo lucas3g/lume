@@ -16,7 +16,7 @@ use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
         suggested_commit, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -620,7 +620,26 @@ impl ManagePipelines {
         if !matches!(run.status, RunStatus::Failed | RunStatus::Cancelled) {
             return Err(AppError("Só dá para retomar uma execução que falhou ou foi cancelada.".into()));
         }
-        let stages = self.pipelines.stages(run_id)?;
+        let mut stages = self.pipelines.stages(run_id)?;
+        if hit_round_limit(&stages) {
+            // Parou no limite de voltas: retomar zera a contagem e devolve o trabalho ao Implementador.
+            let now = self.clock.now();
+            let stage = StageRun {
+                id: self.ids.new_id(),
+                run_id: run.id.clone(),
+                role: Role::Resume,
+                round: 0,
+                status: StageStatus::Done,
+                conversation_id: String::new(),
+                input: String::new(),
+                output: Some(format!("Você retomou depois de {MAX_ROUNDS} voltas; a contagem recomeça.")),
+                started_at: now,
+                finished_at: Some(now),
+            };
+            self.pipelines.save_stage(&stage)?;
+            stages.push(stage);
+            run.rounds = 0;
+        }
         if matches!(next_step(&stages, &run.skipped), Next::Finish(..)) {
             return Err(AppError("Esta execução já chegou ao fim da sequência; comece uma nova.".into()));
         }
@@ -1072,6 +1091,31 @@ mod tests {
         assert_eq!((detail.run.status, detail.run.rounds, detail.run.jira_key.as_deref()), (RunStatus::Done, 0, Some("EI-6001")));
         let implementer_rounds: Vec<i64> = detail.stages.iter().filter(|s| s.role == Role::Implementer).map(|s| s.round).collect();
         assert_eq!(implementer_rounds, [0, 1, 0], "a reabertura recomeça a contagem de voltas");
+    }
+
+    #[tokio::test]
+    async fn run_stopped_at_the_round_limit_resumes_with_the_rounds_reset() {
+        let (_world, uc, _vcs) = setup(false);
+        uc.save_config("p1", PipelineConfig { skipped: vec![Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter], ..Default::default() }).unwrap();
+        let run = uc.start(StartInput { request: "Exportar pedidos em CSV".into(), ..input(None) }).unwrap();
+        uc.advance(&run.id, &Bots::new(vec![Ok("plano")])).await.unwrap();
+        uc.decide_plan(&run.id, None).unwrap();
+        let mut replies = Vec::new();
+        for i in 0..=MAX_ROUNDS {
+            replies.push(Ok("fiz"));
+            replies.push(Ok(if i == MAX_ROUNDS { "falta Y\nVEREDITO: DEVOLVIDO" } else { "falta X\nVEREDITO: DEVOLVIDO" }));
+        }
+        uc.advance(&run.id, &Bots::new(replies)).await.unwrap();
+        let stopped = uc.detail(&run.id).unwrap().run;
+        assert_eq!((stopped.status, stopped.rounds), (RunStatus::Failed, MAX_ROUNDS));
+
+        uc.retry(&run.id).unwrap();
+        let bots = Bots::new(vec![Ok("corrigi Y"), Ok("VEREDITO: APROVADO")]);
+        uc.advance(&run.id, &bots).await.unwrap();
+        assert!(bots.prompts.lock().unwrap()[0].contains("falta Y"), "o Implementador recebe a última devolução");
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 0));
+        assert!(detail.stages.iter().any(|s| s.role == Role::Resume));
     }
 
     #[tokio::test]

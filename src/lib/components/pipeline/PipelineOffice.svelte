@@ -3,7 +3,7 @@
   import "../../office/office.css";
   import { officeClock } from "../../office/clock";
   import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, officeVisit, spritesSvg, type OfficeScene } from "../../office/scene";
-  import { isUserStep, passesByRole, passLabel, stationPasses, stationRole, STATIONS } from "../../pipeline";
+  import { isMarker, isUserStep, passesByRole, passLabel, stationPasses, stationRole, STATIONS } from "../../pipeline";
   import { chat } from "../../state/chat.svelte";
   import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
@@ -33,8 +33,8 @@
   const cards = $derived(stationCards(detail, null, passes));
   const times = $derived(Object.fromEntries(ORDER.map((role) => [role, stationTime(stationPasses(detail, role), now)])) as Record<string, string>);
 
-  /** A pasta fica na mesa da etapa mais recente; o ajuste sozinho não é mesa. */
-  const lastStation = $derived(detail.stages.filter((s) => s.role !== "feedback").at(-1));
+  /** A pasta fica na mesa da etapa mais recente; o ajuste e a retomada não são mesa. */
+  const lastStation = $derived(detail.stages.filter((s) => !isMarker(s.role)).at(-1));
 
   // ---- viagem da pasta: quando uma etapa nova começa em outra mesa
 
@@ -58,14 +58,15 @@
     const before = detail.stages[count - 2];
     const latest = detail.stages[count - 1];
     seenCount = count;
-    // O ajuste sozinho não é mesa: a pasta sai quando o Implementador começa.
-    if (latest.role === "feedback") {
+    // O ajuste e a retomada não são mesa: a pasta sai quando o Implementador começa.
+    if (isMarker(latest.role)) {
       seenCount = count - 1;
       return;
     }
     if (!before || indexOf(before.role) === indexOf(latest.role)) return;
     // Reaberta com o seu ajuste: a pasta sai da última mesa que trabalhou antes dele.
-    const source = before.role === "feedback" ? detail.stages.slice(0, count - 2).findLast((s) => s.role !== "feedback") : before;
+    // Retomada no limite de voltas: sai da mesa de quem devolveu.
+    const source = isMarker(before.role) ? detail.stages.slice(0, count - 2).findLast((s) => !isMarker(s.role)) : before;
     const from = indexOf(source?.role);
     if (from < 0 || from === indexOf(latest.role)) return;
     previous = from;

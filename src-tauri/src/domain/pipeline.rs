@@ -38,6 +38,9 @@ pub enum Role {
     /// Parada em que o usuário escolhe quais achados do code review corrigir e decide os que
     /// têm mais de um caminho; não é um bot nem uma estação (aparece na estação do Code review).
     ReviewChoice,
+    /// Você retomou uma execução que parou no limite de voltas: a contagem recomeça e o
+    /// Implementador corrige o que foi devolvido por último. Não é um bot nem uma estação.
+    Resume,
 }
 
 impl Role {
@@ -64,7 +67,7 @@ impl Role {
 
     /// Papéis feitos por bots (que podem ter um agente).
     pub fn is_bot(self) -> bool {
-        !matches!(self, Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice)
+        !matches!(self, Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice | Role::Resume)
     }
 
     pub fn key(self) -> &'static str {
@@ -81,11 +84,12 @@ impl Role {
             Role::Approval => "approval",
             Role::Feedback => "feedback",
             Role::ReviewChoice => "review_choice",
+            Role::Resume => "resume",
         }
     }
 
     pub fn parse(key: &str) -> Option<Role> {
-        Role::ALL.into_iter().chain([Role::Feedback, Role::ReviewChoice]).find(|r| r.key() == key)
+        Role::ALL.into_iter().chain([Role::Feedback, Role::ReviewChoice, Role::Resume]).find(|r| r.key() == key)
     }
 
     pub fn label(self) -> &'static str {
@@ -102,13 +106,14 @@ impl Role {
             Role::Approval => "Sua aprovação",
             Role::Feedback => "Seu ajuste",
             Role::ReviewChoice => "Sua escolha",
+            Role::Resume => "Sua retomada",
         }
     }
 
     /// Nível de modelo do papel: leitura rápida no rápido, raciocínio e código no forte.
     pub fn tier(self) -> Tier {
         match self {
-            Role::Triage | Role::Reporter | Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice => Tier::Fast,
+            Role::Triage | Role::Reporter | Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice | Role::Resume => Tier::Fast,
             Role::Tester => Tier::Balanced,
             Role::Designer | Role::Planner | Role::Implementer | Role::Reviewer | Role::CodeReview => Tier::Strong,
         }
@@ -696,7 +701,7 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 ctx.implementation.as_deref().unwrap_or(""),
             )
         }
-        Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice => String::new(),
+        Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice | Role::Resume => String::new(),
         Role::Reporter => {
             let round = match &ctx.user_feedback {
                 Some(f) => format!("Esta é uma rodada de ajuste pedida pelo usuário depois da entrega ({f}). O relatório e o comentário falam do que foi ajustado.\n"),
@@ -823,17 +828,33 @@ fn effective(stages: &[StageRun]) -> impl Iterator<Item = &StageRun> {
 }
 
 /// Etapas desde o último ajuste pedido pelo usuário (todas, se ele não reabriu a execução):
-/// cada reabertura começa uma contagem de voltas nova.
+/// cada reabertura é um ciclo novo, com code review próprio.
 fn current_cycle(stages: &[StageRun]) -> &[StageRun] {
     let start = stages.iter().rposition(|s| s.role == Role::Feedback).map_or(0, |i| i + 1);
     &stages[start..]
+}
+
+/// Etapas que contam voltas: as do ciclo atual desde a última retomada no limite de voltas.
+/// A retomada zera a contagem, mas não muda de ciclo (o code review feito continua valendo).
+fn counted_rounds(stages: &[StageRun]) -> &[StageRun] {
+    let cycle = current_cycle(stages);
+    let start = cycle.iter().rposition(|s| s.role == Role::Resume).map_or(0, |i| i + 1);
+    &cycle[start..]
+}
+
+/// A execução parou porque o trabalho foi devolvido `MAX_ROUNDS` vezes.
+pub fn hit_round_limit(stages: &[StageRun]) -> bool {
+    effective(stages)
+        .last()
+        .is_some_and(|s| matches!(s.role, Role::Reviewer | Role::Tester) && s.status == StageStatus::Returned)
+        && rounds(stages) >= MAX_ROUNDS
 }
 
 /// Passagens do Implementador que contam (as que falharam ou foram canceladas são refeitas).
 /// A passagem que aplica as correções escolhidas no code review não conta: ela é pedido seu, não
 /// devolução, e não gasta as voltas que o Revisor e o Testador têm.
 pub fn implementer_passes(stages: &[StageRun]) -> i64 {
-    let cycle: Vec<&StageRun> = effective(current_cycle(stages)).collect();
+    let cycle: Vec<&StageRun> = effective(counted_rounds(stages)).collect();
     cycle
         .iter()
         .enumerate()
@@ -877,7 +898,7 @@ pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
         Role::Triage if returned => Next::Finish(RunStatus::NeedsInfo, Some("A Triagem achou a task vaga demais para seguir.".into())),
         Role::Approval if returned => Next::Run(Role::Planner),
         Role::DesignApproval if returned => Next::Run(Role::Designer),
-        Role::Reviewer | Role::Tester if returned && rounds(stages) >= MAX_ROUNDS => Next::Finish(
+        Role::Reviewer | Role::Tester if hit_round_limit(stages) => Next::Finish(
             RunStatus::Failed,
             Some(format!("O trabalho foi devolvido {MAX_ROUNDS} vezes; a esteira parou para você decidir.")),
         ),
@@ -885,6 +906,8 @@ pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
         Role::Reporter => Next::Finish(RunStatus::Done, None),
         // Reaberta com um ajuste: volta ao Implementador, sem replanejar.
         Role::Feedback => Next::Run(Role::Implementer),
+        // Retomada no limite de voltas: o Implementador corrige o que foi devolvido por último.
+        Role::Resume => Next::Run(Role::Implementer),
         // Sem achados, segue direto; com achados (ou resposta sem a lista), o usuário escolhe.
         Role::CodeReview if last.output.as_deref().and_then(parse_findings).is_some_and(|f| f.is_empty()) => {
             forward(Some(Role::CodeReview), skipped, stages)
@@ -900,7 +923,8 @@ pub fn next_step(stages: &[StageRun], skipped: &[Role]) -> Next {
 /// Entradas da próxima etapa, tiradas das saídas mais recentes de cada papel.
 pub fn context_for(stages: &[StageRun]) -> StageContext {
     let latest = |role: Role| effective(stages).filter(|s| s.role == role).last().and_then(|s| s.output.clone());
-    let last = effective(stages).last();
+    // A retomada não apaga a devolução: o Implementador recebe o que o Revisor ou o Testador apontou.
+    let last = effective(stages).filter(|s| s.role != Role::Resume).last();
     let returned_by = |roles: &[Role]| last.filter(|s| s.status == StageStatus::Returned && roles.contains(&s.role)).and_then(|s| s.output.clone());
     StageContext {
         triage: latest(Role::Triage),
@@ -1307,6 +1331,21 @@ mod tests {
             stages.push(stage(Role::Tester, Returned, "falhou"));
         }
         assert!(matches!(next_step(&stages, &Role::OPT_IN), Next::Finish(RunStatus::Failed, Some(_))));
+        assert!(hit_round_limit(&stages));
+        // Retomada: as voltas recomeçam e o Implementador recebe a última devolução.
+        stages.push(stage(Role::Resume, Done, ""));
+        assert!(!hit_round_limit(&stages));
+        assert_eq!((next_step(&stages, &Role::OPT_IN), rounds(&stages)), (Next::Run(Role::Implementer), 0));
+        assert_eq!(context_for(&stages).returned.as_deref(), Some("falhou"));
+        stages.push(stage(Role::Implementer, Done, ""));
+        assert_eq!(context_for(&stages).returned, None);
+        for _ in 0..MAX_ROUNDS {
+            stages.push(stage(Role::Tester, Returned, "falhou"));
+            assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Implementer));
+            stages.push(stage(Role::Implementer, Done, ""));
+        }
+        stages.push(stage(Role::Tester, Returned, "falhou"));
+        assert!(hit_round_limit(&stages), "depois da retomada, mais {MAX_ROUNDS} voltas");
     }
 
     #[test]

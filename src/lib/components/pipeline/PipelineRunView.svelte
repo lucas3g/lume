@@ -11,7 +11,7 @@
   import { projectName, projects } from "../../state/projects.svelte";
   import { loadDetail, loadPipelines, openPipeline, pipelines } from "../../state/pipelines.svelte";
   import {
-    choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
+    choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, triageQuestions, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
@@ -492,7 +492,7 @@
           {:else}
             <div class="o-top"><span class="pill {status.tone}">{status.label}</span><h2>{detail.status === "cancelled" ? "Execução cancelada por você" : "A esteira parou"}</h2></div>
             {#if detail.note}<p class="o-body">{detail.note}</p>{/if}
-            <p class="o-body muted">{detail.mode === "worktree" ? `O que já foi alterado continua na worktree ${detail.branch}.` : "O que já foi alterado continua na pasta de desenvolvimento."} Ao retomar, a etapa que parou roda de novo.</p>
+            <p class="o-body muted">{detail.mode === "worktree" ? `O que já foi alterado continua na worktree ${detail.branch}.` : "O que já foi alterado continua na pasta de desenvolvimento."} {detail.stages.findLast((s) => s.status !== "failed" && s.status !== "cancelled")?.status === "returned" && detail.rounds >= detail.max_rounds ? "Ao retomar, a contagem de voltas recomeça e o Implementador corrige o que foi apontado por último." : "Ao retomar, a etapa que parou roda de novo."}</p>
             <div class="row-w acts"><button type="button" class="btn primary" disabled={busy} onclick={retry}>Retomar execução</button></div>
           {/if}
         </section>
@@ -573,7 +573,7 @@
                 {/if}
               </div>
             {/if}
-            {#if panelStage.role !== "feedback"}
+            {#if !isMarker(panelStage.role)}
             <details class="entry" bind:open={entryOpen}>
               <summary><h3 class="label">Entrada</h3><span class="res">{inputSummary(panelStage, detail)}</span>{@html icon("chev", 13, 2.2)}</summary>
               {#if images.length && ["triage", "designer", "planner", "implementer"].includes(panelStage.role)}
@@ -608,7 +608,7 @@
               </section>
             {/if}
             <section>
-              <h3 class="label">{panelStage.role === "feedback" ? "O que você pediu" : "Saída"}</h3>
+              <h3 class="label">{panelStage.role === "feedback" ? "O que você pediu" : panelStage.role === "resume" ? "O que aconteceu" : "Saída"}</h3>
               {#if panelStage.output}
                 {#if panelStage.status === "failed"}<p class="failed">{panelStage.output}</p>{:else}<div class="md">{@html renderMarkdown(panelStage.output)}</div>{/if}
               {:else}

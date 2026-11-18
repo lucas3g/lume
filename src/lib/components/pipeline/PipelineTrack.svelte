@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { icon, passesByRole, stationPasses, stationRole, STATIONS, VISUAL, type Visual } from "../../pipeline";
+  import { icon, isMarker, passesByRole, stationPasses, stationRole, STATIONS, VISUAL, type Visual } from "../../pipeline";
   import { loadTierModels, stationCards } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
@@ -107,14 +107,15 @@
       return;
     }
     if (count <= seenCount) return;
-    const before = detail.stages[count - 2];
     const latest = detail.stages[count - 1];
     seenCount = count;
-    // O ajuste sozinho não é estação: o pacote sai dele quando o Implementador começa.
-    if (latest.role === "feedback") {
+    // O ajuste e a retomada não são estação: o pacote sai quando o Implementador começa.
+    if (isMarker(latest.role)) {
       seenCount = count - 1;
       return;
     }
+    // Retomada no limite de voltas: o trabalho volta de quem devolveu, pela seta de sempre.
+    const before = detail.stages[count - 2]?.role === "resume" ? detail.stages.slice(0, count - 2).findLast((s) => !isMarker(s.role)) : detail.stages[count - 2];
     // A sua escolha fica na estação do Code review: passar de um para o outro não move o pacote.
     if (!geo.w || (before && stationRole(before.role) === stationRole(latest.role))) return;
     const fromIdx = before ? ORDER.indexOf(stationRole(before.role) ?? before.role) : -1;
@@ -201,7 +202,7 @@
       <path bind:this={movePath} class="hidden-path" d="M0 0" />
     </svg>
     {#if geo.w}
-      {#each [["plan", arcs.plan ? `ajustes ${arcs.plan}` : "ajustes"], ["review", `voltas ${Math.min(arcs.review + arcs.test, detail.max_rounds)}/${detail.max_rounds}`], ["test", "reprova"], ["fix", arcs.fix ? `correções ${arcs.fix}` : "correções"]] as const as [k, text] (k)}
+      {#each [["plan", arcs.plan ? `ajustes ${arcs.plan}` : "ajustes"], ["review", `voltas ${detail.rounds}/${detail.max_rounds}`], ["test", "reprova"], ["fix", arcs.fix ? `correções ${arcs.fix}` : "correções"]] as const as [k, text] (k)}
         {@const p = arcMid(k)}
         <span class="arc-label" class:used={arcs[k] > 0} style:transform={`translate(calc(${f(p.x)}px - 50%), calc(${f(p.y)}px - 50%))`}>{text}</span>
       {/each}

@@ -81,8 +81,18 @@ export const CHOICE_STEP: Station = {
   receives: "Os achados do code review.", delivers: "O que corrigir e como.",
 };
 
+/** Retomada de uma execução que parou no limite de voltas; aparece no registro, não na esteira. */
+export const RESUME_STEP: Station = {
+  role: "resume", name: "Sua retomada", model: null, tier: null, perm: "você retomou", gate: true,
+  does: "O trabalho foi devolvido o máximo de vezes e a esteira parou. Ao retomar, a contagem de voltas recomeça e o Implementador corrige o que foi apontado por último.",
+  receives: "A execução parada no limite de voltas.", delivers: "Voltas zeradas.",
+};
+
 /** Etapas fora da lista de estações: aparecem no registro e na estação indicada por `stationRole`. */
-const EXTRA_STEPS = [DESIGNER_STEP, DESIGN_APPROVAL_STEP, FEEDBACK_STEP, CHOICE_STEP];
+const EXTRA_STEPS = [DESIGNER_STEP, DESIGN_APPROVAL_STEP, FEEDBACK_STEP, CHOICE_STEP, RESUME_STEP];
+
+/** Marcas suas que não são mesa nem estação: o ajuste ao reabrir e a retomada no limite de voltas. */
+export const isMarker = (role: PipelineRole) => role === "feedback" || role === "resume";
 
 export const STATION = Object.fromEntries([...STATIONS, ...EXTRA_STEPS].map((s) => [s.role, s])) as Record<PipelineRole, Station>;
 
@@ -98,7 +108,7 @@ export const stationRole = (role: PipelineRole): PipelineRole | null =>
   role === "review_choice" ? "code_review"
   : role === "designer" ? "planner"
   : role === "design_approval" ? "approval"
-  : role === "feedback" ? null
+  : isMarker(role) ? null
   : role;
 
 const DESIGN_LINK = /https:\/\/claude\.ai\/[\w/.:-]*artifact\/[\w-]{6,}/g;
@@ -253,6 +263,7 @@ export function stageVisual(stage: StageRun, asking: boolean): { visual: Visual;
       return asking ? { visual: "you", label: "Pede autorização" } : { visual: "working", label: "Trabalhando" };
     case "done":
       if (role === "feedback") return { visual: "you", label: "Ajuste pedido" };
+      if (role === "resume") return { visual: "you", label: "Retomada" };
       if (role === "approval" || role === "design_approval") return { visual: "done", label: "Aprovado" };
       if (role === "review_choice") return { visual: "done", label: "Sem correções" };
       if (role === "reviewer" || role === "tester") return { visual: "done", label: "Aprovou" };
@@ -317,6 +328,7 @@ export function inputSummary(stage: StageRun, detail: PipelineDetail): string {
     case "review_choice": return "Achados do code review";
     case "reporter": return stage.input.includes("<code_review>") ? "Plano, implementação, revisão, testes e code review" : "Plano, implementação, revisão e testes";
     case "feedback": return "Seu teste";
+    case "resume": return "Limite de voltas";
   }
 }
 
@@ -329,6 +341,7 @@ export function outputSummary(stage: StageRun): string {
   if (stage.role === "approval" || stage.role === "design_approval") return stage.status === "done" ? "Aprovado por você" : "Ajustes pedidos";
   if (stage.role === "designer" && stage.status === "done") return designUrl(stage.output ?? "") ? "Design publicado" : "Concluída";
   if (stage.role === "feedback") return firstLine(stage.output ?? "") || "Ajuste pedido";
+  if (stage.role === "resume") return "Voltas zeradas por você";
   if (stage.role === "review_choice") return stage.status === "done" ? "Seguir sem correções" : "Correções escolhidas por você";
   if (stage.role === "code_review" && stage.status === "done") {
     const found = findingsIn(stage.output ?? "");
