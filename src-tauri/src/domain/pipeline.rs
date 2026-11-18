@@ -557,6 +557,16 @@ fn design_block(ctx: &StageContext) -> String {
 }
 
 /// Prompt de uma etapa. Cada papel recebe só o que precisa.
+/// A etapa é a primeira a pegar a task do Jira escolhida (a Triagem; desligada ela, o Designer
+/// ou o Planejador): ela move a task de "Selecionado para Desenvolvimento" para "Em andamento".
+pub fn starts_task(role: Role, run: &PipelineRun, ctx: &StageContext) -> bool {
+    run.jira_key.is_some()
+        && matches!(role, Role::Triage | Role::Designer | Role::Planner)
+        && ctx.triage.is_none()
+        && ctx.design.is_none()
+        && ctx.plan.is_none()
+}
+
 pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String {
     let images = match run.image_count {
         n if n > 0 && role.sees_images() => format!("O pedido veio com {n} imagem(ns) anexada(s) a esta mensagem: use-as para entender a task.\n"),
@@ -564,6 +574,14 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
     };
     let header = format!("Você é o {} da esteira de bots do Lume.\n{UNTRUSTED}\n{}\n{images}\n", role.label(), place(run));
     let task = task_block(run);
+    let start = if starts_task(role, run, ctx) {
+        "Antes de tudo, veja o status da task no Jira: se ela estiver em \"Selecionado para Desenvolvimento\" \
+         (\"Selected for Development\"), mova-a para \"Em andamento\" com a transição correspondente, porque a esteira \
+         começou a trabalhar nela. Em qualquer outro status, não mude. Não altere mais nada na task. Diga numa linha da \
+         resposta se moveu ou por que não moveu.\n"
+    } else {
+        ""
+    };
     let body = match role {
         Role::Triage => {
             // Só a task que o usuário escolheu: sem ela, a Triagem nem consulta o Jira.
@@ -763,7 +781,7 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             )
         }
     };
-    format!("{header}{body}")
+    format!("{header}{start}{body}")
 }
 
 /// Chave e, se houver, endereço do site de uma task citada por link
@@ -1354,6 +1372,20 @@ mod tests {
         let prompt = stage_prompt(Role::Planner, &run(WorkMode::Direct, Some("LUME-1")), &StageContext::default());
         assert!(prompt.contains("Não houve triagem") && prompt.contains("conector do Atlassian"));
         assert!(!stage_prompt(Role::Planner, &run(WorkMode::Direct, None), &StageContext::default()).contains("Não houve triagem"));
+    }
+
+    #[test]
+    fn first_stage_with_the_chosen_task_moves_it_to_in_progress() {
+        let with_task = run(WorkMode::Direct, Some("EI-7"));
+        let empty = StageContext::default();
+        assert!(starts_task(Role::Triage, &with_task, &empty));
+        assert!(stage_prompt(Role::Triage, &with_task, &empty).contains("mova-a para \"Em andamento\""));
+        assert!(starts_task(Role::Planner, &with_task, &empty), "sem Triagem, quem move é o Planejador");
+        let triaged = StageContext { triage: Some("ok".into()), ..Default::default() };
+        assert!(!starts_task(Role::Planner, &with_task, &triaged), "depois da Triagem, não move de novo");
+        assert!(!stage_prompt(Role::Planner, &with_task, &triaged).contains("Em andamento"));
+        assert!(!starts_task(Role::Triage, &run(WorkMode::Direct, None), &empty), "sem task escolhida, não mexe no Jira");
+        assert!(!starts_task(Role::Implementer, &with_task, &empty));
     }
 
     #[test]

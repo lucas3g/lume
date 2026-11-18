@@ -16,7 +16,7 @@ use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, next_step, normalize_jira_key, implementer_round, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, starts_task, next_step, normalize_jira_key, implementer_round, rounds, spent_seconds, stage_prompt,
         suggested_commit, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -393,7 +393,8 @@ impl ManagePipelines {
         self.settings.set_flag(&format!("{AUTO_APPROVE_PREFIX}{conversation_id}"), true)?;
         // No ChatGPT ninguém aprova no meio do turno: o Relator, que comenta e muda o status da task,
         // já sai com as pontes do Jira liberadas. Os outros papéis só leem.
-        if role == Role::Reporter {
+        // A primeira etapa a pegar a task escolhida a move para "Em andamento": ela também precisa escrever no Jira.
+        if role == Role::Reporter || starts_task(role, run, &ctx) {
             for bridge in super::extensions::load_bridges(&*self.settings).iter().filter(|b| b.is_jira()) {
                 self.conversations.allow_tool(&conversation_id, &server_rule(&bridge.server_name()))?;
             }

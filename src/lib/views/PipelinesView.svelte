@@ -229,8 +229,8 @@
           <p class="muted small">
             {#if task}
               {config?.skipped.includes("triage")
-                ? `A Triagem está desligada neste projeto: o Planejador lê a ${task.key} no Jira; no fim, o Relator escreve a Solução na descrição dela e a move para Teste.`
-                : `A Triagem lê a ${task.key} no Jira (descrição, critérios de aceite e comentários); no fim, o Relator escreve a Solução na descrição dela e a move para Teste.`}
+                ? `A Triagem está desligada neste projeto: o Planejador lê a ${task.key} no Jira e a move para Em andamento, se estiver selecionada para desenvolvimento; no fim, o Relator escreve a Solução na descrição dela e a move para Teste.`
+                : `A Triagem lê a ${task.key} no Jira (descrição, critérios de aceite e comentários) e a move para Em andamento, se estiver selecionada para desenvolvimento; no fim, o Relator escreve a Solução na descrição dela e a move para Teste.`}
             {:else}
               Sem task escolhida, nenhum bot procura task no Jira: a esteira segue só com a descrição.
               {#if config?.skipped.includes("reporter")}
