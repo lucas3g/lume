@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
   Account, AccountConnector, Agent, ConnectorsElsewhere, JiraBoards, JiraIssueList, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, BotLook, OfficeLooks, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
+  Delivery, GitInfo, MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, BotLook, OfficeLooks, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -121,9 +121,11 @@ export const api = {
   reopenPipeline: (id: string, feedback: string, images: PastedImage[] = []) => invoke<void>("reopen_pipeline", { id, feedback, images }),
   cancelPipeline: (id: string) => invoke<void>("cancel_pipeline", { id }),
   retryPipeline: (id: string) => invoke<void>("retry_pipeline", { id }),
-  commitPipeline: (id: string, message: string) => invoke<void>("commit_pipeline", { id, message }),
+  deliverPipeline: (id: string, kind: Delivery, message: string, push: boolean) =>
+    invoke<PipelineRun>("deliver_pipeline", { id, kind, message, push }),
   deletePipeline: (id: string) => invoke<void>("delete_pipeline", { id }),
-  setProjectVersioned: (id: string, versioned: boolean) => invoke<Project>("set_project_versioned", { id, versioned }),
+  setProjectIsolate: (id: string, isolate: boolean) => invoke<Project>("set_project_isolate", { id, isolate }),
+  projectGitInfo: (id: string) => invoke<GitInfo>("project_git_info", { id }),
   listProjectFiles: (projectId: string) => invoke<ProjectFile[]>("list_project_files", { projectId }),
   addProjectFiles: (projectId: string, paths: string[]) => invoke<void>("add_project_files", { projectId, paths }),
   removeProjectFile: (projectId: string, fileId: string) => invoke<void>("remove_project_file", { projectId, fileId }),

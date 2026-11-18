@@ -17,7 +17,7 @@ use crate::domain::{
     chat::{Attachment, Message, TokenUsage, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, NO_ACCOUNT_CONNECTORS_PREFIX, PIPELINE_STAGE_PREFIX, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
         branch_slug, clip_diff, created_task, is_generated, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, starts_task, next_step, normalize_jira_key, implementer_round, rounds, session_to_continue, spent_seconds, stage_prompt, uses_jira,
-        suggested_commit, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
+        suggested_commit, pr_body, Delivered, Delivery, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
 };
@@ -292,11 +292,17 @@ impl ManagePipelines {
             .map(|(role, a)| (role, RunAgent { id: a.id, name: a.name, model: a.model }))
             .collect();
         let id = self.ids.new_id();
-        let (mode, workdir, branch) = if project.versioned {
-            let (path, branch) = self.create_worktree(&folder, &branch_slug(jira_key.as_deref(), &id))?;
-            (WorkMode::Worktree, path, Some(branch))
-        } else {
-            (WorkMode::Direct, normalize_folder(&folder), None)
+        // Com git na pasta, a esteira trabalha numa cópia isolada (ou na própria pasta, se o projeto
+        // pedir); sem git, direto na pasta.
+        let has_git = self.vcs.is_repo(&folder);
+        let base_branch = if has_git { self.vcs.current_branch(&folder) } else { None };
+        let (mode, workdir, branch) = match (has_git, project.isolate) {
+            (true, true) => {
+                let (path, branch) = self.create_worktree(&folder, &branch_slug(jira_key.as_deref(), &id))?;
+                (WorkMode::Worktree, path, Some(branch))
+            }
+            (true, false) => (WorkMode::InPlace, normalize_folder(&folder), None),
+            (false, _) => (WorkMode::Direct, normalize_folder(&folder), None),
         };
         let now = self.clock.now();
         let run = PipelineRun {
@@ -309,6 +315,8 @@ impl ManagePipelines {
             mode,
             workdir,
             branch,
+            base_branch,
+            delivered: None,
             rounds: 0,
             skipped,
             agents,
@@ -780,6 +788,9 @@ impl ManagePipelines {
         if run.status != RunStatus::Done {
             return Err(AppError("Só dá para reabrir uma execução concluída.".into()));
         }
+        if run.mode == WorkMode::Worktree && run.delivered.as_ref().is_some_and(|d| d.kind == Delivery::Main) {
+            return Err(AppError("O resultado já foi para a main e a cópia isolada foi apagada: comece uma execução nova.".into()));
+        }
         let feedback = match feedback.trim() {
             "" if images.is_empty() => return Err(AppError("Descreva o que precisa mudar.".into())),
             // Só o Implementador recebe os prints: quem vem depois precisa saber que o ajuste veio só neles.
@@ -812,23 +823,115 @@ impl ManagePipelines {
         run.status = RunStatus::Running;
         run.rounds = 0;
         run.note = None;
+        // O ajuste é um resultado novo, a entregar de novo.
+        run.delivered = None;
         self.touch(&mut run)
     }
 
-    /// Registra o resultado num commit (só na cópia isolada; a decisão é do usuário).
-    pub fn commit(&self, run_id: &str, message: &str) -> AppResult<()> {
-        let run = self.get(run_id)?;
-        if run.mode != WorkMode::Worktree {
-            return Err(AppError("Projeto sem versionamento: não há commit a fazer.".into()));
+    /// Entrega o resultado no repositório do jeito que você escolheu: commit na main, num ramo
+    /// próprio ou num pull request. Quem roda os comandos é o app, não um bot.
+    pub fn deliver(&self, run_id: &str, kind: Delivery, message: &str, push: bool) -> AppResult<PipelineRun> {
+        let mut run = self.get(run_id)?;
+        if !run.mode.has_git() {
+            return Err(AppError("Projeto sem git: não há commit a fazer.".into()));
         }
         if run.status != RunStatus::Done {
             return Err(AppError("A execução ainda não terminou.".into()));
+        }
+        if run.delivered.is_some() {
+            return Err(AppError("O resultado desta execução já foi entregue.".into()));
         }
         let message = message.trim();
         if message.is_empty() {
             return Err(AppError("Escreva a mensagem do commit.".into()));
         }
-        self.vcs.commit(&run.workdir, message)
+        let folder = self
+            .projects
+            .get(&run.project_id)?
+            .and_then(|p| p.folder)
+            .map(|f| normalize_folder(&f))
+            .ok_or_else(|| AppError("O projeto não tem mais pasta.".into()))?;
+        let push = push || kind == Delivery::PullRequest;
+        let remote = match push {
+            true => Some(self.vcs.remote(&run.workdir).ok_or_else(|| AppError("O repositório não tem remoto para onde enviar.".into()))?),
+            false => None,
+        };
+        if kind == Delivery::PullRequest && !self.vcs.gh_ready() {
+            return Err(AppError("Para abrir o pull request, instale o GitHub CLI e entre nele (gh auth login).".into()));
+        }
+        let base = run
+            .base_branch
+            .clone()
+            .or_else(|| self.vcs.current_branch(&folder))
+            .ok_or_else(|| AppError("Não deu para saber o ramo principal do projeto.".into()))?;
+        let send = |root: &str, branch: &str| match &remote {
+            Some(remote) => self.vcs.push(root, remote, branch),
+            None => Ok(()),
+        };
+        let branch = match (run.mode, kind) {
+            (WorkMode::Worktree, Delivery::Main) => {
+                let work = run.branch.clone().ok_or_else(|| AppError("A cópia isolada não tem ramo.".into()))?;
+                if self.vcs.current_branch(&folder).as_deref() != Some(base.as_str()) {
+                    return Err(AppError(format!("A pasta do projeto não está no ramo {base}: volte para ele e tente de novo.")));
+                }
+                self.commit_pending(&run.workdir, message)?;
+                self.vcs.merge(&folder, &work)?;
+                send(&folder, &base)?;
+                // O resultado já está na main; uma cópia que não sai (ex.: arquivo aberto) não desfaz a entrega.
+                let _ = self.vcs.remove_worktree(&folder, &run.workdir, &work);
+                base.clone()
+            }
+            (WorkMode::Worktree, _) => {
+                let work = run.branch.clone().ok_or_else(|| AppError("A cópia isolada não tem ramo.".into()))?;
+                self.commit_pending(&run.workdir, message)?;
+                send(&run.workdir, &work)?;
+                work
+            }
+            (_, Delivery::Main) => {
+                let current = self.vcs.current_branch(&run.workdir).unwrap_or_else(|| base.clone());
+                self.commit_pending(&run.workdir, message)?;
+                send(&run.workdir, &current)?;
+                current
+            }
+            _ => {
+                let slug = branch_slug(run.jira_key.as_deref(), &run.id);
+                let new = (1..)
+                    .map(|n| if n == 1 { format!("lume/{slug}") } else { format!("lume/{slug}-{n}") })
+                    .find(|b| !self.vcs.has_branch(&run.workdir, b))
+                    .unwrap_or_default();
+                self.vcs.create_branch(&run.workdir, &new)?;
+                self.commit_pending(&run.workdir, message)?;
+                send(&run.workdir, &new)?;
+                new
+            }
+        };
+        let pr_url = match kind {
+            Delivery::PullRequest => {
+                let report = self
+                    .pipelines
+                    .stages(run_id)?
+                    .into_iter()
+                    .rev()
+                    .find(|s| s.role == Role::Reporter && s.status == StageStatus::Done)
+                    .and_then(|s| s.output)
+                    .unwrap_or_default();
+                let body = pr_body(&report, run.jira_url.as_deref());
+                Some(self.vcs.open_pr(&run.workdir, &base, &branch, message, &body)?)
+            }
+            _ => None,
+        };
+        run.delivered = Some(Delivered { kind, branch, pushed: remote.is_some(), pr_url, at: self.clock.now() });
+        self.touch(&mut run)?;
+        Ok(run)
+    }
+
+    /// Commit do que está pendente. Sem nada pendente, o commit já foi feito numa tentativa
+    /// anterior que parou depois dele (ex.: o push falhou), e a entrega segue dali.
+    fn commit_pending(&self, workdir: &str, message: &str) -> AppResult<()> {
+        match self.vcs.commit(workdir, message) {
+            Err(_) if self.vcs.status(workdir).files.is_empty() => Ok(()),
+            done => done,
+        }
     }
 
     /// Apaga o registro de uma execução terminada (a pasta de trabalho fica).
@@ -961,17 +1064,22 @@ mod tests {
         fn cancel(&self, _conversation_id: &str) {}
     }
 
-    fn setup(versioned: bool) -> (World, ManagePipelines, Arc<FakeVcs>) {
+    /// Projeto em /dev/loja: com git e cópia isolada (`true`) ou sem git (`false`).
+    fn setup(git: bool) -> (World, ManagePipelines, Arc<FakeVcs>) {
+        setup_with(true, FakeVcs { no_git: !git, ..Default::default() })
+    }
+
+    fn setup_with(isolate: bool, vcs: FakeVcs) -> (World, ManagePipelines, Arc<FakeVcs>) {
         let world = World::with_accounts(vec![]);
         let project = Project {
             id: "p1".into(),
             name: "Loja".into(),
             instructions: String::new(),
             folder: Some("/dev/loja".into()),
-            versioned,
+            isolate,
         };
         ProjectRepository::save(&*world.store, &project).unwrap();
-        let vcs = Arc::new(FakeVcs::default());
+        let vcs = Arc::new(vcs);
         let uc = ManagePipelines {
             pipelines: world.store.clone(),
             agents: world.store.clone(),
@@ -1191,8 +1299,66 @@ mod tests {
         let implementer = world.conversation(&detail.stages.iter().find(|s| s.role == Role::Implementer).unwrap().conversation_id);
         assert_eq!(implementer.permission_mode, "acceptEdits");
 
-        uc.commit(&run.id, "Exporta CSV").unwrap();
-        assert_eq!(vcs.commits.lock().unwrap().last().unwrap(), &("/dev/loja-esteira-loja-7".to_owned(), "Exporta CSV".to_owned()));
+        assert!(uc.deliver(&run.id, Delivery::Main, " ", false).is_err(), "sem mensagem");
+        let delivered = uc.deliver(&run.id, Delivery::PullRequest, "Exporta CSV", false).unwrap().delivered.unwrap();
+        assert_eq!((delivered.branch.as_str(), delivered.pushed, delivered.pr_url.as_deref()), ("lume/esteira-loja-7", true, Some("https://github.com/loja/loja/pull/12")));
+        let wt = "/dev/loja-esteira-loja-7".to_owned();
+        assert_eq!(
+            vcs.commits.lock().unwrap()[1..],
+            [(wt.clone(), "Exporta CSV".into()), (wt.clone(), "push origin lume/esteira-loja-7".into()), (wt, "pr main <- lume/esteira-loja-7: Exporta CSV".into())]
+        );
+        let body = vcs.pr_bodies.lock().unwrap()[0].clone();
+        assert_eq!(body, "Relatório", "o relatório sem a linha do commit");
+        assert!(uc.deliver(&run.id, Delivery::Main, "x", false).is_err(), "já entregue");
+    }
+
+    /// Termina uma execução sem Jira nem etapas opcionais, pronta para entregar.
+    async fn finished(uc: &ManagePipelines) -> PipelineRun {
+        uc.save_config("p1", PipelineConfig { skipped: vec![Role::Triage, Role::Tester, Role::CodeReview, Role::Reporter], ..Default::default() }).unwrap();
+        let run = uc.start(StartInput { request: "Exportar pedidos em CSV".into(), ..input(None) }).unwrap();
+        uc.advance(&run.id, &Bots::new(vec![Ok("## Plano")])).await.unwrap();
+        uc.decide_plan(&run.id, None).unwrap();
+        uc.advance(&run.id, &Bots::new(vec![Ok("fiz"), Ok("VEREDITO: APROVADO")])).await.unwrap();
+        let run = uc.get(&run.id).unwrap();
+        assert_eq!(run.status, RunStatus::Done);
+        run
+    }
+
+    #[tokio::test]
+    async fn worktree_delivery_to_main_merges_pushes_and_removes_the_copy() {
+        let (_world, uc, vcs) = setup(true);
+        let run = finished(&uc).await;
+        assert_eq!(run.base_branch.as_deref(), Some("main"));
+        let delivered = uc.deliver(&run.id, Delivery::Main, "Exporta CSV", true).unwrap().delivered.unwrap();
+        assert_eq!((delivered.branch.as_str(), delivered.pushed), ("main", true));
+        let log: Vec<String> = vcs.commits.lock().unwrap()[1..].iter().map(|(root, m)| format!("{root}: {m}")).collect();
+        let wt = &run.workdir;
+        let branch = run.branch.as_deref().unwrap();
+        assert_eq!(log, [format!("{wt}: Exporta CSV"), format!("/dev/loja: merge {branch}"), "/dev/loja: push origin main".into(), format!("/dev/loja: remove {wt} {branch}")]);
+        assert!(uc.reopen(&run.id, "faltou o cabeçalho", &[]).is_err(), "a cópia isolada foi apagada");
+    }
+
+    #[tokio::test]
+    async fn conflicting_merge_keeps_the_copy_and_the_run_undelivered() {
+        let (_world, uc, vcs) = setup_with(true, FakeVcs { merge_conflict: true, ..Default::default() });
+        let run = finished(&uc).await;
+        assert!(uc.deliver(&run.id, Delivery::Main, "Exporta CSV", false).is_err());
+        assert!(!vcs.commits.lock().unwrap().iter().any(|(_, m)| m.starts_with("remove ")));
+        assert!(uc.get(&run.id).unwrap().delivered.is_none(), "dá para tentar de novo");
+    }
+
+    #[tokio::test]
+    async fn project_without_isolation_works_in_the_folder_and_delivers_on_a_new_branch() {
+        let (_world, uc, vcs) = setup_with(false, FakeVcs::default());
+        let run = finished(&uc).await;
+        assert_eq!((run.mode, run.workdir.as_str(), run.branch.as_deref()), (WorkMode::InPlace, "/dev/loja", None));
+        let delivered = uc.deliver(&run.id, Delivery::Branch, "Exporta CSV", false).unwrap().delivered.unwrap();
+        assert!(delivered.branch.starts_with("lume/esteira-") && !delivered.pushed);
+        let log: Vec<String> = vcs.commits.lock().unwrap().iter().map(|(_, m)| m.clone()).collect();
+        assert_eq!(log, [format!("branch {}", delivered.branch), "Exporta CSV".into()]);
+        // Um ajuste é um resultado novo, a entregar de novo.
+        uc.reopen(&run.id, "faltou o cabeçalho", &[]).unwrap();
+        assert!(uc.get(&run.id).unwrap().delivered.is_none());
     }
 
     #[tokio::test]
@@ -1375,7 +1541,7 @@ mod tests {
         uc.advance(&run.id, &bots).await.unwrap();
         assert_eq!(uc.detail(&run.id).unwrap().run.status, RunStatus::NeedsInfo);
         assert!(uc.retry(&run.id).is_err());
-        assert!(uc.commit(&run.id, "x").is_err());
+        assert!(uc.deliver(&run.id, Delivery::Main, "x", false).is_err(), "sem git, nada a entregar");
         uc.delete(&run.id).unwrap();
         assert!(uc.list().unwrap().is_empty());
 

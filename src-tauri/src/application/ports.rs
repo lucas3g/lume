@@ -166,6 +166,25 @@ pub trait VersionControl: Send + Sync {
     fn snapshot(&self, root: &str) -> Option<String>;
     /// O que mudou entre duas fotos.
     fn diff_between(&self, root: &str, from: &str, to: &str) -> AppResult<String>;
+    /// A pasta está dentro de um repositório git.
+    fn is_repo(&self, root: &str) -> bool;
+    /// Ramo em que a pasta está (nenhum se o HEAD está solto).
+    fn current_branch(&self, root: &str) -> Option<String>;
+    /// Remoto para onde enviar (o `origin`, se houver; senão o primeiro).
+    fn remote(&self, root: &str) -> Option<String>;
+    /// Cria o ramo `branch` a partir do atual e passa a pasta para ele.
+    fn create_branch(&self, root: &str, branch: &str) -> AppResult<()>;
+    /// Traz `branch` para o ramo atual da pasta: avanço direto quando dá, senão um merge;
+    /// com conflito, desfaz o merge e devolve o erro.
+    fn merge(&self, root: &str, branch: &str) -> AppResult<()>;
+    /// Envia o ramo ao remoto e passa a acompanhá-lo.
+    fn push(&self, root: &str, remote: &str, branch: &str) -> AppResult<()>;
+    /// Apaga a cópia isolada em `path` e o ramo dela.
+    fn remove_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()>;
+    /// O `gh` está instalado e com login, para abrir pull requests.
+    fn gh_ready(&self) -> bool;
+    /// Abre o pull request de `head` para `base` com o `gh` e devolve o link dele.
+    fn open_pr(&self, root: &str, base: &str, head: &str, title: &str, body: &str) -> AppResult<String>;
 }
 
 /// Lê um arquivo escolhido pelo usuário para uso como anexo.

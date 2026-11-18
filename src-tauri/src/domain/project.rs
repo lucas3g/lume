@@ -12,9 +12,21 @@ pub struct Project {
     pub instructions: String,
     /// Pasta do projeto no computador; as sessões de agente do projeto trabalham nela.
     pub folder: Option<String>,
-    /// O usuário diz que o projeto tem versionamento (git): a esteira de bots trabalha
-    /// numa cópia isolada. Sem versionamento, trabalha direto na pasta.
-    pub versioned: bool,
+    /// Com git na pasta, a esteira de bots trabalha numa cópia isolada (git worktree); desligado,
+    /// direto na pasta, no ramo atual. Sem git, sempre direto na pasta.
+    pub isolate: bool,
+}
+
+/// Como está o git na pasta do projeto.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct GitInfo {
+    pub is_repo: bool,
+    /// Ramo atual da pasta.
+    pub branch: Option<String>,
+    /// Remoto para onde enviar (ex.: origin).
+    pub remote: Option<String>,
+    /// O `gh` está instalado e com login (abre pull requests).
+    pub gh_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -131,7 +143,7 @@ mod tests {
     use super::*;
 
     fn project(instructions: &str) -> Project {
-        Project { id: "p".into(), name: "Portal".into(), instructions: instructions.into(), folder: None, versioned: false }
+        Project { id: "p".into(), name: "Portal".into(), instructions: instructions.into(), folder: None, isolate: true }
     }
 
     #[test]

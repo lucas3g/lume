@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn project_adds_instructions_and_lists_knowledge_to_read_on_demand() {
         let world = World::with_accounts(vec![]);
-        let project = crate::domain::project::Project { id: "p1".into(), name: "Portal".into(), instructions: "Use REST.".into(), folder: None, versioned: false };
+        let project = crate::domain::project::Project { id: "p1".into(), name: "Portal".into(), instructions: "Use REST.".into(), folder: None, isolate: true };
         ProjectRepository::save(&*world.store, &project).unwrap();
         world.store.set_project("c1", Some("p1")).unwrap();
         let setup = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap();
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn knowledge_goes_in_the_prompt_when_it_cannot_be_written_to_disk() {
         let world = World::with_accounts(vec![]);
-        let project = crate::domain::project::Project { id: "p1".into(), name: "Portal".into(), instructions: String::new(), folder: None, versioned: false };
+        let project = crate::domain::project::Project { id: "p1".into(), name: "Portal".into(), instructions: String::new(), folder: None, isolate: true };
         ProjectRepository::save(&*world.store, &project).unwrap();
         world.store.set_project("c1", Some("p1")).unwrap();
         world.store.add_file("f1", "p1", "glossario.md", "SKU é o código do produto.").unwrap();

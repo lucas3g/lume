@@ -257,6 +257,12 @@ pub struct PipelineConfig {
     /// Esforço de raciocínio por papel ("low" … "max"); sem entrada, o padrão da conversa.
     #[serde(default)]
     pub efforts: BTreeMap<Role, String>,
+    /// Entrega já marcada no fim da execução (você confirma).
+    #[serde(default)]
+    pub delivery: Delivery,
+    /// A caixinha de push já vem marcada no fim da execução.
+    #[serde(default)]
+    pub push: bool,
 }
 
 impl PipelineConfig {
@@ -375,9 +381,11 @@ impl StageStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkMode {
-    /// Projeto com versionamento: cópia isolada (git worktree) num ramo novo.
+    /// Projeto com git: cópia isolada (git worktree) num ramo novo.
     Worktree,
-    /// Projeto sem versionamento: direto na pasta de desenvolvimento.
+    /// Projeto com git, sem cópia isolada: direto na pasta, no ramo atual.
+    InPlace,
+    /// Projeto sem git: direto na pasta de desenvolvimento.
     Direct,
 }
 
@@ -385,13 +393,47 @@ impl WorkMode {
     pub fn key(self) -> &'static str {
         match self {
             WorkMode::Worktree => "worktree",
+            WorkMode::InPlace => "in_place",
             WorkMode::Direct => "direct",
         }
     }
 
     pub fn parse(key: &str) -> WorkMode {
-        if key == "worktree" { WorkMode::Worktree } else { WorkMode::Direct }
+        match key {
+            "worktree" => WorkMode::Worktree,
+            "in_place" => WorkMode::InPlace,
+            _ => WorkMode::Direct,
+        }
     }
+
+    /// A pasta de trabalho é um repositório git (há diff, commit e entrega).
+    pub fn has_git(self) -> bool {
+        self != WorkMode::Direct
+    }
+}
+
+/// Como o resultado de uma execução chega ao repositório.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// Commit no ramo de origem (na cópia isolada, com merge na pasta principal).
+    #[default]
+    Main,
+    /// Commit num ramo próprio, que fica para você.
+    Branch,
+    /// Commit num ramo próprio, enviado ao remoto, com pull request aberto pelo `gh`.
+    PullRequest,
+}
+
+/// O que foi feito ao entregar o resultado.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Delivered {
+    pub kind: Delivery,
+    /// Ramo que recebeu o commit.
+    pub branch: String,
+    pub pushed: bool,
+    pub pr_url: Option<String>,
+    pub at: i64,
 }
 
 /// Uma execução da esteira.
@@ -410,6 +452,10 @@ pub struct PipelineRun {
     pub workdir: String,
     /// Ramo da cópia isolada.
     pub branch: Option<String>,
+    /// Ramo da pasta do projeto quando a execução começou: destino do merge e do pull request.
+    pub base_branch: Option<String>,
+    /// Entrega feita no fim, se já houve.
+    pub delivered: Option<Delivered>,
     /// Voltas do Implementador já feitas depois de devoluções.
     pub rounds: i64,
     /// Etapas desligadas no projeto quando a execução começou.
@@ -517,6 +563,12 @@ fn place(run: &PipelineRun) -> String {
             "Você trabalha numa cópia isolada do repositório em {} (ramo {}). Não faça commit nem push: quem decide é o usuário.",
             run.workdir,
             run.branch.as_deref().unwrap_or("?")
+        ),
+        WorkMode::InPlace => format!(
+            "Você trabalha direto na pasta do projeto {}, que é um repositório git{}. Não faça commit nem push, nem troque de \
+             ramo: quem decide é o usuário.",
+            run.workdir,
+            run.base_branch.as_deref().map(|b| format!(" (ramo {b})")).unwrap_or_default()
         ),
         WorkMode::Direct => format!(
             "O projeto não tem versionamento: você trabalha direto na pasta de desenvolvimento {}. Não há como desfazer \
@@ -820,8 +872,8 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             // A skill revisa o diff; sem git não há diff, então ela recebe os arquivos alterados como alvo.
             let diff = "Sem alvo, ela revisa as alterações ainda não commitadas da pasta de trabalho, que são o que deve ser revisado.";
             let (args, target) = match run.mode {
-                WorkMode::Worktree if level.is_empty() => ("sem `args`".to_owned(), diff),
-                WorkMode::Worktree => (format!("`args: \"{}\"`", level.trim_end()), diff),
+                WorkMode::Worktree | WorkMode::InPlace if level.is_empty() => ("sem `args`".to_owned(), diff),
+                WorkMode::Worktree | WorkMode::InPlace => (format!("`args: \"{}\"`", level.trim_end()), diff),
                 WorkMode::Direct => (
                     format!("`args: \"{level}<caminhos dos arquivos alterados>\"`"),
                     "A pasta não tem git, então não há diff: passe como alvo, depois do nível, os caminhos dos arquivos que o \
@@ -1017,6 +1069,19 @@ pub fn suggested_commit(report: &str) -> Option<String> {
         let l = l.trim().trim_matches('`');
         l.strip_prefix("COMMIT:").map(|m| m.trim().to_owned()).filter(|m| !m.is_empty())
     })
+}
+
+/// Texto do pull request: o relatório do Relator sem as linhas de controle, mais o link da task.
+pub fn pr_body(report: &str, jira_url: Option<&str>) -> String {
+    let control = |l: &str| {
+        let l = l.trim().trim_matches(['*', '`', '_', ' ']);
+        l.starts_with("COMMIT:") || l.get(..12).is_some_and(|p| p.eq_ignore_ascii_case("TASK_CRIADA:"))
+    };
+    let mut body = report.lines().filter(|l| !control(l)).collect::<Vec<_>>().join("\n").trim().to_owned();
+    if let Some(url) = jira_url {
+        body.push_str(&format!("\n\nTask: {url}"));
+    }
+    body.trim().to_owned()
 }
 
 /// O que a esteira faz a seguir, dado o registro das etapas.
@@ -1415,6 +1480,8 @@ mod tests {
             mode,
             workdir: "/dev/loja-esteira".into(),
             branch: Some("lume/esteira-loja-1".into()),
+            base_branch: Some("main".into()),
+            delivered: None,
             rounds: 0,
             skipped: vec![],
             agents: BTreeMap::new(),
@@ -1630,7 +1697,9 @@ mod tests {
         assert!(PipelineConfig { agents: BTreeMap::new(), skipped: vec![Role::Reviewer], ..Default::default() }.validate().is_err());
         assert!(PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a".into())]), skipped: quick.to_vec(), ..Default::default() }.validate().is_ok());
         let json = serde_json::to_string(&PipelineConfig { agents: BTreeMap::from([(Role::Reviewer, "a1".into())]), skipped: vec![Role::Tester], ..Default::default() }).unwrap();
-        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"],"jira_template":null,"default_jira_template":null,"efforts":{}}"#);
+        assert_eq!(json, r#"{"agents":{"reviewer":"a1"},"skipped":["tester"],"jira_template":null,"default_jira_template":null,"efforts":{},"delivery":"main","push":false}"#);
+        let old: PipelineConfig = serde_json::from_str(r#"{"agents":{},"skipped":[]}"#).unwrap();
+        assert_eq!((old.delivery, old.push), (Delivery::Main, false), "configuração de antes da entrega");
     }
 
     #[test]
@@ -1790,6 +1859,11 @@ mod tests {
     #[test]
     fn commit_suggestion_and_diff_clip() {
         assert_eq!(suggested_commit("Relatório\n`COMMIT: Exporta pedidos em CSV`"), Some("Exporta pedidos em CSV".into()));
+        assert_eq!(
+            pr_body("## Solução\nExporta CSV.\nTASK_CRIADA: EI-1\n`COMMIT: Exporta CSV`", Some("https://x.atlassian.net/browse/EI-1")),
+            "## Solução\nExporta CSV.\n\nTask: https://x.atlassian.net/browse/EI-1"
+        );
+        assert_eq!(WorkMode::parse(WorkMode::InPlace.key()), WorkMode::InPlace);
         assert_eq!(suggested_commit("nada"), None);
         let big = "x".repeat(MAX_DIFF_CHARS + 10);
         assert!(clip_diff(&big).ends_with("resto)"));

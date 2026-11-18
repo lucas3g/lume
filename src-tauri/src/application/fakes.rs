@@ -358,6 +358,12 @@ pub struct FakeVcs {
     pub commits: Mutex<Vec<(String, String)>>,
     /// Fotos tiradas da pasta: cada uma é "foto<n>".
     pub snapshots: Mutex<usize>,
+    /// A pasta não é repositório git.
+    pub no_git: bool,
+    /// O merge esbarra num conflito.
+    pub merge_conflict: bool,
+    /// Textos dos pull requests abertos.
+    pub pr_bodies: Mutex<Vec<String>>,
 }
 
 impl VersionControl for FakeVcs {
@@ -395,6 +401,42 @@ impl VersionControl for FakeVcs {
     fn has_branch(&self, _root: &str, branch: &str) -> bool {
         let suffix = format!(" {branch}");
         self.commits.lock().unwrap().iter().any(|(_, m)| m.starts_with("worktree ") && m.ends_with(&suffix))
+    }
+    fn is_repo(&self, _root: &str) -> bool {
+        !self.no_git
+    }
+    fn current_branch(&self, _root: &str) -> Option<String> {
+        (!self.no_git).then(|| "main".into())
+    }
+    fn remote(&self, _root: &str) -> Option<String> {
+        (!self.no_git).then(|| "origin".into())
+    }
+    fn create_branch(&self, root: &str, branch: &str) -> AppResult<()> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("branch {branch}")));
+        Ok(())
+    }
+    fn merge(&self, root: &str, branch: &str) -> AppResult<()> {
+        if self.merge_conflict {
+            return Err(AppError("conflito".into()));
+        }
+        self.commits.lock().unwrap().push((root.to_owned(), format!("merge {branch}")));
+        Ok(())
+    }
+    fn push(&self, root: &str, remote: &str, branch: &str) -> AppResult<()> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("push {remote} {branch}")));
+        Ok(())
+    }
+    fn remove_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("remove {path} {branch}")));
+        Ok(())
+    }
+    fn gh_ready(&self) -> bool {
+        true
+    }
+    fn open_pr(&self, root: &str, base: &str, head: &str, title: &str, body: &str) -> AppResult<String> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("pr {base} <- {head}: {title}")));
+        self.pr_bodies.lock().unwrap().push(body.to_owned());
+        Ok("https://github.com/loja/loja/pull/12".into())
     }
 }
 

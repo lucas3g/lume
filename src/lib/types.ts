@@ -225,8 +225,32 @@ export interface Project {
   instructions: string;
   /** Pasta do projeto; as sessões de agente do projeto trabalham nela. */
   folder: string | null;
-  /** Tem versionamento (git): a esteira de bots trabalha numa cópia isolada; sem ele, direto na pasta. */
-  versioned: boolean;
+  /** Com git na pasta, a esteira trabalha numa cópia isolada (worktree); desligado, direto na pasta. */
+  isolate: boolean;
+}
+
+/** O git da pasta do projeto. */
+export interface GitInfo {
+  is_repo: boolean;
+  /** Ramo atual da pasta. */
+  branch: string | null;
+  /** Remoto para onde enviar (ex.: origin). */
+  remote: string | null;
+  /** O GitHub CLI (`gh`) está instalado e com login: abre pull requests. */
+  gh_ready: boolean;
+}
+
+/** Como o resultado de uma execução chega ao repositório. */
+export type Delivery = "main" | "branch" | "pull_request";
+
+/** O que foi feito ao entregar o resultado. */
+export interface Delivered {
+  kind: Delivery;
+  /** Ramo que recebeu o commit. */
+  branch: string;
+  pushed: boolean;
+  pr_url: string | null;
+  at: number;
 }
 
 export interface FileEntry {
@@ -437,10 +461,14 @@ export interface PipelineRun {
   title: string;
   request: string;
   status: PipelineStatus;
-  /** worktree: cópia isolada num ramo novo; direct: direto na pasta do projeto. */
-  mode: "worktree" | "direct";
+  /** worktree: cópia isolada num ramo novo; in_place: direto na pasta, com git; direct: direto na pasta, sem git. */
+  mode: "worktree" | "in_place" | "direct";
   workdir: string;
   branch: string | null;
+  /** Ramo da pasta do projeto quando a execução começou: destino do merge e do pull request. */
+  base_branch: string | null;
+  /** Entrega feita no fim, se já houve. */
+  delivered: Delivered | null;
   rounds: number;
   /** Etapas desligadas no projeto quando a execução começou. */
   skipped: PipelineRole[];
@@ -591,4 +619,8 @@ export interface PipelineConfig {
   default_jira_template: string | null;
   /** Esforço de raciocínio por papel; ausente = padrão (médio). */
   efforts: Partial<Record<PipelineRole, string>>;
+  /** Entrega já marcada no fim da execução (você confirma). */
+  delivery: Delivery;
+  /** A caixinha de push já vem marcada no fim da execução. */
+  push: boolean;
 }

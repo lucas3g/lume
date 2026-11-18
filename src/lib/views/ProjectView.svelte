@@ -4,7 +4,7 @@
   import { formatWhen } from "../format";
   import { chat, loadConversations, openConversation, startAgentSession } from "../state/chat.svelte";
   import { loadProjects, projects } from "../state/projects.svelte";
-  import type { MemoryFile, ProjectFile, View } from "../types";
+  import type { GitInfo, MemoryFile, ProjectFile, View } from "../types";
   import Toggle from "../components/Toggle.svelte";
   import PipelineConfigCard from "../components/pipeline/PipelineConfigCard.svelte";
 
@@ -24,6 +24,8 @@
   let memoryText = $state("");
   let memorySaved = $state(false);
   let newMemoryName = $state("");
+  /** Git da pasta do projeto; nulo enquanto carrega. */
+  let git = $state<GitInfo | null>(null);
 
   const project = $derived(projects.list.find((p) => p.id === projects.selectedId));
   const conversations = $derived(chat.conversations.filter((c) => project && c.project_id === project.id));
@@ -40,9 +42,15 @@
     files = [];
     memory = [];
     memoryOpen = null;
+    git = null;
     if (id) {
       void api.listProjectFiles(id).then((list) => (files = list));
-      if (current?.folder) void api.projectMemoryList(id).then((list) => (memory = list));
+      if (current?.folder) {
+        void api.projectMemoryList(id).then((list) => (memory = list));
+        void api.projectGitInfo(id).then((info) => {
+          if (projects.selectedId === id) git = info;
+        });
+      }
     }
   });
 
@@ -102,10 +110,10 @@
     });
   };
 
-  const setVersioned = (versioned: boolean) =>
+  const setIsolate = (isolate: boolean) =>
     run(async () => {
       if (!project) return;
-      await api.setProjectVersioned(project.id, versioned);
+      await api.setProjectIsolate(project.id, isolate);
       await loadProjects();
     });
 
@@ -209,18 +217,34 @@
         <section class="card" aria-label="Versionamento">
           <div class="head">
             <div>
-              <h2 class="section-title">Projeto com versionamento</h2>
+              <h2 class="section-title">Versionamento</h2>
               <div class="muted small">
-                {project.versioned
-                  ? "A esteira de bots trabalha numa cópia isolada (git worktree), num ramo novo, sem mexer na pasta principal."
-                  : "Sem versionamento, a esteira de bots altera os arquivos direto na pasta de desenvolvimento."}
+                {#if !git}
+                  Verificando o git da pasta…
+                {:else if !git.is_repo}
+                  A pasta não é um repositório git: a esteira de bots altera os arquivos direto nela, e no fim não há commit a fazer.
+                {:else}
+                  Repositório git detectado{git.branch ? `, no ramo ${git.branch}` : ""}{git.remote ? `, com o remoto ${git.remote}` : ", sem remoto (sem push nem pull request)"}.
+                {/if}
               </div>
             </div>
-            <Toggle checked={project.versioned} label="Projeto com versionamento" onchange={setVersioned} />
           </div>
+          {#if git?.is_repo}
+            <div class="line tall">
+              <div class="grow">
+                <div>Trabalhar numa cópia isolada (worktree)</div>
+                <div class="muted small">
+                  {project.isolate
+                    ? "Os bots trabalham numa cópia da pasta, ao lado dela, num ramo novo: a pasta principal fica intacta e você continua trabalhando nela. No fim, a cópia vai para a main ou vira um pull request."
+                    : "Os bots alteram os arquivos direto na pasta principal, no ramo em que ela estiver. Evite mexer na pasta enquanto a esteira roda."}
+                </div>
+              </div>
+              <Toggle checked={project.isolate} label="Trabalhar numa cópia isolada (worktree)" onchange={setIsolate} />
+            </div>
+          {/if}
         </section>
 
-        <PipelineConfigCard projectId={project.id} {onnavigate} />
+        <PipelineConfigCard projectId={project.id} {git} {onnavigate} />
 
         <section class="card" aria-label="Memória do projeto">
           <div class="head">
@@ -285,6 +309,7 @@
   .head > div { flex: 1; }
   .line { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 0 16px; border: 0; border-bottom: 1px solid var(--hairline); background: transparent; text-align: left; }
   .line:last-child { border-bottom: 0; }
+  .line.tall { padding: 10px 16px; }
   .link:hover { background: var(--hover); }
   .line.on { background: var(--hover); }
   .link-text { padding: 0; border: 0; background: transparent; color: var(--text); text-align: left; min-height: 44px; }

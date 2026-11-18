@@ -83,7 +83,7 @@ const ACCOUNT_COLUMNS: &str =
 const CONVERSATION_COLUMNS: &str = "id,title,cli_session_id,model,cwd,agent_id,kind,allowed_tools,project_id,context_percent,updated_at,effort,permission_mode,session_provider,provider_models";
 
 /// Colunas acrescentadas depois da primeira versão; falham em silêncio se já existem.
-const MIGRATIONS: [&str; 23] = [
+const MIGRATIONS: [&str; 26] = [
     "ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE conversations ADD COLUMN session_provider TEXT NOT NULL DEFAULT 'claude'",
     "ALTER TABLE accounts ADD COLUMN login_expires_at INTEGER",
@@ -108,6 +108,9 @@ const MIGRATIONS: [&str; 23] = [
     "ALTER TABLE pipeline_runs ADD COLUMN design INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE conversations ADD COLUMN usage TEXT",
     "ALTER TABLE pipeline_stages ADD COLUMN usage TEXT",
+    "ALTER TABLE projects ADD COLUMN isolate INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE pipeline_runs ADD COLUMN base_branch TEXT",
+    "ALTER TABLE pipeline_runs ADD COLUMN delivered TEXT",
 ];
 
 impl From<rusqlite::Error> for AppError {
@@ -516,7 +519,7 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<Agent> {
 impl ProjectRepository for SqliteStore {
     fn list(&self) -> AppResult<Vec<Project>> {
         let c = self.conn();
-        let mut st = c.prepare("SELECT id,name,instructions,folder,versioned FROM projects ORDER BY name")?;
+        let mut st = c.prepare("SELECT id,name,instructions,folder,isolate FROM projects ORDER BY name")?;
         let rows = st.query_map([], project_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -524,15 +527,15 @@ impl ProjectRepository for SqliteStore {
     fn get(&self, id: &str) -> AppResult<Option<Project>> {
         Ok(self
             .conn()
-            .query_row("SELECT id,name,instructions,folder,versioned FROM projects WHERE id=?", [id], project_row)
+            .query_row("SELECT id,name,instructions,folder,isolate FROM projects WHERE id=?", [id], project_row)
             .optional()?)
     }
 
     fn save(&self, project: &Project) -> AppResult<()> {
         self.conn().execute(
-            "INSERT INTO projects(id,name,instructions,folder,versioned) VALUES(?,?,?,?,?)
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, instructions=excluded.instructions, folder=excluded.folder, versioned=excluded.versioned",
-            params![project.id, project.name, project.instructions, project.folder, project.versioned as i64],
+            "INSERT INTO projects(id,name,instructions,folder,isolate) VALUES(?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, instructions=excluded.instructions, folder=excluded.folder, isolate=excluded.isolate",
+            params![project.id, project.name, project.instructions, project.folder, project.isolate as i64],
         )?;
         Ok(())
     }
@@ -576,7 +579,7 @@ impl ProjectRepository for SqliteStore {
 }
 
 fn project_row(r: &Row<'_>) -> rusqlite::Result<Project> {
-    Ok(Project { id: r.get(0)?, name: r.get(1)?, instructions: r.get(2)?, folder: r.get(3)?, versioned: r.get::<_, i64>(4)? != 0 })
+    Ok(Project { id: r.get(0)?, name: r.get(1)?, instructions: r.get(2)?, folder: r.get(3)?, isolate: r.get::<_, i64>(4)? != 0 })
 }
 
 impl ConnectorRepository for SqliteStore {
@@ -676,7 +679,7 @@ impl TaskRepository for SqliteStore {
     }
 }
 
-const RUN_COLUMNS: &str = "id,project_id,jira_key,title,request,status,mode,workdir,branch,rounds,budget_minutes,note,created_at,updated_at,skipped,agents,image_count,jira_template,jira_url,efforts,design";
+const RUN_COLUMNS: &str = "id,project_id,jira_key,title,request,status,mode,workdir,branch,rounds,budget_minutes,note,created_at,updated_at,skipped,agents,image_count,jira_template,jira_url,efforts,design,base_branch,delivered";
 const STAGE_COLUMNS: &str = "id,run_id,role,round,status,conversation_id,input,output,started_at,finished_at";
 
 fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
@@ -712,6 +715,8 @@ fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
         jira_template: r.get(17)?,
         jira_url: r.get(18)?,
         efforts: serde_json::from_str(&r.get::<_, String>(19)?).unwrap_or_default(),
+        base_branch: r.get(21)?,
+        delivered: r.get::<_, Option<String>>(22)?.and_then(|t| serde_json::from_str(&t).ok()),
     })
 }
 
@@ -763,12 +768,13 @@ impl PipelineRepository for SqliteStore {
 
     fn save_run(&self, run: &PipelineRun) -> AppResult<()> {
         self.conn().execute(
-            &format!("INSERT OR REPLACE INTO pipeline_runs({RUN_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+            &format!("INSERT OR REPLACE INTO pipeline_runs({RUN_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
             params![run.id, run.project_id, run.jira_key, run.title, run.request, run.status.key(), run.mode.key(),
                 run.workdir, run.branch, run.rounds, run.budget_minutes, run.note, run.created_at, run.updated_at,
                 run.skipped.iter().map(|r| r.key()).collect::<Vec<_>>().join(","),
                 serde_json::to_string(&run.agents).unwrap_or_else(|_| "{}".into()), run.image_count,
-                run.jira_template, run.jira_url, serde_json::to_string(&run.efforts).unwrap_or_else(|_| "{}".into()), run.design],
+                run.jira_template, run.jira_url, serde_json::to_string(&run.efforts).unwrap_or_else(|_| "{}".into()), run.design,
+                run.base_branch, run.delivered.as_ref().and_then(|d| serde_json::to_string(d).ok())],
         )?;
         Ok(())
     }

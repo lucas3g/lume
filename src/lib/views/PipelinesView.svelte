@@ -16,7 +16,7 @@
   import { STATION } from "../pipeline";
   import { agentName } from "../state/agents.svelte";
   import Toggle from "../components/Toggle.svelte";
-  import type { PastedImage, PipelineConfig, PipelineRole, View } from "../types";
+  import type { GitInfo, PastedImage, PipelineConfig, PipelineRole, View } from "../types";
 
   interface Props {
     onnavigate: (view: View) => void;
@@ -42,6 +42,8 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let config = $state<PipelineConfig | null>(null);
+  /** Git da pasta do projeto escolhido; nulo enquanto carrega. */
+  let git = $state<GitInfo | null>(null);
   /** Imagens coladas na descrição, com a miniatura (data URL). */
   let images = $state<PreviewImage[]>([]);
 
@@ -70,8 +72,10 @@
   $effect(() => {
     const id = projectId;
     config = null;
+    git = null;
     // Sem a configuração o formulário só deixa de mostrar o resumo; a execução lê a dela no servidor.
     if (id) api.pipelineConfig(id).then((c) => id === projectId && (config = c), () => {});
+    if (id) api.projectGitInfo(id).then((g) => id === projectId && (git = g), () => {});
   });
   const assigned = $derived(
     config ? (Object.entries(config.agents) as [PipelineRole, string][]).map(([role, id]) => `${STATION[role].name}: ${agentName(id) ?? "?"}`) : [],
@@ -229,12 +233,14 @@
               {/if}
             {/if}
           </p>
-          {#if project}
-            <p class="mode" class:warn={!project.versioned}>
-              {#if project.versioned}
-                Projeto com versionamento: os bots trabalham numa cópia isolada (git worktree), num ramo novo, sem mexer na pasta principal.
+          {#if project && git}
+            <p class="mode" class:warn={!git.is_repo}>
+              {#if !git.is_repo}
+                A pasta não é um repositório git: os bots alteram os arquivos direto em <code>{project.folder}</code>, sem como desfazer pelo git.
+              {:else if project.isolate}
+                Repositório git: os bots trabalham numa cópia isolada (worktree), num ramo novo, sem mexer na pasta principal. No fim, você escolhe entre commit na main, num ramo ou pull request.
               {:else}
-                Projeto sem versionamento: os bots alteram os arquivos direto em <code>{project.folder}</code>. Isso se muda na tela do projeto.
+                Repositório git: os bots alteram os arquivos direto em <code>{project.folder}</code>{git.branch ? `, no ramo ${git.branch}` : ""}. No fim, você escolhe entre commit no ramo atual, num ramo novo ou pull request. A cópia isolada se liga na tela do projeto.
               {/if}
             </p>
           {/if}

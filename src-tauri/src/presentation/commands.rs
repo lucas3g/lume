@@ -18,8 +18,8 @@ use crate::domain::{
     extension::{AccountConnector, Agent, AgentDraft, Connector},
     jira::{JiraBoards, JiraIssueList},
     history::{HistSession, HistoryStatus},
-    pipeline::{PipelineConfig, PipelineRun, ReviewPick, TierModels},
-    project::{MemoryFile, Project, ProjectFile},
+    pipeline::{Delivery, PipelineConfig, PipelineRun, ReviewPick, TierModels},
+    project::{GitInfo, MemoryFile, Project, ProjectFile},
     schedule::{Repeat, Task},
     store::{PluginListing, ServerListing},
     workspace::{FileEntry, FileView, WorkspaceStatus},
@@ -447,10 +447,16 @@ pub fn save_project(app: App<'_>, id: Option<String>, name: String, instructions
     app.projects.save(id, &name, &instructions)
 }
 
-/// O usuário diz se o projeto tem versionamento: com ele, a esteira usa uma cópia isolada.
+/// O git da pasta do projeto (consultar o `gh` pode demorar: fora da thread principal).
+#[tauri::command(async)]
+pub fn project_git_info(app: App<'_>, id: String) -> AppResult<GitInfo> {
+    app.projects.git_info(&id)
+}
+
+/// Com git na pasta, diz se a esteira usa uma cópia isolada ou trabalha direto na pasta.
 #[tauri::command]
-pub fn set_project_versioned(app: App<'_>, id: String, versioned: bool) -> AppResult<Project> {
-    app.projects.set_versioned(&id, versioned)
+pub fn set_project_isolate(app: App<'_>, id: String, isolate: bool) -> AppResult<Project> {
+    app.projects.set_isolate(&id, isolate)
 }
 
 #[tauri::command]
@@ -856,9 +862,10 @@ pub fn retry_pipeline(app: App<'_>, id: String) -> AppResult<()> {
     Ok(())
 }
 
+/// Entrega o resultado: commit na main, num ramo próprio ou num pull request.
 #[tauri::command(async)]
-pub fn commit_pipeline(app: App<'_>, id: String, message: String) -> AppResult<()> {
-    app.pipelines.commit(&id, &message)
+pub fn deliver_pipeline(app: App<'_>, id: String, kind: Delivery, message: String, push: bool) -> AppResult<PipelineRun> {
+    app.pipelines.deliver(&id, kind, &message, push)
 }
 
 #[tauri::command]

@@ -1,6 +1,6 @@
 //! Controle de versão pela linha de comando do git.
 
-use super::{hide_console, workspace_fs::resolve};
+use super::{claude_cli::shell_path, hide_console, workspace_fs::resolve};
 use crate::application::{ports::VersionControl, AppError, AppResult};
 use crate::domain::workspace::{ChangedFile, WorkspaceStatus};
 use std::{collections::HashMap, fs, process::Command};
@@ -24,18 +24,28 @@ fn git_with(root: &str, envs: &[(&str, &std::ffi::OsStr)], args: &[&str]) -> Opt
 }
 
 fn git_or_error(root: &str, args: &[&str]) -> AppResult<String> {
-    let output = hide_console(&mut Command::new("git"))
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .map_err(|e| AppError(format!("Não foi possível executar o git: {e}")))?;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root).args(args);
+    run_or_error(&mut cmd, "git")
+}
+
+/// Roda o comando com o PATH do shell do usuário (o app aberto pelo Finder não o tem), para o
+/// git achar os ajudantes de login (ex.: `gh`) e para achar o próprio `gh`.
+fn with_shell_path(cmd: &mut Command) -> &mut Command {
+    if let Some(path) = shell_path() {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+fn run_or_error(cmd: &mut Command, name: &str) -> AppResult<String> {
+    let output = hide_console(cmd).output().map_err(|e| AppError(format!("Não foi possível executar o {name}: {e}")))?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
     let detail = String::from_utf8_lossy(&output.stderr);
     let detail = if detail.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { detail };
-    Err(AppError(format!("O git recusou a operação: {}", detail.trim())))
+    Err(AppError(format!("O {name} recusou a operação: {}", detail.trim())))
 }
 
 /// `git status --porcelain=v1 -z`: pares (situação, caminho).
@@ -183,6 +193,61 @@ impl VersionControl for GitCli {
     fn has_branch(&self, root: &str, branch: &str) -> bool {
         git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_some()
     }
+
+    fn is_repo(&self, root: &str) -> bool {
+        git(root, &["rev-parse", "--is-inside-work-tree"]).is_some_and(|o| o.trim() == "true")
+    }
+
+    fn current_branch(&self, root: &str) -> Option<String> {
+        git(root, &["branch", "--show-current"]).map(|b| b.trim().to_owned()).filter(|b| !b.is_empty())
+    }
+
+    fn remote(&self, root: &str) -> Option<String> {
+        let listing = git(root, &["remote"])?;
+        let remotes: Vec<&str> = listing.lines().map(str::trim).filter(|r| !r.is_empty()).collect();
+        remotes.iter().find(|r| **r == "origin").or(remotes.first()).map(|r| (*r).to_owned())
+    }
+
+    fn create_branch(&self, root: &str, branch: &str) -> AppResult<()> {
+        git_or_error(root, &["checkout", "-b", branch]).map(|_| ())
+    }
+
+    fn merge(&self, root: &str, branch: &str) -> AppResult<()> {
+        if git(root, &["merge", "--ff-only", "--quiet", branch]).is_some() {
+            return Ok(());
+        }
+        let merged = git_or_error(root, &["merge", "--no-edit", "--quiet", branch]);
+        if merged.is_err() {
+            // Conflito (ou outro motivo): a pasta volta a ficar como estava.
+            let _ = git(root, &["merge", "--abort"]);
+        }
+        merged.map(|_| ()).map_err(|e| AppError(format!("Não deu para juntar o ramo {branch} em {root}: {}", e.0)))
+    }
+
+    fn push(&self, root: &str, remote: &str, branch: &str) -> AppResult<()> {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(root).args(["push", "-u", remote, branch]);
+        run_or_error(with_shell_path(&mut cmd), "git").map(|_| ())
+    }
+
+    fn remove_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()> {
+        git_or_error(root, &["worktree", "remove", path])?;
+        git_or_error(root, &["branch", "-d", branch]).map(|_| ())
+    }
+
+    fn gh_ready(&self) -> bool {
+        let mut cmd = Command::new("gh");
+        cmd.args(["auth", "status"]);
+        hide_console(with_shell_path(&mut cmd)).output().is_ok_and(|o| o.status.success())
+    }
+
+    fn open_pr(&self, root: &str, base: &str, head: &str, title: &str, body: &str) -> AppResult<String> {
+        let mut cmd = Command::new("gh");
+        cmd.current_dir(root).args(["pr", "create", "--base", base, "--head", head, "--title", title, "--body", body]);
+        let out = run_or_error(with_shell_path(&mut cmd), "gh")?;
+        // O `gh` escreve o link do pull request na última linha.
+        Ok(out.lines().rev().map(str::trim).find(|l| l.starts_with("http")).unwrap_or(out.trim()).to_owned())
+    }
 }
 
 #[cfg(test)]
@@ -236,6 +301,54 @@ mod tests {
         assert_eq!(GitCli.worktrees(&root).unwrap().len(), 2);
         assert!(GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo").is_err(), "nome repetido é recusado");
         fs::remove_dir_all(&branch_dir).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn repo(name: &str) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("lume-git-{name}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        git(&root, &["init", "-q", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.email", "teste@exemplo.com"]).unwrap();
+        git(&root, &["config", "user.name", "Teste"]).unwrap();
+        fs::write(dir.join("a.txt"), "um\n").unwrap();
+        GitCli.commit(&root, "Primeiro").unwrap();
+        (dir, root)
+    }
+
+    /// Entrega na main: o commit da cópia isolada chega à pasta principal e a cópia some.
+    #[test]
+    fn merges_the_worktree_branch_and_removes_the_copy() {
+        let (dir, root) = repo("merge");
+        assert!(GitCli.is_repo(&root) && GitCli.remote(&root).is_none());
+        assert_eq!(GitCli.current_branch(&root).as_deref(), Some("main"));
+        let copy = dir.with_file_name(format!("{}-esteira", dir.file_name().unwrap().to_string_lossy()));
+        let copy_root = copy.to_string_lossy().into_owned();
+        GitCli.add_worktree(&root, &copy_root, "lume/esteira").unwrap();
+        fs::write(copy.join("b.txt"), "novo\n").unwrap();
+        GitCli.commit(&copy_root, "Exporta CSV").unwrap();
+
+        GitCli.merge(&root, "lume/esteira").unwrap();
+        assert!(dir.join("b.txt").exists(), "avançou a main");
+        GitCli.remove_worktree(&root, &copy_root, "lume/esteira").unwrap();
+        assert!(!copy.exists() && !GitCli.has_branch(&root, "lume/esteira"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Conflito no merge: a pasta principal volta a ficar como estava.
+    #[test]
+    fn conflicting_merge_is_undone() {
+        let (dir, root) = repo("conflito");
+        GitCli.create_branch(&root, "lume/ramo").unwrap();
+        fs::write(dir.join("a.txt"), "do ramo\n").unwrap();
+        GitCli.commit(&root, "Ramo").unwrap();
+        git(&root, &["checkout", "-q", "main"]).unwrap();
+        fs::write(dir.join("a.txt"), "da main\n").unwrap();
+        GitCli.commit(&root, "Main").unwrap();
+
+        assert!(GitCli.merge(&root, "lume/ramo").is_err());
+        assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "da main\n");
+        assert!(GitCli.status(&root).files.is_empty(), "sem merge pela metade");
         fs::remove_dir_all(dir).unwrap();
     }
 

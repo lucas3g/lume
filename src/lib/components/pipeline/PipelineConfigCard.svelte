@@ -2,16 +2,24 @@
   import { api, errorMessage } from "../../api";
   import { BOT_STEPS, OPTIONAL_ROLES } from "../../pipeline";
   import { agents } from "../../state/agents.svelte";
-  import { EFFORTS, type PipelineConfig, type PipelineRole, type View } from "../../types";
+  import { EFFORTS, type Delivery, type GitInfo, type PipelineConfig, type PipelineRole, type View } from "../../types";
   import Toggle from "../Toggle.svelte";
 
   interface Props {
     projectId: string;
+    /** Git da pasta do projeto: com repositório, aparece a entrega padrão. */
+    git?: GitInfo | null;
     onnavigate: (view: View) => void;
   }
-  let { projectId, onnavigate }: Props = $props();
+  let { projectId, git = null, onnavigate }: Props = $props();
 
-  const EMPTY: PipelineConfig = { agents: {}, skipped: [], jira_template: null, default_jira_template: null, efforts: {} };
+  const DELIVERIES: { id: Delivery; label: string }[] = [
+    { id: "main", label: "Commit na main" },
+    { id: "branch", label: "Commit num ramo" },
+    { id: "pull_request", label: "Pull request" },
+  ];
+
+  const EMPTY: PipelineConfig = { agents: {}, skipped: [], jira_template: null, default_jira_template: null, efforts: {}, delivery: "main", push: false };
   /** Texto do campo do modelo de task, salvo ao sair do campo. */
   let template = $state("");
   let config = $state<PipelineConfig>(EMPTY);
@@ -134,6 +142,25 @@
       disabled={config.skipped.includes("reporter")} onblur={saveTemplate}
       onkeydown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
   </div>
+  {#if git?.is_repo}
+    <div class="template">
+      <div class="grow">
+        <span class="name">Entrega no fim</span>
+        <span class="muted small">
+          Quando a esteira termina, você escolhe como o resultado chega ao repositório: commit na main, commit num ramo ou
+          pull request (pelo GitHub CLI). Esta é a opção que já vem marcada{git.remote ? "" : "; sem remoto, não há push nem pull request"}.
+        </span>
+      </div>
+      <select class="input effort" aria-label="Entrega que já vem marcada" value={config.delivery}
+        onchange={(e) => void save({ ...config, delivery: e.currentTarget.value as Delivery })}>
+        {#each DELIVERIES as d (d.id)}<option value={d.id} disabled={d.id === "pull_request" && !git.remote}>{d.label}</option>{/each}
+      </select>
+      <label class="push" title="A caixinha de push já vem marcada no fim">
+        <input type="checkbox" checked={config.push} disabled={!git.remote} onchange={(e) => void save({ ...config, push: e.currentTarget.checked })} />
+        Fazer push
+      </label>
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -150,6 +177,8 @@
   .toggle-space { width: 44px; flex-shrink: 0; }
   .template { display: flex; align-items: center; gap: 12px; padding: 12px 16px 16px; border-top: 1px solid var(--hairline); }
   .template label { display: flex; flex-direction: column; gap: 2px; }
+  .template .grow { display: flex; flex-direction: column; gap: 2px; }
+  .push { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; }
   .tpl { width: 330px; min-height: 34px; font-family: var(--mono); font-size: 12px; }
   @media (max-width: 640px) {
     .line { flex-wrap: wrap; }

@@ -7,7 +7,7 @@ use super::{
 use crate::domain::{
     chat::{AttachmentKind, Conversation, KIND_AGENT},
     project::{
-        folder_name, knowledge_file_names, normalize_folder, project_knowledge, project_knowledge_inline, MemoryFile, Project,
+        folder_name, knowledge_file_names, GitInfo, normalize_folder, project_knowledge, project_knowledge_inline, MemoryFile, Project,
         ProjectFile, MAX_KNOWLEDGE_CHARS,
     },
 };
@@ -146,18 +146,18 @@ impl ManageProjects {
         if name.is_empty() {
             return Err(AppError("Dê um nome para o projeto.".into()));
         }
-        // A pasta e o versionamento de um projeto existente não mudam ao editar nome e instruções.
+        // A pasta e onde a esteira trabalha não mudam ao editar nome e instruções.
         let existing = match &id {
             Some(id) => self.projects.get(id)?,
             None => None,
         };
-        let (folder, versioned) = existing.map_or((None, false), |p| (p.folder, p.versioned));
+        let (folder, isolate) = existing.map_or((None, true), |p| (p.folder, p.isolate));
         let project = Project {
             id: id.unwrap_or_else(|| self.ids.new_id()),
             name: name.to_owned(),
             instructions: instructions.trim().to_owned(),
             folder,
-            versioned,
+            isolate,
         };
         self.projects.save(&project)?;
         Ok(project)
@@ -179,7 +179,7 @@ impl ManageProjects {
                     name: folder_name(&folder),
                     instructions: String::new(),
                     folder: Some(folder.clone()),
-                    versioned: false,
+                    isolate: true,
                 };
                 self.projects.save(&project)?;
                 project
@@ -214,10 +214,22 @@ impl ManageProjects {
             .ok_or_else(|| AppError("Conversa não encontrada.".into()))
     }
 
-    /// Diz se o projeto tem versionamento; decide onde a esteira de bots trabalha.
-    pub fn set_versioned(&self, id: &str, versioned: bool) -> AppResult<Project> {
+    /// O git da pasta do projeto: se há repositório, o ramo, o remoto e o `gh`.
+    pub fn git_info(&self, id: &str) -> AppResult<GitInfo> {
+        let project = self.projects.get(id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
+        let Some(folder) = project.folder.filter(|f| self.vcs.is_repo(f)) else { return Ok(GitInfo::default()) };
+        Ok(GitInfo {
+            is_repo: true,
+            branch: self.vcs.current_branch(&folder),
+            remote: self.vcs.remote(&folder),
+            gh_ready: self.vcs.gh_ready(),
+        })
+    }
+
+    /// Com git na pasta, diz se a esteira trabalha numa cópia isolada ou direto na pasta.
+    pub fn set_isolate(&self, id: &str, isolate: bool) -> AppResult<Project> {
         let mut project = self.projects.get(id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
-        project.versioned = versioned;
+        project.isolate = isolate;
         self.projects.save(&project)?;
         Ok(project)
     }

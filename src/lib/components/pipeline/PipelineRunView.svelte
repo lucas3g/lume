@@ -17,7 +17,7 @@
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, toolLogLine, triageQuestions, triageSummary, usageHint, usageText, VISUAL,
   } from "../../pipeline";
-  import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
+  import { EFFORTS, type Delivery, type GitInfo, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
   import PipelineOffice from "./PipelineOffice.svelte";
   import ReviewChoiceCard from "./ReviewChoiceCard.svelte";
@@ -37,7 +37,11 @@
   let adjusting = $state(false);
   let feedback = $state("");
   let commitMessage = $state("");
-  let committed = $state(false);
+  /** Entrega escolhida no fim; começa pela padrão do projeto. */
+  let delivery = $state<Delivery>("main");
+  let push = $state(false);
+  /** Git do projeto da execução, para saber se há remoto e `gh`. */
+  let git = $state<GitInfo | null>(null);
   /** Reabrir uma execução concluída com um ajuste. */
   let reopening = $state(false);
   let adjustment = $state("");
@@ -99,6 +103,42 @@
       panelStageId = null;
     }
   });
+
+  // Entrega padrão do projeto e o git dele, uma vez por execução com git.
+  let deliveryFor: string | null = null;
+  $effect(() => {
+    if (detail.mode === "direct" || deliveryFor === detail.id) return;
+    const id = (deliveryFor = detail.id);
+    git = null;
+    api.pipelineConfig(detail.project_id).then((c) => {
+      if (deliveryFor !== id) return;
+      delivery = c.delivery;
+      push = c.push;
+    }, () => {});
+    api.projectGitInfo(detail.project_id).then((g) => deliveryFor === id && (git = g), () => {});
+  });
+  const canPush = $derived(!!git?.remote);
+  const canPr = $derived(!!git?.remote && !!git?.gh_ready);
+  const DELIVERY_OPTIONS = $derived<{ id: Delivery; label: string; hint: string; disabled: string | null }[]>([
+    {
+      id: "main",
+      label: detail.mode === "worktree" ? `Commit na ${detail.base_branch ?? "main"}` : `Commit no ramo atual${detail.base_branch ? ` (${detail.base_branch})` : ""}`,
+      hint: detail.mode === "worktree" ? "Faz o commit na cópia, junta na pasta principal e apaga a cópia." : "Faz o commit na pasta, no ramo em que ela está.",
+      disabled: null,
+    },
+    {
+      id: "branch",
+      label: detail.mode === "worktree" ? `Commit no ramo ${detail.branch ?? ""}` : "Commit num ramo novo",
+      hint: detail.mode === "worktree" ? "O ramo e a cópia ficam para você juntar depois." : "Cria um ramo lume/… na pasta, que fica nele.",
+      disabled: null,
+    },
+    {
+      id: "pull_request",
+      label: "Abrir pull request",
+      hint: `Commit num ramo próprio, push e pull request para ${detail.base_branch ?? "a main"}, com o relatório do Relator como texto.`,
+      disabled: !git ? "Verificando o git…" : !git.remote ? "O repositório não tem remoto." : !git.gh_ready ? "Instale o GitHub CLI e entre nele (gh auth login)." : null,
+    },
+  ]);
 
   // Mensagem de commit sugerida pelo Relator, uma vez só: o usuário pode apagá-la e reescrever.
   let suggested = false;
@@ -271,17 +311,17 @@
     adjustment = "";
     adjustImages = [];
     reopening = false;
-    committed = false;
     follow = true;
   });
   const retry = () => act(async () => {
     await api.retryPipeline(detail.id);
     follow = true;
   });
-  const commit = () => act(async () => {
-    await api.commitPipeline(detail.id, commitMessage);
-    committed = true;
+  const deliver = () => act(async () => {
+    await api.deliverPipeline(detail.id, delivery, commitMessage, push && canPush);
+    await loadDetail();
   });
+  const DELIVERED_LABEL: Record<Delivery, string> = { main: "Commit feito", branch: "Commit feito no ramo", pull_request: "Pull request aberto" };
   const remove = () => act(async () => {
     await api.deletePipeline(detail.id);
     await loadPipelines();
@@ -357,6 +397,8 @@
         <span class="m">{@html icon("folder", 13)}Projeto <b>{projectName(detail.project_id) ?? "?"}</b></span>
         {#if detail.mode === "worktree"}
           <span class="m">{@html icon("branch", 13)}Worktree isolada<code>{detail.branch}</code></span>
+        {:else if detail.mode === "in_place"}
+          <span class="m">{@html icon("branch", 13)}Direto na pasta{#if detail.base_branch}<code>{detail.base_branch}</code>{/if}</span>
         {:else}
           <span class="m warn">{@html icon("alert", 13)}Editando direto na pasta · projeto sem versionamento</span>
         {/if}
@@ -380,7 +422,7 @@
           {#if confirmCancel}
             <div class="confirm" role="dialog" aria-label="Confirmar cancelamento">
               <strong>Cancelar a execução?</strong>
-              <p>{detail.mode === "worktree" ? "O que já foi alterado fica na worktree, para você conferir ou descartar." : "Sem versionamento, o que já foi alterado continua na pasta de desenvolvimento."}</p>
+              <p>{detail.mode === "worktree" ? "O que já foi alterado fica na worktree, para você conferir ou descartar." : detail.mode === "in_place" ? "O que já foi alterado continua na pasta, sem commit: dá para descartar pelo git." : "Sem versionamento, o que já foi alterado continua na pasta de desenvolvimento."}</p>
               <div class="acts">
                 <button type="button" class="btn small" onclick={() => (confirmCancel = false)}>Continuar</button>
                 <button type="button" class="btn small danger" disabled={busy} onclick={cancelRun}>Cancelar execução</button>
@@ -476,7 +518,7 @@
           {#if detail.status === "done"}
             <div class="o-top"><span class="pill ok">Concluída</span><h2>Pronto para você conferir</h2></div>
             <ul class="o-body">
-              <li>{detail.mode === "worktree" ? `Alterações no ramo ${detail.branch}, em ${detail.workdir}` : "Alterações feitas direto na pasta de desenvolvimento"}</li>
+              <li>{detail.mode === "worktree" ? `Alterações no ramo ${detail.branch}, em ${detail.workdir}` : detail.mode === "in_place" ? `Alterações direto em ${detail.workdir}, ainda sem commit` : "Alterações feitas direto na pasta de desenvolvimento"}</li>
               <li>{detail.rounds === 0 ? "O Revisor aprovou de primeira" : `O trabalho voltou ${detail.rounds} ${detail.rounds === 1 ? "vez" : "vezes"} antes de ser aprovado`}</li>
               {#if detail.jira_key}
                 <li>
@@ -488,14 +530,38 @@
                 <li class="warn-text">O Relator não criou a task no Jira{jiraResult?.failed ? `: ${jiraResult.text}` : "; veja o motivo no relatório dele"}.</li>
               {/if}
             </ul>
-            {#if detail.mode === "worktree"}
-              <div class="commit">
+            {#if detail.delivered}
+              {@const d = detail.delivered}
+              <div class="commit delivered">
+                <strong>{DELIVERED_LABEL[d.kind]}</strong>
+                <span class="muted small">
+                  No ramo <code>{d.branch}</code>{d.pushed ? ", enviado ao remoto" : ", só no seu computador"}, às {formatTime(d.at)}.
+                  {#if d.kind === "main" && detail.mode === "worktree"}A cópia isolada foi apagada.{/if}
+                  {#if d.kind !== "main" && detail.mode === "in_place"}A pasta do projeto ficou no ramo <code>{d.branch}</code>.{/if}
+                </span>
+                {#if d.pr_url}<button type="button" class="lnk inline" onclick={() => openUrl(d.pr_url!)}>{d.pr_url} ↗</button>{/if}
+              </div>
+            {:else if detail.mode !== "direct"}
+              <div class="commit" role="group" aria-label="Entrega do resultado">
+                <span class="label">Como entregar</span>
+                <div class="deliveries">
+                  {#each DELIVERY_OPTIONS as o (o.id)}
+                    <label class="delivery" class:on={delivery === o.id} class:off={!!o.disabled} title={o.disabled ?? o.hint}>
+                      <input type="radio" name="pl-delivery" value={o.id} bind:group={delivery} disabled={!!o.disabled} />
+                      <span><b>{o.label}</b><span class="muted small">{o.disabled ?? o.hint}</span></span>
+                    </label>
+                  {/each}
+                </div>
                 <label class="label" for="pl-commit">Mensagem do commit</label>
                 <div class="row-w">
-                  <input id="pl-commit" class="input grow" bind:value={commitMessage} disabled={committed} />
-                  <button type="button" class="btn primary" disabled={busy || committed || !commitMessage.trim()} onclick={commit}>{committed ? "Commit feito" : "Fazer commit no ramo"}</button>
+                  <input id="pl-commit" class="input grow" bind:value={commitMessage} />
+                  <label class="push" title={canPush ? "Envia o ramo ao remoto depois do commit" : "O repositório não tem remoto"}>
+                    <input type="checkbox" checked={push || delivery === "pull_request"} disabled={!canPush || delivery === "pull_request"} onchange={(e) => (push = e.currentTarget.checked)} />
+                    Fazer push
+                  </label>
+                  <button type="button" class="btn primary" disabled={busy || !commitMessage.trim() || (delivery === "pull_request" && !canPr)} onclick={deliver}>Entregar</button>
                 </div>
-                <p class="muted small">Nada foi commitado nem enviado pelos bots: quem decide é você. O push fica com você.</p>
+                <p class="muted small">Os bots não fazem commit nem push: só o que você escolher aqui. A opção marcada e o push padrão se mudam na tela do projeto.</p>
               </div>
             {/if}
             <div class="row-w acts">
@@ -790,6 +856,13 @@
   .o-body { margin: 8px 0 0; font-size: 13px; color: var(--text-body); }
   ul.o-body { padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
   .commit { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .commit.delivered { align-items: flex-start; gap: 2px; font-size: 13px; }
+  .deliveries { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px; margin-bottom: 4px; }
+  .delivery { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .delivery > span { display: flex; flex-direction: column; gap: 2px; }
+  .delivery.on { border-color: var(--accent, currentColor); }
+  .delivery.off { opacity: 0.55; cursor: default; }
+  .push { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; }
   .outcome .acts { justify-content: flex-start; margin-top: 12px; }
 
   .log-card { flex: 1 1 120px; min-height: 120px; display: flex; flex-direction: column; padding: 12px 8px 8px; }
