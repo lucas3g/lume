@@ -1,6 +1,7 @@
 import { api } from "./api";
 import { accounts, activeAccount } from "./state/accounts.svelte";
 import { chat } from "./state/chat.svelte";
+import { liveActivity } from "./state/subagents.svelte";
 import { pipelines, stageMessages } from "./state/pipelines.svelte";
 import {
   duration, isActive, isUserStep, passesByRole, stationPasses, stationRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
@@ -68,7 +69,7 @@ export function stationCards(
       if (last.status === "running" && last.conversation_id) {
         const turn = chat.turns[last.conversation_id];
         account = turn?.account ?? null;
-        activity = turn?.status ?? null;
+        activity = liveActivity(last.conversation_id, turn);
       }
       if (!account && last.conversation_id) {
         const id = stageAccountId(stageMessages(last));

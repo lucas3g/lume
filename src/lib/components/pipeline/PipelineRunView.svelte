@@ -6,6 +6,7 @@
   import { addPastedImages, type PreviewImage } from "../../paste";
   import { accounts } from "../../state/accounts.svelte";
   import { chat, decideFor, openConversation, type DecisionExtras } from "../../state/chat.svelte";
+  import { liveActivity, liveSubagentProgress, liveSubagentTools, loadSubagents } from "../../state/subagents.svelte";
   import PermissionCard from "../PermissionCard.svelte";
   import PlanCard from "../PlanCard.svelte";
   import { questionsOf, withoutRecommended } from "../../tools";
@@ -14,7 +15,7 @@
   import { loadDetail, loadPipelines, openPipeline, pipelines, stageMessages } from "../../state/pipelines.svelte";
   import {
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
-    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, triageQuestions, triageSummary, usageHint, usageText, VISUAL,
+    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, toolLogLine, triageQuestions, triageSummary, usageHint, usageText, VISUAL,
   } from "../../pipeline";
   import { EFFORTS, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
@@ -145,6 +146,7 @@
   $effect(() => {
     void panelLog.length;
     void liveStatus;
+    void subLog.length;
     if (logEl && logStuck) logEl.scrollTop = logEl.scrollHeight;
   });
 
@@ -188,7 +190,22 @@
     onnavigate("project");
   }
 
-  const liveStatus = $derived(panelStage?.status === "running" && panelStage.conversation_id ? chat.turns[panelStage.conversation_id]?.status : null);
+  /** Linha ao vivo do registro; com as ferramentas do subagente já listadas acima dela, só o andamento dele. */
+  const liveStatus = $derived.by(() => {
+    if (panelStage?.status !== "running" || !panelStage.conversation_id) return null;
+    const turn = chat.turns[panelStage.conversation_id];
+    return subLog.length ? liveSubagentProgress(panelStage.conversation_id, turn) : liveActivity(panelStage.conversation_id, turn);
+  });
+  /** O que os subagentes da etapa (ex.: a skill do code review) já fizeram, enquanto ela roda. */
+  const subLog = $derived(
+    panelStage?.status === "running" && panelStage.conversation_id
+      ? liveSubagentTools(panelStage.conversation_id, chat.turns[panelStage.conversation_id]).map((t) => toolLogLine(t.name, t.input, t.is_error, 0))
+      : [],
+  );
+  // Aberta no meio da etapa, a tela busca o que os subagentes já fizeram (os passos novos chegam ao vivo).
+  $effect(() => {
+    if (running?.conversation_id) void loadSubagents(running.conversation_id);
+  });
 
   const accountName = (id: string | null) => accounts.list.find((a) => a.id === id)?.name ?? null;
   function stageAccount(stage: StageRun): string {
@@ -209,7 +226,7 @@
     if (running) {
       const who = STATION[running.role].name;
       if (chat.permissions[running.conversation_id]) return { tone: "you", who, text: "pede sua autorização para continuar" };
-      return { tone: "live", who, text: chat.turns[running.conversation_id]?.status ?? "trabalhando" };
+      return { tone: "live", who, text: liveActivity(running.conversation_id, chat.turns[running.conversation_id]) ?? "trabalhando" };
     }
     if (detail.status === "running") return { tone: "live", who: "", text: "Preparando a próxima etapa…" };
     if (detail.status === "done") return { tone: "ok", who: "", text: `Esteira concluída em ${clock(detail.spent_seconds)} de trabalho dos bots` };
@@ -637,6 +654,9 @@
                   {#each panelLog as l, i (i)}
                     <li class={l.tone}><span class="t" title={fullDate(l.at)}>{formatTime(l.at)}</span><span class="i">{@html icon(l.glyph, 12)}</span><span class="va"><span class="v">{l.verb}</span> <span class="a">{l.target}</span></span></li>
                   {/each}
+                  {#each subLog as l, i (i)}
+                    <li class="sub {l.tone}"><span class="t"></span><span class="i">{@html icon(l.glyph, 12)}</span><span class="va"><span class="v">{l.verb}</span> <span class="a">{l.target}</span></span></li>
+                  {/each}
                   {#if panelStage.status === "running"}
                     <li class="live"><span class="t"></span><span class="i">{#if panelAsking}<span class="dot warn pulse"></span>{:else}<span class="spinner mini"></span>{/if}</span><span class="va"><span class="a">{panelAsking ? "Esperando sua autorização" : (liveStatus ?? "Trabalhando")}</span></span></li>
                   {:else if panelLog.length === 0}
@@ -832,6 +852,8 @@
   .tlog li.swap, .tlog li.swap .a { color: var(--accent-text); }
   .tlog li.error, .tlog li.error .a { color: var(--danger-text); }
   .tlog li.live .a { color: var(--text); }
+  .tlog li.sub .i { opacity: 0.75; }
+  .tlog li.sub .va { padding-left: 10px; border-left: 1px solid var(--border-strong); }
   .failed { color: var(--danger-text); }
   .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .thumb { padding: 0; cursor: zoom-in; width: 56px; height: 56px; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; background: var(--bg); }

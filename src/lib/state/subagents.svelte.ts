@@ -1,7 +1,7 @@
 // Trabalho dos subagentes de cada conversa: o que cada um fez, passo a passo, ao vivo.
 
 import { api } from "../api";
-import { parseInput } from "../tools";
+import { parseInput, summarize } from "../tools";
 import type { SubagentStep } from "../types";
 
 export type SubagentEntry =
@@ -20,6 +20,8 @@ export interface SubagentRun {
   status: SubagentStatus;
   /** O que ele está fazendo agora, enquanto trabalha. */
   activity: string | null;
+  /** O andamento (`activity`) chegou depois da última ferramenta: é a notícia mais nova. */
+  activityIsLatest: boolean;
   summary: string;
   entries: SubagentEntry[];
 }
@@ -36,7 +38,7 @@ const buffered = new Map<string, { parent: string; step: SubagentStep }[]>();
 const loading = new Map<string, Promise<void>>();
 
 function newRun(id: string): SubagentRun {
-  return { id, description: "", agentType: "", prompt: "", background: false, status: "running", activity: null, summary: "", entries: [] };
+  return { id, description: "", agentType: "", prompt: "", background: false, status: "running", activity: null, activityIsLatest: false, summary: "", entries: [] };
 }
 
 function finalStatus(status: string): SubagentStatus {
@@ -59,7 +61,10 @@ function fold(runs: Record<string, SubagentRun>, parent: string, step: SubagentS
       run.background = step.background;
       break;
     case "progress":
-      if (run.status === "running") run.activity = step.description;
+      if (run.status === "running") {
+        run.activity = step.description;
+        run.activityIsLatest = true;
+      }
       break;
     case "text": {
       const last = run.entries.at(-1);
@@ -69,6 +74,7 @@ function fold(runs: Record<string, SubagentRun>, parent: string, step: SubagentS
     case "tool_call":
       if (!run.entries.some((e) => e.kind === "tool" && e.id === step.id)) {
         run.entries.push({ kind: "tool", id: step.id, name: step.name, input: parseInput(step.input), output: null, is_error: false });
+        run.activityIsLatest = false;
       }
       break;
     case "tool_result": {
@@ -172,4 +178,56 @@ export function statusLabel(run: SubagentRun): string {
     case "stopped":
       return "Interrompido";
   }
+}
+
+/** O turno da conversa que roda agora: a situação dele e as chamadas ainda abertas. */
+export interface LiveTurn {
+  status: string | null;
+  running: { id: string }[];
+}
+
+/**
+ * Subagentes que trabalham agora na conversa: os criados por uma chamada ainda aberta no turno e os que
+ * seguem em segundo plano (a chamada deles volta logo). Um subagente gravado como "trabalhando" de uma
+ * passagem antiga não entra: a chamada dele já fechou.
+ */
+function workingRuns(conversationId: string, turn: LiveTurn | undefined): SubagentRun[] {
+  if (!turn) return [];
+  const open = new Set(turn.running.map((r) => r.id));
+  return runsOf(conversationId).filter((r) => r.status === "running" && (open.has(r.id) || r.background));
+}
+
+/** Uma linha sobre a ferramenta, ex.: "Ler src/a.ts". */
+function toolLine(name: string, input: Record<string, unknown>): string {
+  const { label, target } = summarize(name, input);
+  return target ? `${label} ${target}` : label;
+}
+
+/**
+ * O que a conversa está fazendo agora, contando os subagentes: enquanto uma skill ou um subagente
+ * trabalha, o agente principal fica parado na chamada (ex.: "Carregando uma skill") e quem mostra o
+ * andamento é o subagente: o texto de andamento, se é mais novo, ou a última ferramenta. Sem
+ * subagente trabalhando, vale a situação do turno.
+ */
+export function liveActivity(conversationId: string, turn: LiveTurn | undefined): string | null {
+  const run = workingRuns(conversationId, turn).at(-1);
+  if (!run) return turn?.status ?? null;
+  const tool = run.entries.findLast((e) => e.kind === "tool");
+  if (tool?.kind === "tool" && !(run.activity && run.activityIsLatest)) return toolLine(tool.name, tool.input);
+  return run.activity ?? (run.description || turn?.status || null);
+}
+
+/**
+ * Andamento do subagente em curso para a linha ao vivo do registro, que já lista as ferramentas dele:
+ * só o texto de andamento, sem repetir a última ferramenta. `null` sem subagente trabalhando.
+ */
+export function liveSubagentProgress(conversationId: string, turn: LiveTurn | undefined): string | null {
+  const run = workingRuns(conversationId, turn).at(-1);
+  if (!run) return null;
+  return run.activity ?? (run.description || "Subagente trabalhando");
+}
+
+/** Ferramentas que os subagentes em curso na conversa já usaram, para o registro ao vivo da etapa. */
+export function liveSubagentTools(conversationId: string, turn: LiveTurn | undefined): Extract<SubagentEntry, { kind: "tool" }>[] {
+  return workingRuns(conversationId, turn).flatMap((r) => r.entries.filter((e) => e.kind === "tool"));
 }

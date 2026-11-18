@@ -453,6 +453,13 @@ const VERB_GLYPH: Record<string, Glyph> = {
   "Listar arquivos": "search", "Buscar na web": "search", "Ler página": "link",
 };
 
+/** Linha do registro para um uso de ferramenta (do bot ou de um subagente dele). */
+export function toolLogLine(name: string, input: Record<string, unknown>, isError: boolean, at: number): LogLine {
+  const { label, target } = summarize(name, input);
+  const glyph = name.startsWith("mcp__") ? "link" : (VERB_GLYPH[label] ?? "run");
+  return { at, glyph: isError ? "x" : glyph, verb: label, target, tone: isError ? "error" : "" };
+}
+
 /** O que o bot fez, a partir das mensagens gravadas na conversa da etapa. */
 export function stageLog(messages: Message[]): LogLine[] {
   const lines: LogLine[] = [];
@@ -461,9 +468,7 @@ export function stageLog(messages: Message[]): LogLine[] {
     if (m.role === "tool") {
       const use = parseToolUse(m.content);
       if (!use) continue;
-      const { label, target } = summarize(use.name, use.input);
-      const glyph = use.name.startsWith("mcp__") ? "link" : (VERB_GLYPH[label] ?? "run");
-      lines.push({ at: m.created_at, glyph: use.is_error ? "x" : glyph, verb: label, target, tone: use.is_error ? "error" : "" });
+      lines.push(toolLogLine(use.name, use.input, use.is_error, m.created_at));
     } else if (m.role === "notice") {
       const swap = /conta/i.test(m.content);
       lines.push({ at: m.created_at, glyph: swap ? "swap" : "alert", verb: swap ? "Conta" : "Aviso", target: m.content, tone: swap ? "swap" : "warn" });
