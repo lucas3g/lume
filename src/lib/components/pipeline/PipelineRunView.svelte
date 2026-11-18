@@ -443,7 +443,7 @@
               <li>{detail.rounds === 0 ? "O Revisor aprovou de primeira" : `O trabalho voltou ${detail.rounds} ${detail.rounds === 1 ? "vez" : "vezes"} antes de ser aprovado`}</li>
               {#if detail.jira_key}
                 <li>
-                  {createdTask ? "Task criada no Jira pelo Relator:" : "Task do Jira comentada pelo Relator:"}
+                  {createdTask ? "Task criada no Jira pelo Relator:" : "Solução escrita pelo Relator na task do Jira:"}
                   {#if detail.jira_url}<button type="button" class="lnk inline" onclick={() => openUrl(detail.jira_url!)}>{detail.jira_key} ↗</button>{:else}<b>{detail.jira_key}</b>{/if}
                 </li>
                 {#if jiraResult}<li class:warn-text={jiraResult.failed}>{jiraResult.failed ? `Falhou no Jira: ${jiraResult.text}` : `No Jira: ${jiraResult.text}`}</li>{/if}
@@ -480,7 +480,7 @@
                   <button type="button" class="btn small" onclick={() => (reopening = false)}>Voltar</button>
                 </div>
                 <p class="muted small">
-                  O Implementador corrige a partir do seu texto, o Revisor e o Testador conferem de novo e o Relator comenta na
+                  O Implementador corrige a partir do seu texto, o Revisor e o Testador conferem de novo e o Relator atualiza a Solução na
                   {detail.jira_key ? ` mesma task ${detail.jira_key}` : " task do Jira (sem criar outra, se ela já existir)"}.
                 </p>
               </div>

@@ -1085,13 +1085,13 @@ mod tests {
 
         assert!(uc.reopen(&run.id, "  ").is_err());
         uc.reopen(&run.id, "O botão exporta o arquivo vazio").unwrap();
-        let again = Bots::new(vec![Ok("ajustei"), Ok("VEREDITO: APROVADO"), Ok("VEREDITO: APROVADO"), Ok("```json\n[]\n```"), Ok("Comentei na EI-6001\nCOMMIT: y")]);
+        let again = Bots::new(vec![Ok("ajustei"), Ok("VEREDITO: APROVADO"), Ok("VEREDITO: APROVADO"), Ok("```json\n[]\n```"), Ok("Escrevi a Solução na EI-6001\nCOMMIT: y")]);
         uc.advance(&run.id, &again).await.unwrap();
         let prompts = again.prompts.lock().unwrap().clone();
         assert!(prompts[0].contains("<ajuste_do_usuario>\nO botão exporta o arquivo vazio") && !prompts[0].contains("falta X"), "o Implementador recebe o ajuste, não a devolução antiga");
         assert!(prompts[1].contains("Ajuste pedido pelo usuário depois de testar: O botão exporta o arquivo vazio"));
         assert!(prompts[3].contains("os caminhos dos arquivos que o Implementador alterou"), "cada reabertura é um ciclo novo, com o seu code review");
-        assert!(prompts[4].contains("Comente na task EI-6001") && !prompts[4].contains("crie uma no Jira"), "não cria outra task");
+        assert!(prompts[4].contains("Escreva na task EI-6001") && prompts[4].contains("não comente") && !prompts[4].contains("crie uma no Jira"), "escreve a Solução na mesma task, sem criar outra");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!((detail.run.status, detail.run.rounds, detail.run.jira_key.as_deref()), (RunStatus::Done, 0, Some("EI-6001")));
         let implementer_rounds: Vec<i64> = detail.stages.iter().filter(|s| s.role == Role::Implementer).map(|s| s.round).collect();

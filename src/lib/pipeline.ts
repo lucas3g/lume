@@ -40,7 +40,7 @@ export const STATIONS: Station[] = [
     does: "Sempre roda a skill code-review do CLI (sem projeto versionado, nos arquivos alterados) e lista todos os achados dela. Você escolhe o que corrigir e decide os que têm mais de um caminho.",
     receives: "As alterações aprovadas e testadas.", delivers: "Os achados, com a gravidade e, quando há, os caminhos possíveis." },
   { role: "reporter", name: "Relator", model: "Modelo rápido", tier: "fast", perm: "Jira",
-    does: "Comenta o resultado na task, move para revisão e sugere a mensagem de commit. Não faz commit nem push.",
+    does: "Escreve o que foi feito no item Solução da descrição da task (sem comentar), move para Teste e sugere a mensagem de commit. Não faz commit nem push.",
     receives: "Plano, resumo da implementação, revisão e testes.", delivers: "O comentário no Jira, a mudança de status e a sugestão de commit." },
 ];
 

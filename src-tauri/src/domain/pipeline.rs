@@ -712,19 +712,22 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
         Role::Approval | Role::DesignApproval | Role::Feedback | Role::ReviewChoice | Role::Resume => String::new(),
         Role::Reporter => {
             let round = match &ctx.user_feedback {
-                Some(f) => format!("Esta é uma rodada de ajuste pedida pelo usuário depois da entrega ({f}). O relatório e o comentário falam do que foi ajustado.\n"),
+                Some(f) => format!("Esta é uma rodada de ajuste pedida pelo usuário depois da entrega ({f}). O relatório e a Solução da task falam também do que foi ajustado.\n"),
                 None => String::new(),
             };
             // A task vai para teste (é o que vem depois da entrega no quadro); sem esse status, para revisão.
             let to_test = "mova a task para o status de teste: veja as transições disponíveis da task e use a que leva a \
                 \"Teste\", \"Em teste\", \"Testes\" ou \"QA\"; só se não houver nenhuma de teste, use a de revisão (ex.: \
                 \"Em revisão\", \"Code review\"). Não feche a task.";
-            let outcome = "Antes da linha do commit, escreva `JIRA: <o que foi feito na task: comentário e status novo>`, ou \
-                `JIRA: falhou (<o que deu errado>)` se não houver acesso ao Jira ou o comentário ou a transição falhar.";
+            let outcome = "Antes da linha do commit, escreva `JIRA: <o que foi feito na task: Solução escrita e status novo>`, ou \
+                `JIRA: falhou (<o que deu errado>)` se não houver acesso ao Jira ou a edição ou a transição falhar.";
             let jira = match &run.jira_key {
                 Some(key) => format!(
-                    "Comente na task {key} do Jira (conector do Atlassian) um relatório do que foi feito: o que mudou, os arquivos \
-                     principais, como foi verificado e o que ficou pendente. Depois, {to_test}\n{outcome}"
+                    "Escreva na task {key} do Jira (conector do Atlassian) o que foi feito, direto na descrição: não comente na \
+                     task. Leia a descrição atual e preencha o item \"Solução:\" dela com o que mudou, os arquivos principais, \
+                     como foi verificado e o que ficou pendente. Se o item já tiver texto, substitua só esse texto; se a descrição \
+                     não tiver o item, acrescente \"Solução:\" no fim. O resto da descrição fica exatamente como está. Depois, \
+                     {to_test}\n{outcome}"
                 ),
                 None => {
                     // Sem modelo configurado (o padrão fica salvo só no computador em que foi preenchido), a task
@@ -1421,7 +1424,7 @@ mod tests {
         assert!(no_model.contains("crie uma no Jira") && no_model.contains("assignee = currentUser()"), "sem modelo, a task mais recente do usuário serve de modelo");
         assert!(no_model.contains("\"Teste\"") && no_model.contains("JIRA: falhou"), "a task vai para teste e o resultado no Jira é relatado");
         let found = PipelineRun { jira_template: template, ..run(WorkMode::Direct, Some("EI-7")) };
-        assert!(stage_prompt(Role::Reporter, &found, &StageContext::default()).contains("Comente na task EI-7"));
+        assert!(stage_prompt(Role::Reporter, &found, &StageContext::default()).contains("Escreva na task EI-7"));
 
         assert_eq!(task_ref("https://elinfo.atlassian.net/browse/EI-5198"), Some(("EI-5198".into(), Some("https://elinfo.atlassian.net".into()))));
         assert_eq!(task_ref("https://elinfo.atlassian.net/jira/browse/EI-5198?x=1"), Some(("EI-5198".into(), Some("https://elinfo.atlassian.net".into()))));
