@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, errorMessage } from "../../api";
-  import { OPTIONAL_ROLES, STATIONS } from "../../pipeline";
+  import { BOT_STEPS, OPTIONAL_ROLES } from "../../pipeline";
   import { agents } from "../../state/agents.svelte";
   import { EFFORTS, type PipelineConfig, type PipelineRole, type View } from "../../types";
   import Toggle from "../Toggle.svelte";
@@ -18,8 +18,6 @@
   /** Projeto cuja configuração está carregada; até chegar a nova, nada é salvo. */
   let loadedFor = $state<string | null>(null);
   let error = $state<string | null>(null);
-
-  const bots = STATIONS.filter((s) => !s.gate);
 
   $effect(() => {
     const id = projectId;
@@ -97,13 +95,14 @@
     <button type="button" class="btn small" onclick={() => onnavigate("skills")}>Cadastrar agentes</button>
   </div>
   {#if error}<p class="error-text pad" role="alert">{error}</p>{/if}
-  {#each bots as s (s.role)}
+  {#each BOT_STEPS as s (s.role)}
     {@const optional = OPTIONAL_ROLES.includes(s.role)}
     {@const on = !config.skipped.includes(s.role)}
+    {@const note = optional ? "" : s.role === "designer" ? " · liga ao criar a execução" : " · obrigatório"}
     <div class="line" class:off={!on}>
       <div class="grow">
         <div class="name">{s.name}</div>
-        <div class="muted small">{s.model} · {s.perm}{optional ? "" : " · obrigatório"}</div>
+        <div class="muted small">{s.model} · {s.perm}{note}</div>
       </div>
       <select class="input agent" aria-label={`Agente do ${s.name}`} value={config.agents[s.role] ?? ""} disabled={!on}
         onchange={(e) => setAgent(s.role, e.currentTarget.value)}>

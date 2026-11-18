@@ -67,6 +67,9 @@ export const DESIGNER_STEP: Station = {
   receives: "A task e as notas da Triagem; nas voltas, os seus ajustes.", delivers: "O link do design e uma especificação curta.",
 };
 
+/** Os bots que podem ter agente e esforço, na ordem em que rodam: o Designer, sem estação própria, vem depois da Triagem. */
+export const BOT_STEPS: Station[] = STATIONS.filter((s) => !s.gate).flatMap((s) => (s.role === "triage" ? [s, DESIGNER_STEP] : [s]));
+
 /** Sua aprovação do design; aparece no registro e, na esteira, na sua mesa (estação da aprovação). */
 export const DESIGN_APPROVAL_STEP: Station = {
   role: "design_approval", name: "Aprovação do design", model: null, tier: null, perm: "você decide", gate: true,

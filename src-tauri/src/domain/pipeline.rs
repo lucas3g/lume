@@ -548,8 +548,12 @@ pub struct StageContext {
     pub answered_return: Option<String>,
     pub review: Option<String>,
     pub tests: Option<String>,
-    /// Resumo do code review e as correções que o usuário escolheu.
+    /// Resumo do code review e as correções que o usuário escolheu (e, quando o Implementador já as
+    /// fez, o aviso de que não estão mais pendentes).
     pub code_review: Option<String>,
+    /// Todas as passagens do Implementador na execução, em ordem: o Relator conta o trabalho inteiro,
+    /// não só a última correção.
+    pub implementations: Vec<String>,
     /// Ajuste mais recente que o usuário pediu ao reabrir a execução concluída.
     pub user_feedback: Option<String>,
     /// A etapa continua a sessão da passagem anterior do mesmo papel: o bot já tem a task, o plano e
@@ -858,13 +862,36 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 \"Em revisão\", \"Code review\"). Não feche a task.";
             let outcome = "Antes da linha do commit, escreva `JIRA: <o que foi feito na task: Solução escrita e status novo>`, ou \
                 `JIRA: falhou (<o que deu errado>)` se não houver acesso ao Jira ou a edição ou a transição falhar.";
+            // Quem lê a task é o QA: o que mudou para quem usa e como testar, sem o processo interno da esteira.
+            let qa = "para o QA saber o que testar: o que mudou para quem usa o sistema (telas, campos, comportamentos), \
+                      onde fica, como testar (passos e o resultado esperado) e os arquivos principais numa linha.";
+            let qa_items = "para o QA saber o que testar: o que mudou para quem usa o sistema, onde fica, e como testar \
+                            (passos e o resultado esperado).";
+            let leave_out = "Não escreva na task o processo interno da esteira: verificações feitas pelos bots (encoding, \
+                             análise estática, lint, testes automatizados, se compilou ou não), a revisão, o code review e os \
+                             achados dele, as regras do projeto. Pendência é só o que ficou de fato sem fazer do que foi \
+                             pedido; o que foi apontado nas revisões e corrigido nas voltas não é pendência.";
+            // Na task criada, os campos vêm copiados do modelo (com quem desenvolveu aquela): o usuário entra no lugar.
+            let coder = |when: &str, people: &str| {
+                format!(
+                    "O desenvolvedor da task é o usuário do conector (o accountId vem do atlassianUserInfo): coloque-o nos \
+                     campos de pessoa que dizem quem desenvolveu (ex.: \"Codificador\", \"Desenvolvedor\"; veja os campos \
+                     editáveis da task), {when}. {people} "
+                )
+            };
+            // A entrega é agora: a task vai para teste nesta etapa.
+            let delivered = "Preencha o campo de data e hora da entrega (ex.: \"Data entregue\", \"Data de entrega\"; veja os \
+                             campos editáveis da task) com a data e a hora de agora, no fuso deste computador: pegue com o comando \
+                             `date +%Y-%m-%dT%H:%M:%S.000%z` e mande no formato que o campo pede (data e hora, ou só a data se o \
+                             campo for só de data). Se a task já tiver uma data nele, substitua: vale a entrega mais recente. ";
+            let coder_existing = coder("se estiverem vazios", "Não mude o Relator nem o Responsável.");
+            let coder_new = coder("mesmo que o modelo traga outra pessoa neles", "Não copie do modelo o Relator nem o Responsável: o Jira põe você como relator, e o responsável fica sem ninguém.");
             let jira = match &run.jira_key {
                 Some(key) => format!(
                     "Escreva na task {key} do Jira (conector do Atlassian) o que foi feito, direto na descrição: não comente na \
-                     task. Leia a descrição atual e preencha o item \"Solução:\" dela com o que mudou, os arquivos principais, \
-                     como foi verificado e o que ficou pendente. Se o item já tiver texto, substitua só esse texto; se a descrição \
-                     não tiver o item, acrescente \"Solução:\" no fim. O resto da descrição fica exatamente como está. Depois, \
-                     {to_test}\n{outcome}"
+                     task. Leia a descrição atual e preencha o item \"Solução:\" dela {qa} Se o item já tiver texto, substitua \
+                     só esse texto; se a descrição não tiver o item, acrescente \"Solução:\" no fim. O resto da descrição fica \
+                     exatamente como está. {coder_existing}{delivered}Depois, {to_test}\n{outcome}"
                 ),
                 None => {
                     // Sem modelo configurado (o padrão fica salvo só no computador em que foi preenchido), a task
@@ -880,9 +907,9 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                         "Não há task do Jira para este pedido: crie uma no Jira com o conector do Atlassian, {model} o mesmo projeto, o mesmo tipo de issue e os mesmos valores dos campos \
                          personalizados (ex.: Sistema, Nível de dificuldade). O resumo é o título do pedido. A descrição segue \
                          exatamente os itens da descrição do modelo, na mesma ordem: preencha cada um com o que se sabe pelo \
-                         pedido, pelo plano, pela implementação e pelos testes (ex.: Descrição/Problema, Solução, Testes, Caminho, \
-                         Módulo). O que não se sabe (ex.: cliente, gestor, responsável), escreva \"Não informado\": nunca invente. \
-                         Depois de criar, {to_test}\n\
+                         pedido, pelo plano e pela implementação (ex.: Descrição/Problema, Solução, Testes, Caminho, Módulo). A \
+                         Solução e os Testes são {qa_items} O que não se sabe (ex.: cliente, gestor), escreva \"Não informado\": \
+                         nunca invente. {coder_new}{delivered}Depois de criar, {to_test}\n\
                          Antes da linha do commit, escreva `TASK_CRIADA: <link completo da task criada>`, ou \
                          `TASK_CRIADA: nenhuma (<motivo>)` se não houver acesso ao Jira ou a criação falhar.\n{outcome}"
                     )
@@ -890,10 +917,14 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             };
             format!(
                 "{task}\n{round}<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n{}\n\
-                 {jira}\nNão faça commit nem push. Responda com o relatório final e uma sugestão de mensagem de commit em uma linha \
+                 {jira}\n{leave_out}\nNão faça commit nem push. Responda com o relatório final e uma sugestão de mensagem de commit em uma linha \
                  na última linha, no formato `COMMIT: <mensagem>`.",
                 ctx.plan.as_deref().unwrap_or(""),
-                ctx.implementation.as_deref().unwrap_or(""),
+                match ctx.implementations.as_slice() {
+                    [] => ctx.implementation.clone().unwrap_or_default(),
+                    [one] => one.clone(),
+                    all => implementation_passes(all),
+                },
                 ctx.review.as_deref().unwrap_or(""),
                 ctx.tests.as_deref().unwrap_or(""),
                 ctx.code_review.as_deref().map(|c| format!("<code_review>\n{c}\n</code_review>\n")).unwrap_or_default(),
@@ -901,6 +932,27 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
         }
     };
     format!("{header}{start}{body}")
+}
+
+/// Tamanho máximo de cada passagem intermediária do Implementador no prompt do Relator.
+const MIDDLE_PASS_CHARS: usize = 1500;
+
+/// As passagens do Implementador, numeradas, para o Relator. A primeira (a implementação) e a última
+/// vão inteiras; as do meio (correções nas voltas) vão encurtadas, para o prompt não crescer a cada volta.
+fn implementation_passes(all: &[String]) -> String {
+    let last = all.len() - 1;
+    all.iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let text = if i == 0 || i == last || text.chars().count() <= MIDDLE_PASS_CHARS {
+                text.clone()
+            } else {
+                format!("{}…", text.chars().take(MIDDLE_PASS_CHARS).collect::<String>())
+            };
+            format!("Passagem {}:\n{text}", i + 1)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Chave e, se houver, endereço do site de uma task citada por link
@@ -1137,11 +1189,30 @@ pub fn context_for(stages: &[StageRun]) -> StageContext {
             .rposition(|s| s.role == Role::CodeReview && !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled) && s.output.is_some())
             .map(|i| {
                 let review = stages[i].output.clone().unwrap_or_default();
-                match effective(&stages[i + 1..]).rfind(|s| s.role == Role::ReviewChoice).and_then(|s| s.output.as_deref()) {
-                    Some(choice) => format!("{review}\n\nEscolha do usuário:\n{choice}"),
-                    None => review,
+                let after = &stages[i + 1..];
+                let Some(at) = after.iter().rposition(|s| s.role == Role::ReviewChoice && !matches!(s.status, StageStatus::Failed | StageStatus::Cancelled))
+                else {
+                    return review;
+                };
+                let choice = &after[at];
+                let Some(chosen) = choice.output.as_deref() else {
+                    return review;
+                };
+                let text = format!("{review}\n\nEscolha do usuário:\n{chosen}");
+                // Com correções escolhidas, o Implementador as faz e as etapas seguintes conferem: depois
+                // disso elas não estão pendentes (o code review não roda de novo para dizer isso).
+                let fixed = choice.status == StageStatus::Returned
+                    && after[at + 1..].iter().any(|s| s.role == Role::Implementer && s.status == StageStatus::Done);
+                if fixed {
+                    format!(
+                        "{text}\n\nSituação: as correções escolhidas já foram feitas pelo Implementador depois desta escolha e \
+                         conferidas de novo pelas etapas seguintes. Não estão pendentes."
+                    )
+                } else {
+                    text
                 }
             }),
+        implementations: effective(stages).filter(|s| s.role == Role::Implementer).filter_map(|s| s.output.clone()).collect(),
         user_feedback: latest(Role::Feedback),
         resumed: false,
     }
@@ -1505,6 +1576,7 @@ mod tests {
         stages.last_mut().unwrap().output = Some("Achei coisas, mas esqueci o bloco.".into());
         assert_eq!(next_step(&stages, &Role::OPT_IN), Next::AskChoice);
         stages.push(stage(Role::ReviewChoice, Done, "Nenhuma correção escolhida."));
+        assert!(!context_for(&stages).code_review.unwrap().contains("Não estão pendentes"), "sem correção escolhida, nada foi corrigido");
         assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Reporter));
         assert_eq!(next_step(&stages, &[Role::Reporter]), Next::Finish(RunStatus::Done, None));
         assert_eq!(spent_seconds(&stages, 10), 40, "a espera pela sua escolha não conta no orçamento");
@@ -1669,7 +1741,31 @@ mod tests {
         assert!(no_model.contains("crie uma no Jira") && no_model.contains("assignee = currentUser()"), "sem modelo, a task mais recente do usuário serve de modelo");
         assert!(no_model.contains("\"Teste\"") && no_model.contains("JIRA: falhou"), "a task vai para teste e o resultado no Jira é relatado");
         let found = PipelineRun { jira_template: template, ..run(WorkMode::Direct, Some("EI-7")) };
-        assert!(stage_prompt(Role::Reporter, &found, &StageContext::default()).contains("Escreva na task EI-7"));
+        let existing = stage_prompt(Role::Reporter, &found, &StageContext::default());
+        assert!(existing.contains("Escreva na task EI-7"));
+        for p in [&prompt, &existing] {
+            assert!(p.contains("para o QA saber o que testar") && p.contains("Não escreva na task o processo interno"), "a task fala com o QA");
+            assert!(p.contains("\"Codificador\"") && p.contains("atlassianUserInfo"), "o desenvolvedor vai no campo de quem desenvolveu");
+            assert!(p.contains("Responsável"));
+            assert!(p.contains("\"Data entregue\"") && p.contains("date +%Y-%m-%dT%H:%M:%S.000%z"), "a data e a hora da entrega vão na task");
+        }
+
+        // Correções escolhidas no code review e feitas depois: não são pendências, e o Relator vê todas as passagens.
+        use StageStatus::*;
+        let stages = vec![
+            stage(Role::Implementer, Done, "fiz a tela"),
+            stage(Role::CodeReview, Done, "Achei 2.\n```json\n[]\n```"),
+            stage(Role::ReviewChoice, Returned, "Corrija A1 e A2."),
+            stage(Role::Implementer, Done, "corrigi A1 e A2"),
+        ];
+        let ctx = context_for(&stages);
+        assert!(ctx.code_review.as_deref().unwrap().contains("Não estão pendentes"));
+        let report = stage_prompt(Role::Reporter, &found, &ctx);
+        assert!(report.contains("Passagem 1:\nfiz a tela") && report.contains("Passagem 2:\ncorrigi A1 e A2"));
+        let long = "x".repeat(MIDDLE_PASS_CHARS + 10);
+        let passes = implementation_passes(&[long.clone(), long.clone(), long.clone()]);
+        assert_eq!(passes.matches(&long).count(), 2, "a primeira e a última vão inteiras; a do meio, encurtada");
+        assert!(!context_for(&stages[..3]).code_review.unwrap().contains("Não estão pendentes"), "antes da correção, ainda está por fazer");
 
         assert_eq!(task_ref("https://elinfo.atlassian.net/browse/EI-5198"), Some(("EI-5198".into(), Some("https://elinfo.atlassian.net".into()))));
         assert_eq!(task_ref("https://elinfo.atlassian.net/jira/browse/EI-5198?x=1"), Some(("EI-5198".into(), Some("https://elinfo.atlassian.net".into()))));
