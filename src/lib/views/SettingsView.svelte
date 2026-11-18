@@ -1,6 +1,16 @@
 <script lang="ts">
   import { api, errorMessage } from "../api";
   import { setPipelineView, ui, type PipelineViewMode } from "../state/ui.svelte";
+  import { checkForUpdate, installUpdate, updates } from "../state/updates.svelte";
+
+  /** Situação da atualização, em uma frase. */
+  const updateText = $derived.by(() => {
+    if (updates.progress !== null) return `Baixando a versão ${updates.found?.version}${updates.progress ? ` (${updates.progress}%)` : ""}…`;
+    if (updates.checking) return "Procurando versão nova…";
+    if (updates.found) return `A versão ${updates.found.version} está disponível.`;
+    if (updates.checked) return `Você está na versão mais recente. Última busca às ${new Date(updates.checked).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}.`;
+    return "O Lume procura versão nova sozinho ao abrir e de hora em hora.";
+  });
 
   const PIPELINE_VIEWS: { id: PipelineViewMode; title: string; description: string }[] = [
     { id: "track", title: "Esteira", description: "Cartões em trilha, com as voltas entre as estações e o trabalho passando de uma para a outra." },
@@ -45,6 +55,25 @@
         <p>Preferências do Lume neste computador.</p>
       </div>
     </header>
+
+    <section class="card panel" aria-labelledby="updates-title">
+      <h2 class="section-title" id="updates-title">Atualizações</h2>
+      <div class="update-row">
+        <div class="grow">
+          <span class="title">Lume {updates.current ?? ""}</span>
+          <p class="muted small" role="status">{updateText}</p>
+        </div>
+        {#if updates.found}
+          <button type="button" class="btn primary" disabled={updates.progress !== null} onclick={installUpdate}>Atualizar e reabrir</button>
+        {:else}
+          <button type="button" class="btn" disabled={updates.checking} onclick={() => void checkForUpdate(true)}>
+            {updates.checking ? "Procurando…" : "Procurar atualização"}
+          </button>
+        {/if}
+      </div>
+      {#if updates.checkError}<p class="error-text" role="alert">Não deu para procurar: {updates.checkError}</p>{/if}
+      {#if updates.installError}<p class="error-text" role="alert">Não deu para atualizar: {updates.installError}</p>{/if}
+    </section>
 
     <section class="card panel" aria-labelledby="pipeline-view-title">
       <h2 class="section-title" id="pipeline-view-title">Esteira de bots</h2>
@@ -100,6 +129,8 @@
   .choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .choice:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
   .title { font-weight: 600; }
+  .update-row { display: flex; align-items: center; gap: 12px; }
+  .update-row p { margin: 2px 0 0; }
   .template { display: flex; align-items: center; gap: 12px; padding-top: 12px; border-top: 1px solid var(--hairline); }
   .template label { display: flex; flex-direction: column; gap: 2px; }
   .grow { flex: 1; min-width: 0; }
