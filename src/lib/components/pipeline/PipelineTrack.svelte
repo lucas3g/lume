@@ -26,11 +26,16 @@
   const cards = $derived(stationCards(detail, now, passes));
 
   const returnedBy = (role: PipelineRole) => passes[role].filter((s) => s.status === "returned").length;
+  /** Devoluções do Revisor ou do Testador na contagem atual de voltas (o ajuste e a retomada a recomeçam). */
+  const returnedSinceMarker = (role: PipelineRole) => {
+    const start = detail.stages.findLastIndex((s) => isMarker(s.role)) + 1;
+    return detail.stages.slice(start).filter((s) => s.role === role && s.status === "returned").length;
+  };
   const arcs = $derived({
     // O ajuste no design volta à mesma estação (o Designer fica na do Planejador): a mesma seta.
     plan: returnedBy("approval") + returnedBy("design_approval"),
-    review: returnedBy("reviewer"),
-    test: returnedBy("tester"),
+    review: returnedSinceMarker("reviewer"),
+    test: returnedSinceMarker("tester"),
     fix: returnedBy("review_choice"),
   });
   /** Trilho até a estação já percorrido. */

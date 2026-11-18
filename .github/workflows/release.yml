@@ -1,9 +1,11 @@
 name: Release
 
-# A cada push na main, confere a versão do app. Se ainda não existe a tag vX.Y.Z
-# dessa versão, publica no GitHub Releases o instalador NSIS do Windows e o
-# latest.json que o updater do app consulta; a própria release cria
-# a tag. Para publicar, basta subir a versão: `pnpm release X.Y.Z`.
+# A cada push na main, confere a versão do app. Se a release vX.Y.Z dessa versão
+# ainda não existe com o latest.json, roda as verificações e publica no GitHub
+# Releases o instalador NSIS do Windows e o latest.json que o updater do app
+# consulta; a própria release cria a tag. Uma publicação que parou no meio (tag
+# criada, arquivos faltando) é completada no push seguinte.
+# Para publicar, basta subir a versão: `pnpm release X.Y.Z`.
 on:
   push:
     branches: [main]
@@ -31,6 +33,7 @@ jobs:
         id: read
         env:
           HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           app=$(jq -r .version src-tauri/tauri.conf.json)
           pkg=$(jq -r .version package.json)
@@ -40,7 +43,9 @@ jobs:
             exit 1
           fi
           echo "version=$app" >> "$GITHUB_OUTPUT"
-          if git rev-parse -q --verify "refs/tags/v$app" >/dev/null; then
+          # Publicada só vale com o latest.json na release: sem ele, os apps instalados não veem a versão.
+          assets=$(gh release view "v$app" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if echo "$assets" | grep -qx latest.json; then
             echo "A v$app já foi publicada; nada a fazer."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           elif [ "$HAS_KEY" != "true" ]; then
@@ -51,11 +56,13 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
+  # Verificações num job próprio, com o seu tempo: compilar os testes (debug) e o
+  # instalador (release) no mesmo job dobrava a compilação sob um só limite.
+  checks:
     needs: version
     if: needs.version.outputs.publish == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -83,6 +90,32 @@ jobs:
       - name: Testes do núcleo
         working-directory: src-tauri
         run: cargo test
+
+  build:
+    needs: [version, checks]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Instalar dependências do frontend
+        run: pnpm install --frozen-lockfile
 
       - uses: tauri-apps/tauri-action@v0
         env:

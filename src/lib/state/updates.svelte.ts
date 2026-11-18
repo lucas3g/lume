@@ -36,14 +36,17 @@ export async function checkForUpdate(manual = false): Promise<void> {
     if (found && found.version !== updates.found?.version) updates.dismissed = false;
     // Pedida por você, a versão encontrada volta a aparecer no topo mesmo se você tinha dispensado.
     if (found && manual) updates.dismissed = false;
+    // Cada busca devolve um objeto novo, preso a um recurso no núcleo: o anterior é liberado.
+    const previous = updates.found;
     updates.found = found;
+    if (previous && previous !== found) void previous.close().catch(() => {});
     updates.checked = Date.now();
     updates.checkError = null;
   } catch (e) {
     if (manual) {
       const message = errorMessage(e);
       // As versões publicadas só trazem o instalador do Windows: no macOS não há o que baixar.
-      updates.checkError = /platforms?\b/i.test(message)
+      updates.checkError = /Mac/i.test(navigator.userAgent) && /platforms?\b/i.test(message)
         ? "as versões publicadas são só para Windows; neste sistema, atualize compilando o Lume."
         : message;
     }

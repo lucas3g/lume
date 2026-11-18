@@ -492,7 +492,7 @@
           {:else}
             <div class="o-top"><span class="pill {status.tone}">{status.label}</span><h2>{detail.status === "cancelled" ? "Execução cancelada por você" : "A esteira parou"}</h2></div>
             {#if detail.note}<p class="o-body">{detail.note}</p>{/if}
-            <p class="o-body muted">{detail.mode === "worktree" ? `O que já foi alterado continua na worktree ${detail.branch}.` : "O que já foi alterado continua na pasta de desenvolvimento."} {detail.stages.findLast((s) => s.status !== "failed" && s.status !== "cancelled")?.status === "returned" && detail.rounds >= detail.max_rounds ? "Ao retomar, a contagem de voltas recomeça e o Implementador corrige o que foi apontado por último." : "Ao retomar, a etapa que parou roda de novo."}</p>
+            <p class="o-body muted">{detail.mode === "worktree" ? `O que já foi alterado continua na worktree ${detail.branch}.` : "O que já foi alterado continua na pasta de desenvolvimento."} {detail.round_limit ? "Ao retomar, a contagem de voltas recomeça e o Implementador corrige o que foi apontado por último." : "Ao retomar, a etapa que parou roda de novo."}</p>
             <div class="row-w acts"><button type="button" class="btn primary" disabled={busy} onclick={retry}>Retomar execução</button></div>
           {/if}
         </section>

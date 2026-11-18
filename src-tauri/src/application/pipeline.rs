@@ -16,7 +16,7 @@ use crate::domain::{
     account::Provider,
     chat::{Attachment, Message, ARTIFACTS_PREFIX, ARTIFACT_TOOL, KIND_AGENT, ROLE_ASSISTANT, ROLE_USER},
     pipeline::{
-        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, next_step, normalize_jira_key, implementer_passes, rounds, spent_seconds, stage_prompt,
+        branch_slug, clip_diff, created_task, jira_site, task_ref, task_url, context_for, finished_status, hit_round_limit, next_step, normalize_jira_key, implementer_round, rounds, spent_seconds, stage_prompt,
         suggested_commit, fix_request, fixing_review, parse_design_url, parse_findings, Finding, Next, ReviewPick, PipelineConfig, PipelineRun, Role, RunAgent, TierModels, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_ROUNDS, RunStatus, StageRun, StageStatus, WorkMode, DEFAULT_BUDGET_MINUTES,
     },
     project::{folder_name, normalize_folder},
@@ -79,6 +79,8 @@ pub struct RunDetail {
     pub commit_message: Option<String>,
     /// Voltas máximas do Implementador antes de a esteira parar.
     pub max_rounds: i64,
+    /// A execução parou no limite de voltas: retomar zera a contagem.
+    pub round_limit: bool,
     /// Modelo de cada etapa (por id) em cada serviço.
     pub stage_models: BTreeMap<String, StageModels>,
 }
@@ -127,7 +129,7 @@ impl ManagePipelines {
             let others = conversation.provider_models;
             stage_models.insert(stage.id.clone(), StageModels { claude, others });
         }
-        Ok(RunDetail { stage_models, max_rounds: MAX_ROUNDS, spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+        Ok(RunDetail { stage_models, max_rounds: MAX_ROUNDS, round_limit: hit_round_limit(&stages), spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
     }
 
     /// Como a esteira roda no projeto; sem configuração, todos os papéis com as regras padrão.
@@ -415,7 +417,7 @@ impl ManagePipelines {
         }
         // A volta do Implementador é o número de passagens dele antes desta; a que aplica as
         // correções do code review fica na volta em que já estava.
-        let round = if role == Role::Implementer && !fixing_review(stages) { implementer_passes(stages) } else { rounds(stages) };
+        let round = if role == Role::Implementer && !fixing_review(stages) { implementer_round(stages) } else { rounds(stages) };
         let mut stage = StageRun {
             id: self.ids.new_id(),
             run_id: run.id.clone(),
@@ -621,10 +623,11 @@ impl ManagePipelines {
             return Err(AppError("Só dá para retomar uma execução que falhou ou foi cancelada.".into()));
         }
         let mut stages = self.pipelines.stages(run_id)?;
-        if hit_round_limit(&stages) {
-            // Parou no limite de voltas: retomar zera a contagem e devolve o trabalho ao Implementador.
+        // Parou no limite de voltas: retomar zera a contagem e devolve o trabalho ao Implementador.
+        // A marca só é gravada depois de conferir que a execução pode seguir.
+        let resume = hit_round_limit(&stages).then(|| {
             let now = self.clock.now();
-            let stage = StageRun {
+            StageRun {
                 id: self.ids.new_id(),
                 run_id: run.id.clone(),
                 role: Role::Resume,
@@ -635,13 +638,15 @@ impl ManagePipelines {
                 output: Some(format!("Você retomou depois de {MAX_ROUNDS} voltas; a contagem recomeça.")),
                 started_at: now,
                 finished_at: Some(now),
-            };
-            self.pipelines.save_stage(&stage)?;
-            stages.push(stage);
-            run.rounds = 0;
-        }
+            }
+        });
+        stages.extend(resume.clone());
         if matches!(next_step(&stages, &run.skipped), Next::Finish(..)) {
             return Err(AppError("Esta execução já chegou ao fim da sequência; comece uma nova.".into()));
+        }
+        if let Some(stage) = &resume {
+            self.pipelines.save_stage(stage)?;
+            run.rounds = 0;
         }
         let spent = spent_seconds(&stages, self.clock.now());
         if spent >= run.budget_minutes * 60 {
@@ -1106,16 +1111,16 @@ mod tests {
             replies.push(Ok(if i == MAX_ROUNDS { "falta Y\nVEREDITO: DEVOLVIDO" } else { "falta X\nVEREDITO: DEVOLVIDO" }));
         }
         uc.advance(&run.id, &Bots::new(replies)).await.unwrap();
-        let stopped = uc.detail(&run.id).unwrap().run;
-        assert_eq!((stopped.status, stopped.rounds), (RunStatus::Failed, MAX_ROUNDS));
+        let stopped = uc.detail(&run.id).unwrap();
+        assert_eq!((stopped.run.status, stopped.run.rounds, stopped.round_limit), (RunStatus::Failed, MAX_ROUNDS, true));
 
         uc.retry(&run.id).unwrap();
         let bots = Bots::new(vec![Ok("corrigi Y"), Ok("VEREDITO: APROVADO")]);
         uc.advance(&run.id, &bots).await.unwrap();
         assert!(bots.prompts.lock().unwrap()[0].contains("falta Y"), "o Implementador recebe a última devolução");
         let detail = uc.detail(&run.id).unwrap();
-        assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 0));
-        assert!(detail.stages.iter().any(|s| s.role == Role::Resume));
+        assert_eq!((detail.run.status, detail.run.rounds), (RunStatus::Done, 1), "a correção depois da retomada é a volta 1");
+        assert!(detail.stages.iter().any(|s| s.role == Role::Resume) && !detail.round_limit);
     }
 
     #[tokio::test]

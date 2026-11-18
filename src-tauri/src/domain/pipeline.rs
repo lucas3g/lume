@@ -875,9 +875,20 @@ pub fn fixing_review(stages: &[StageRun]) -> bool {
     effective(stages).last().is_some_and(|s| s.role == Role::ReviewChoice && s.status == StageStatus::Returned)
 }
 
-/// Voltas já feitas: passagens do Implementador além da primeira.
+/// A contagem atual começou numa retomada: aí toda passagem do Implementador já corrige uma
+/// devolução e conta como volta (sem retomada, a primeira passagem é a implementação).
+fn after_resume(stages: &[StageRun]) -> bool {
+    current_cycle(stages).iter().any(|s| s.role == Role::Resume)
+}
+
+/// Voltas já feitas: passagens do Implementador que corrigiram uma devolução.
 pub fn rounds(stages: &[StageRun]) -> i64 {
-    (implementer_passes(stages) - 1).max(0)
+    (implementer_passes(stages) - i64::from(!after_resume(stages))).max(0)
+}
+
+/// Volta da próxima passagem do Implementador (0 é a implementação, antes de qualquer devolução).
+pub fn implementer_round(stages: &[StageRun]) -> i64 {
+    implementer_passes(stages) + i64::from(after_resume(stages))
 }
 
 /// A estação seguinte a `from` (o começo, sem `from`) que não foi desligada, na ordem de `Role::ALL`.
@@ -1343,11 +1354,11 @@ mod tests {
         // Retomada: as voltas recomeçam e o Implementador recebe a última devolução.
         stages.push(stage(Role::Resume, Done, ""));
         assert!(!hit_round_limit(&stages));
-        assert_eq!((next_step(&stages, &Role::OPT_IN), rounds(&stages)), (Next::Run(Role::Implementer), 0));
+        assert_eq!((next_step(&stages, &Role::OPT_IN), rounds(&stages), implementer_round(&stages)), (Next::Run(Role::Implementer), 0, 1));
         assert_eq!(context_for(&stages).returned.as_deref(), Some("falhou"));
         stages.push(stage(Role::Implementer, Done, ""));
-        assert_eq!(context_for(&stages).returned, None);
-        for _ in 0..MAX_ROUNDS {
+        assert_eq!((context_for(&stages).returned, rounds(&stages)), (None, 1), "a passagem depois da retomada já é uma volta");
+        for _ in 1..MAX_ROUNDS {
             stages.push(stage(Role::Tester, Returned, "falhou"));
             assert_eq!(next_step(&stages, &Role::OPT_IN), Next::Run(Role::Implementer));
             stages.push(stage(Role::Implementer, Done, ""));
