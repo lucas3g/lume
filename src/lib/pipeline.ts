@@ -1,7 +1,7 @@
 // Como apresentar a esteira de bots: estações, estados, rótulos e o log de cada etapa.
 
 import { parseToolUse, summarize } from "./tools";
-import { modelLabel } from "./types";
+import { modelLabel, type Delivery } from "./types";
 import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, Question, ReviewFinding, StageRun, TokenUsage } from "./types";
 
 export interface Station {
@@ -579,3 +579,14 @@ export function plannedModelText(role: PipelineRole, provider: Provider, models:
   if (provider === "claude") return modelText("claude", agentModel || models?.claude[tier] || CLAUDE_TIER[tier]);
   return modelText(provider, models?.[provider][tier]);
 }
+
+/** Entregas do fim da esteira, na ordem em que aparecem. */
+export const DELIVERIES: { id: Delivery; label: string }[] = [
+  { id: "main", label: "Commit na main" },
+  { id: "branch", label: "Commit num ramo" },
+  { id: "pull_request", label: "Pull request" },
+  { id: "pull_request_merge", label: "Pull request com merge na main" },
+];
+
+/** A entrega abre um pull request (precisa de remoto e do `gh`). */
+export const opensPr = (d: Delivery) => d === "pull_request" || d === "pull_request_merge";

@@ -423,6 +423,14 @@ pub enum Delivery {
     Branch,
     /// Commit num ramo próprio, enviado ao remoto, com pull request aberto pelo `gh`.
     PullRequest,
+    /// Como o pull request, já juntado na main pelo `gh`.
+    PullRequestMerge,
+}
+
+impl Delivery {
+    pub fn opens_pr(self) -> bool {
+        matches!(self, Delivery::PullRequest | Delivery::PullRequestMerge)
+    }
 }
 
 /// O que foi feito ao entregar o resultado.
@@ -433,6 +441,9 @@ pub struct Delivered {
     pub branch: String,
     pub pushed: bool,
     pub pr_url: Option<String>,
+    /// A cópia isolada foi apagada (reabrir não dá mais).
+    #[serde(default)]
+    pub worktree_removed: bool,
     pub at: i64,
 }
 
@@ -454,6 +465,8 @@ pub struct PipelineRun {
     pub branch: Option<String>,
     /// Ramo da pasta do projeto quando a execução começou: destino do merge e do pull request.
     pub base_branch: Option<String>,
+    /// Commit em que a pasta estava quando a execução começou: diz se já houve commit da entrega.
+    pub base_commit: Option<String>,
     /// Entrega feita no fim, se já houve.
     pub delivered: Option<Delivered>,
     /// Voltas do Implementador já feitas depois de devoluções.
@@ -1481,6 +1494,7 @@ mod tests {
             workdir: "/dev/loja-esteira".into(),
             branch: Some("lume/esteira-loja-1".into()),
             base_branch: Some("main".into()),
+            base_commit: None,
             delivered: None,
             rounds: 0,
             skipped: vec![],

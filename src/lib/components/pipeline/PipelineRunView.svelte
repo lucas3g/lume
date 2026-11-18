@@ -15,7 +15,7 @@
   import { loadDetail, loadPipelines, openPipeline, pipelines, stageMessages } from "../../state/pipelines.svelte";
   import {
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
-    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, toolLogLine, triageQuestions, triageSummary, usageHint, usageText, VISUAL,
+    stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, toolLogLine, triageQuestions, triageSummary, usageHint, usageText, VISUAL, opensPr,
   } from "../../pipeline";
   import { EFFORTS, type Delivery, type GitInfo, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
@@ -107,7 +107,7 @@
   // Entrega padrão do projeto e o git dele, uma vez por execução com git.
   let deliveryFor: string | null = null;
   $effect(() => {
-    if (detail.mode === "direct" || deliveryFor === detail.id) return;
+    if (detail.mode === "direct" || detail.status !== "done" || deliveryFor === detail.id) return;
     const id = (deliveryFor = detail.id);
     git = null;
     api.pipelineConfig(detail.project_id).then((c) => {
@@ -119,6 +119,7 @@
   });
   const canPush = $derived(!!git?.remote);
   const canPr = $derived(!!git?.remote && !!git?.gh_ready);
+  const prBlock = $derived(!git ? "Verificando o git…" : !git.remote ? "O repositório não tem remoto." : !git.gh_ready ? "Instale o GitHub CLI e entre nele (gh auth login)." : null);
   const DELIVERY_OPTIONS = $derived<{ id: Delivery; label: string; hint: string; disabled: string | null }[]>([
     {
       id: "main",
@@ -136,7 +137,13 @@
       id: "pull_request",
       label: "Abrir pull request",
       hint: `Commit num ramo próprio, push e pull request para ${detail.base_branch ?? "a main"}, com o relatório do Relator como texto.`,
-      disabled: !git ? "Verificando o git…" : !git.remote ? "O repositório não tem remoto." : !git.gh_ready ? "Instale o GitHub CLI e entre nele (gh auth login)." : null,
+      disabled: prBlock,
+    },
+    {
+      id: "pull_request_merge",
+      label: `Pull request com merge na ${detail.base_branch ?? "main"}`,
+      hint: `Abre o pull request e já faz o merge no GitHub; a ${detail.base_branch ?? "main"} do seu computador é atualizada e o ramo sai. Se o GitHub exigir revisão, o pull request fica aberto.`,
+      disabled: prBlock,
     },
   ]);
 
@@ -321,7 +328,12 @@
     await api.deliverPipeline(detail.id, delivery, commitMessage, push && canPush);
     await loadDetail();
   });
-  const DELIVERED_LABEL: Record<Delivery, string> = { main: "Commit feito", branch: "Commit feito no ramo", pull_request: "Pull request aberto" };
+  const DELIVERED_LABEL: Record<Delivery, string> = {
+    main: "Commit feito",
+    branch: "Commit feito no ramo",
+    pull_request: "Pull request aberto",
+    pull_request_merge: "Pull request aberto e juntado",
+  };
   const remove = () => act(async () => {
     await api.deletePipeline(detail.id);
     await loadPipelines();
@@ -536,8 +548,8 @@
                 <strong>{DELIVERED_LABEL[d.kind]}</strong>
                 <span class="muted small">
                   No ramo <code>{d.branch}</code>{d.pushed ? ", enviado ao remoto" : ", só no seu computador"}, às {formatTime(d.at)}.
-                  {#if d.kind === "main" && detail.mode === "worktree"}A cópia isolada foi apagada.{/if}
-                  {#if d.kind !== "main" && detail.mode === "in_place"}A pasta do projeto ficou no ramo <code>{d.branch}</code>.{/if}
+                  {#if d.worktree_removed}A cópia isolada foi apagada.{:else if d.kind === "main" && detail.mode === "worktree"}A cópia isolada não saiu (ex.: arquivo aberto): apague-a quando quiser.{/if}
+                  {#if (d.kind === "branch" || d.kind === "pull_request") && detail.mode === "in_place"}A pasta do projeto ficou no ramo <code>{d.branch}</code>.{/if}
                 </span>
                 {#if d.pr_url}<button type="button" class="lnk inline" onclick={() => openUrl(d.pr_url!)}>{d.pr_url} ↗</button>{/if}
               </div>
@@ -556,10 +568,10 @@
                 <div class="row-w">
                   <input id="pl-commit" class="input grow" bind:value={commitMessage} />
                   <label class="push" title={canPush ? "Envia o ramo ao remoto depois do commit" : "O repositório não tem remoto"}>
-                    <input type="checkbox" checked={push || delivery === "pull_request"} disabled={!canPush || delivery === "pull_request"} onchange={(e) => (push = e.currentTarget.checked)} />
+                    <input type="checkbox" checked={push || opensPr(delivery)} disabled={!canPush || opensPr(delivery)} onchange={(e) => (push = e.currentTarget.checked)} />
                     Fazer push
                   </label>
-                  <button type="button" class="btn primary" disabled={busy || !commitMessage.trim() || (delivery === "pull_request" && !canPr)} onclick={deliver}>Entregar</button>
+                  <button type="button" class="btn primary" disabled={busy || !commitMessage.trim() || (opensPr(delivery) && !canPr)} onclick={deliver}>Entregar</button>
                 </div>
                 <p class="muted small">Os bots não fazem commit nem push: só o que você escolher aqui. A opção marcada e o push padrão se mudam na tela do projeto.</p>
               </div>

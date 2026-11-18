@@ -181,6 +181,18 @@ pub trait VersionControl: Send + Sync {
     fn push(&self, root: &str, remote: &str, branch: &str) -> AppResult<()>;
     /// Apaga a cópia isolada em `path` e o ramo dela.
     fn remove_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()>;
+    /// Commit atual da pasta.
+    fn head(&self, root: &str) -> Option<String>;
+    /// Commits feitos na pasta desde `commit`.
+    fn commits_since(&self, root: &str, commit: &str) -> u32;
+    /// Passa a pasta para o ramo `branch`.
+    fn checkout(&self, root: &str, branch: &str) -> AppResult<()>;
+    /// Traz o que o remoto tem no ramo (só avanço direto).
+    fn pull(&self, root: &str, remote: &str, branch: &str) -> AppResult<()>;
+    /// Apaga o ramo local, se ele já foi juntado.
+    fn delete_branch(&self, root: &str, branch: &str) -> AppResult<()>;
+    /// Junta o pull request pelo `gh` e apaga o ramo dele no remoto.
+    fn merge_pr(&self, root: &str, url: &str, remote: &str, branch: &str) -> AppResult<()>;
     /// O `gh` está instalado e com login, para abrir pull requests.
     fn gh_ready(&self) -> bool;
     /// Abre o pull request de `head` para `base` com o `gh` e devolve o link dele.

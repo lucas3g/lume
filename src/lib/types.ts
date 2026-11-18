@@ -241,7 +241,7 @@ export interface GitInfo {
 }
 
 /** Como o resultado de uma execução chega ao repositório. */
-export type Delivery = "main" | "branch" | "pull_request";
+export type Delivery = "main" | "branch" | "pull_request" | "pull_request_merge";
 
 /** O que foi feito ao entregar o resultado. */
 export interface Delivered {
@@ -250,6 +250,8 @@ export interface Delivered {
   branch: string;
   pushed: boolean;
   pr_url: string | null;
+  /** A cópia isolada foi apagada (reabrir não dá mais). */
+  worktree_removed: boolean;
   at: number;
 }
 
@@ -467,6 +469,8 @@ export interface PipelineRun {
   branch: string | null;
   /** Ramo da pasta do projeto quando a execução começou: destino do merge e do pull request. */
   base_branch: string | null;
+  /** Commit em que a pasta estava quando a execução começou. */
+  base_commit: string | null;
   /** Entrega feita no fim, se já houve. */
   delivered: Delivered | null;
   rounds: number;

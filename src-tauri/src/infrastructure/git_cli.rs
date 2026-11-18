@@ -213,6 +213,10 @@ impl VersionControl for GitCli {
     }
 
     fn merge(&self, root: &str, branch: &str) -> AppResult<()> {
+        // Um merge seu pela metade não pode ser desfeito pelo `--abort` de um conflito nosso.
+        if git(root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some() {
+            return Err(AppError(format!("A pasta {root} está no meio de um merge: termine-o ou desfaça-o antes.")));
+        }
         if git(root, &["merge", "--ff-only", "--quiet", branch]).is_some() {
             return Ok(());
         }
@@ -233,6 +237,39 @@ impl VersionControl for GitCli {
     fn remove_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()> {
         git_or_error(root, &["worktree", "remove", path])?;
         git_or_error(root, &["branch", "-d", branch]).map(|_| ())
+    }
+
+    fn head(&self, root: &str) -> Option<String> {
+        git(root, &["rev-parse", "HEAD"]).map(|h| h.trim().to_owned()).filter(|h| !h.is_empty())
+    }
+
+    fn commits_since(&self, root: &str, commit: &str) -> u32 {
+        git(root, &["rev-list", "--count", &format!("{commit}..HEAD")]).and_then(|n| n.trim().parse().ok()).unwrap_or(0)
+    }
+
+    fn checkout(&self, root: &str, branch: &str) -> AppResult<()> {
+        git_or_error(root, &["checkout", "-q", branch]).map(|_| ())
+    }
+
+    fn pull(&self, root: &str, remote: &str, branch: &str) -> AppResult<()> {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(root).args(["pull", "--ff-only", "-q", remote, branch]);
+        run_or_error(with_shell_path(&mut cmd), "git").map(|_| ())
+    }
+
+    fn delete_branch(&self, root: &str, branch: &str) -> AppResult<()> {
+        git_or_error(root, &["branch", "-d", branch]).map(|_| ())
+    }
+
+    fn merge_pr(&self, root: &str, url: &str, remote: &str, branch: &str) -> AppResult<()> {
+        let mut cmd = Command::new("gh");
+        cmd.current_dir(root).args(["pr", "merge", url, "--merge"]);
+        run_or_error(with_shell_path(&mut cmd), "gh")?;
+        // O GitHub pode já ter apagado o ramo sozinho: a falha aqui não desfaz o merge.
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(root).args(["push", "-q", remote, "--delete", branch]);
+        let _ = run_or_error(with_shell_path(&mut cmd), "git");
+        Ok(())
     }
 
     fn gh_ready(&self) -> bool {
@@ -349,6 +386,11 @@ mod tests {
         assert!(GitCli.merge(&root, "lume/ramo").is_err());
         assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "da main\n");
         assert!(GitCli.status(&root).files.is_empty(), "sem merge pela metade");
+
+        // Um merge do usuário pela metade fica como está.
+        assert!(git(&root, &["merge", "lume/ramo"]).is_none());
+        assert!(GitCli.merge(&root, "lume/ramo").unwrap_err().0.contains("no meio de um merge"));
+        assert!(git(&root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some(), "o merge dele continua");
         fs::remove_dir_all(dir).unwrap();
     }
 

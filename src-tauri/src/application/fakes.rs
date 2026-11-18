@@ -4,6 +4,7 @@ use super::{
     ports::*,
     AppError, AppResult, ChatEvent, TurnControl,
 };
+use crate::domain::workspace::ChangedFile;
 use crate::domain::{
     account::{Account, Identity},
     chat::{Attachment, Conversation, PermissionDecision, RateInfo, TurnEnd, TurnEvent, TurnRequest, KIND_CHAT},
@@ -364,11 +365,25 @@ pub struct FakeVcs {
     pub merge_conflict: bool,
     /// Textos dos pull requests abertos.
     pub pr_bodies: Mutex<Vec<String>>,
+    /// A pasta tem alterações sem commit (o commit as limpa).
+    pub pending: Mutex<bool>,
+    /// Commits feitos.
+    pub made: Mutex<u32>,
+    /// Ramo em que a pasta está (sem nada, "main").
+    pub on_branch: Mutex<Option<String>>,
+    /// O push é recusado (ex.: sem rede).
+    pub push_fails: Mutex<bool>,
+    /// O merge do pull request é recusado (ex.: o ramo exige revisão).
+    pub pr_merge_refused: bool,
 }
 
 impl VersionControl for FakeVcs {
     fn status(&self, _root: &str) -> WorkspaceStatus {
-        WorkspaceStatus::with_files(Some("main".into()), vec![])
+        let files = match *self.pending.lock().unwrap() {
+            true => vec![ChangedFile { path: "a.rs".into(), status: "M".into(), added: 1, removed: 0 }],
+            false => vec![],
+        };
+        WorkspaceStatus::with_files(Some("main".into()), files)
     }
     fn diff(&self, _root: &str, _path: &str) -> AppResult<String> {
         Ok(String::new())
@@ -383,6 +398,8 @@ impl VersionControl for FakeVcs {
         Ok(format!("mudou de {from} para {to}"))
     }
     fn commit(&self, root: &str, message: &str) -> AppResult<()> {
+        *self.pending.lock().unwrap() = false;
+        *self.made.lock().unwrap() += 1;
         self.commits.lock().unwrap().push((root.to_owned(), message.to_owned()));
         Ok(())
     }
@@ -406,13 +423,14 @@ impl VersionControl for FakeVcs {
         !self.no_git
     }
     fn current_branch(&self, _root: &str) -> Option<String> {
-        (!self.no_git).then(|| "main".into())
+        (!self.no_git).then(|| self.on_branch.lock().unwrap().clone().unwrap_or_else(|| "main".into()))
     }
     fn remote(&self, _root: &str) -> Option<String> {
         (!self.no_git).then(|| "origin".into())
     }
     fn create_branch(&self, root: &str, branch: &str) -> AppResult<()> {
         self.commits.lock().unwrap().push((root.to_owned(), format!("branch {branch}")));
+        *self.on_branch.lock().unwrap() = Some(branch.to_owned());
         Ok(())
     }
     fn merge(&self, root: &str, branch: &str) -> AppResult<()> {
@@ -423,6 +441,9 @@ impl VersionControl for FakeVcs {
         Ok(())
     }
     fn push(&self, root: &str, remote: &str, branch: &str) -> AppResult<()> {
+        if *self.push_fails.lock().unwrap() {
+            return Err(AppError("sem rede".into()));
+        }
         self.commits.lock().unwrap().push((root.to_owned(), format!("push {remote} {branch}")));
         Ok(())
     }
@@ -432,6 +453,33 @@ impl VersionControl for FakeVcs {
     }
     fn gh_ready(&self) -> bool {
         true
+    }
+    fn head(&self, _root: &str) -> Option<String> {
+        (!self.no_git).then(|| "c0".into())
+    }
+    /// Commits de verdade feitos (as cópias e ramos não contam).
+    fn commits_since(&self, _root: &str, _commit: &str) -> u32 {
+        *self.made.lock().unwrap()
+    }
+    fn checkout(&self, root: &str, branch: &str) -> AppResult<()> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("checkout {branch}")));
+        *self.on_branch.lock().unwrap() = Some(branch.to_owned());
+        Ok(())
+    }
+    fn pull(&self, root: &str, remote: &str, branch: &str) -> AppResult<()> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("pull {remote} {branch}")));
+        Ok(())
+    }
+    fn delete_branch(&self, root: &str, branch: &str) -> AppResult<()> {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("delete {branch}")));
+        Ok(())
+    }
+    fn merge_pr(&self, root: &str, url: &str, _remote: &str, _branch: &str) -> AppResult<()> {
+        if self.pr_merge_refused {
+            return Err(AppError("exige revisão".into()));
+        }
+        self.commits.lock().unwrap().push((root.to_owned(), format!("merge_pr {url}")));
+        Ok(())
     }
     fn open_pr(&self, root: &str, base: &str, head: &str, title: &str, body: &str) -> AppResult<String> {
         self.commits.lock().unwrap().push((root.to_owned(), format!("pr {base} <- {head}: {title}")));

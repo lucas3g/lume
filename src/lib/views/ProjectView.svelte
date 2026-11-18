@@ -42,16 +42,24 @@
     files = [];
     memory = [];
     memoryOpen = null;
-    git = null;
     if (id) {
       void api.listProjectFiles(id).then((list) => (files = list));
-      if (current?.folder) {
-        void api.projectMemoryList(id).then((list) => (memory = list));
-        void api.projectGitInfo(id).then((info) => {
-          if (projects.selectedId === id) git = info;
-        });
-      }
+      if (current?.folder) void api.projectMemoryList(id).then((list) => (memory = list));
     }
+  });
+
+  // O git só muda com o projeto ou a pasta (não a cada recarga da lista, ex.: ao ligar a cópia isolada).
+  const folder = $derived(project?.folder ?? null);
+  $effect(() => {
+    const id = projects.selectedId;
+    const dir = folder;
+    git = null;
+    if (!id || !dir) return;
+    api.projectGitInfo(id).then(
+      (info) => projects.selectedId === id && (git = info),
+      // Sem a resposta, o cartão diz que não há git (os bots trabalham direto na pasta, como sem git).
+      () => projects.selectedId === id && (git = { is_repo: false, branch: null, remote: null, gh_ready: false }),
+    );
   });
 
   const openMemory = (name: string) =>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, errorMessage } from "../../api";
-  import { BOT_STEPS, OPTIONAL_ROLES } from "../../pipeline";
+  import { BOT_STEPS, DELIVERIES, OPTIONAL_ROLES, opensPr } from "../../pipeline";
   import { agents } from "../../state/agents.svelte";
   import { EFFORTS, type Delivery, type GitInfo, type PipelineConfig, type PipelineRole, type View } from "../../types";
   import Toggle from "../Toggle.svelte";
@@ -13,11 +13,6 @@
   }
   let { projectId, git = null, onnavigate }: Props = $props();
 
-  const DELIVERIES: { id: Delivery; label: string }[] = [
-    { id: "main", label: "Commit na main" },
-    { id: "branch", label: "Commit num ramo" },
-    { id: "pull_request", label: "Pull request" },
-  ];
 
   const EMPTY: PipelineConfig = { agents: {}, skipped: [], jira_template: null, default_jira_template: null, efforts: {}, delivery: "main", push: false };
   /** Texto do campo do modelo de task, salvo ao sair do campo. */
@@ -147,13 +142,13 @@
       <div class="grow">
         <span class="name">Entrega no fim</span>
         <span class="muted small">
-          Quando a esteira termina, você escolhe como o resultado chega ao repositório: commit na main, commit num ramo ou
-          pull request (pelo GitHub CLI). Esta é a opção que já vem marcada{git.remote ? "" : "; sem remoto, não há push nem pull request"}.
+          Quando a esteira termina, você escolhe como o resultado chega ao repositório: commit na main, commit num ramo,
+          pull request ou pull request já com merge na main (pelo GitHub CLI). Esta é a opção que já vem marcada{git.remote ? "" : "; sem remoto, não há push nem pull request"}.
         </span>
       </div>
       <select class="input effort" aria-label="Entrega que já vem marcada" value={config.delivery}
         onchange={(e) => void save({ ...config, delivery: e.currentTarget.value as Delivery })}>
-        {#each DELIVERIES as d (d.id)}<option value={d.id} disabled={d.id === "pull_request" && !git.remote}>{d.label}</option>{/each}
+        {#each DELIVERIES as d (d.id)}<option value={d.id} disabled={opensPr(d.id) && !git.remote}>{d.label}</option>{/each}
       </select>
       <label class="push" title="A caixinha de push já vem marcada no fim">
         <input type="checkbox" checked={config.push} disabled={!git.remote} onchange={(e) => void save({ ...config, push: e.currentTarget.checked })} />
