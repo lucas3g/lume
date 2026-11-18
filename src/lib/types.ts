@@ -551,6 +551,28 @@ export interface TierModels {
   gemini: Partial<Record<Tier, string>>;
 }
 
+/** Estilos de cabelo, acessórios e roupas que o boneco do escritório sabe desenhar. */
+export type HairStyle = "short" | "curly" | "long" | "bun" | "topknot" | "beanie" | "fade";
+export type Accessory = "glasses" | "readers" | "headset" | "goggles";
+export type Outfit = "hoodie" | "lanyard" | "cardigan" | "pearls" | "coat" | "scarf" | "tie";
+
+/** Visual de um boneco do escritório. Cores em `#rrggbb`; sem as sombras, o desenho deriva das cores base. */
+export interface BotLook {
+  skin: string;
+  skin_shade?: string;
+  hair: string;
+  hair_light?: string;
+  shirt: string;
+  shirt_shade?: string;
+  pants: string;
+  hair_style: HairStyle;
+  accessory: Accessory | null;
+  outfit: Outfit;
+}
+
+/** Visual de cada papel; papel ausente fica com o boneco padrão. Vale para todos os projetos. */
+export type OfficeLooks = Partial<Record<PipelineRole, BotLook>>;
+
 /** Como a esteira roda num projeto: agente (id) de cada papel e etapas desligadas. */
 export interface PipelineConfig {
   agents: Partial<Record<PipelineRole, string>>;

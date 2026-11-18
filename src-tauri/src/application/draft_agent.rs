@@ -6,7 +6,7 @@ use super::{
 };
 use crate::domain::{
     account::{pick_next, Provider},
-    chat::{TurnEnd, TurnRequest},
+    chat::{Attachment, TurnEnd, TurnRequest},
     extension::{parse_agent_draft, AgentDraft, Skill},
 };
 use std::sync::Arc;
@@ -46,42 +46,67 @@ impl DraftAgent {
             return Err(AppError("Dê um nome para o agente antes de gerar.".into()));
         }
         let catalog = self.skills.catalog()?;
-        // O rascunho usa um modelo do Claude; contas de outros serviços ficam de fora.
-        let all: Vec<_> = self.accounts.all()?.into_iter().filter(|a| a.provider == Provider::Claude).collect();
-        let account = pick_next(&all, self.clock.now(), &[], true)
-            .ok_or_else(|| AppError("Nenhuma conta do Claude disponível para gerar.".into()))?;
-        let request = TurnRequest {
-            provider: Provider::Claude,
-            config_dir: account.config_dir.clone(),
-            cwd: self.chat_dir.clone(),
-            model: DRAFT_MODEL.into(),
-            resume: None,
-            prompt: format!("Nome do agente: {name}"),
-            attachments: vec![],
-            extra_system: Some(system_prompt(&catalog)),
-            tools: String::new(),
-            effort: "low".into(),
-            permission_mode: "auto".into(),
-            interactive: false,
-            denied_skills: vec![],
-            denied_tools: vec![],
-            mcp_config: None,
-            allowed_tools: vec![],
-            read_dirs: vec![],
-            mcp_servers: vec![],
-            artifacts: false,
-            account_connectors: true,
-        };
-        let (mut control, _handle) = TurnControl::new();
-        match self.engine.run_turn(&request, &mut control, &mut |_| {}).await {
-            TurnEnd::Done { text, .. } => {
-                parse_agent_draft(&text, &catalog).ok_or_else(|| AppError("O modelo não devolveu uma sugestão válida. Tente de novo.".into()))
-            }
-            TurnEnd::Limited { .. } => Err(AppError("A conta atingiu o limite. Tente com outra conta.".into())),
-            TurnEnd::AuthError(_) => Err(AppError("A conta precisa de novo login.".into())),
-            TurnEnd::Failed(message) => Err(AppError(message)),
-            TurnEnd::Cancelled => Err(AppError("Geração cancelada.".into())),
-        }
+        let text = one_shot(
+            OneShot { engine: &*self.engine, accounts: &*self.accounts, clock: &*self.clock, chat_dir: &self.chat_dir },
+            format!("Nome do agente: {name}"),
+            vec![],
+            system_prompt(&catalog),
+            true,
+        )
+        .await?;
+        parse_agent_draft(&text, &catalog).ok_or_else(|| AppError("O modelo não devolveu uma sugestão válida. Tente de novo.".into()))
+    }
+}
+
+/// O que um pedido avulso ao modelo precisa: o motor, as contas e a pasta neutra em que o turno roda.
+pub(super) struct OneShot<'a> {
+    pub engine: &'a dyn ChatEngine,
+    pub accounts: &'a dyn AccountRepository,
+    pub clock: &'a dyn Clock,
+    pub chat_dir: &'a str,
+}
+
+/// Turno avulso, sem ferramentas e sem interação, num modelo do Claude (contas de outros serviços ficam de fora).
+/// Devolve o texto final da resposta.
+pub(super) async fn one_shot(
+    ctx: OneShot<'_>,
+    prompt: String,
+    attachments: Vec<Attachment>,
+    system: String,
+    account_connectors: bool,
+) -> AppResult<String> {
+    let all: Vec<_> = ctx.accounts.all()?.into_iter().filter(|a| a.provider == Provider::Claude).collect();
+    let account = pick_next(&all, ctx.clock.now(), &[], true)
+        .ok_or_else(|| AppError("Nenhuma conta do Claude disponível para gerar.".into()))?;
+    let request = TurnRequest {
+        provider: Provider::Claude,
+        config_dir: account.config_dir.clone(),
+        cwd: ctx.chat_dir.to_owned(),
+        model: DRAFT_MODEL.into(),
+        resume: None,
+        prompt,
+        attachments,
+        extra_system: Some(system),
+        tools: String::new(),
+        effort: "low".into(),
+        permission_mode: "auto".into(),
+        interactive: false,
+        denied_skills: vec![],
+        denied_tools: vec![],
+        mcp_config: None,
+        allowed_tools: vec![],
+        read_dirs: vec![],
+        mcp_servers: vec![],
+        artifacts: false,
+        account_connectors,
+    };
+    let (mut control, _handle) = TurnControl::new();
+    match ctx.engine.run_turn(&request, &mut control, &mut |_| {}).await {
+        TurnEnd::Done { text, .. } => Ok(text),
+        TurnEnd::Limited { .. } => Err(AppError("A conta atingiu o limite. Tente com outra conta.".into())),
+        TurnEnd::AuthError(_) => Err(AppError("A conta precisa de novo login.".into())),
+        TurnEnd::Failed(message) => Err(AppError(message)),
+        TurnEnd::Cancelled => Err(AppError("Geração cancelada.".into())),
     }
 }
 

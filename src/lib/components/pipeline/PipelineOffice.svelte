@@ -5,6 +5,7 @@
   import { layersSvg, OFFICE_H, OFFICE_W, officeScenery, officeTrip, officeView, officeVisit, spritesSvg, type OfficeScene } from "../../office/scene";
   import { isMarker, isUserStep, passesByRole, passLabel, stationPasses, stationRole, STATIONS } from "../../pipeline";
   import { chat } from "../../state/chat.svelte";
+  import { loadOfficeLooks, officeLooks } from "../../state/officeLooks.svelte";
   import { loadTierModels, stationCards, stationTime } from "../../pipeline-cards.svelte";
   import type { PipelineDetail, PipelineRole } from "../../types";
 
@@ -27,7 +28,10 @@
     return station ? ORDER.indexOf(station) : -1;
   };
 
-  onMount(loadTierModels);
+  onMount(() => {
+    loadTierModels();
+    void loadOfficeLooks();
+  });
   const passes = $derived(passesByRole(detail));
   // Sem o relógio: a cena (e os sprites) só se refaz quando o estado das mesas muda, não a cada segundo.
   const cards = $derived(stationCards(detail, null, passes));
@@ -178,7 +182,8 @@
   });
   // Só depois de medir a largura: a escala entra nos bitmaps, e montar antes geraria tudo duas vezes.
   const scenery = $derived(width ? officeScenery(scale, dpr) : null);
-  const view = $derived(width ? officeView(scene, { scale, dpr, traveling }) : null);
+  // Espera o visual dos bonecos (senão eles apareceriam com o padrão e trocariam em seguida); trocar o visual refaz a vista.
+  const view = $derived(width && officeLooks.loaded ? (officeLooks.version, officeView(scene, { scale, dpr, traveling })) : null);
 
   // Animações em passos avançadas pelo relógio da sala, só quando algum pixel muda: 12 quadros por segundo parado
   // (o ritmo da pixel art), 30 enquanto a pasta anda (passos de 2x1 px mais rápidos).

@@ -6,6 +6,7 @@ pub mod extension;
 pub mod history;
 pub mod jira;
 pub mod mcp;
+pub mod office;
 pub mod permission;
 pub mod pipeline;
 pub mod project;

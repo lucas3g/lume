@@ -12,6 +12,7 @@ use crate::application::{
     AppError, AppResult,
 };
 use crate::domain::{
+    office::{BotLook, OfficeLooks},
     account::{Account, Provider, ProviderInfo, UsageLimit},
     chat::{needs_user, Attachment, AttachmentKind, Conversation, Message, PermissionDecision, Switch},
     extension::{AccountConnector, Agent, AgentDraft, Connector},
@@ -735,6 +736,24 @@ pub async fn cli_models(app: App<'_>, provider: Provider) -> AppResult<Vec<Strin
 #[tauri::command]
 pub fn save_pipeline_models(app: App<'_>, models: TierModels) -> AppResult<TierModels> {
     app.pipelines.save_models(models)
+}
+
+/// Visual dos bonecos do escritório, por papel.
+#[tauri::command]
+pub fn office_looks(app: App<'_>) -> OfficeLooks {
+    app.pipelines.looks()
+}
+
+#[tauri::command]
+pub fn save_office_looks(app: App<'_>, looks: OfficeLooks) -> AppResult<OfficeLooks> {
+    app.pipelines.save_looks(looks)
+}
+
+/// Visual de boneco sugerido pelo modelo a partir de uma foto (não salva: só preenche o editor).
+#[tauri::command]
+pub async fn draft_bot_look(app: App<'_>, image: PastedImage) -> AppResult<BotLook> {
+    let image = Attachment { name: image.name, kind: AttachmentKind::Image, media_type: image.media_type, data: image.data };
+    app.draft_look.draft(image).await
 }
 
 #[tauri::command]

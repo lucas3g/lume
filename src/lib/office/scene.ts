@@ -391,7 +391,7 @@ function blit(cv, x0, y0, rows, pal) {
    de formas: cabeça em 3/4 virada para a esquerda (olha para sudoeste; o espelho dá sudeste), tronco com gola e um
    detalhe do papel, e braços como membros de verdade (ombro -> cotovelo -> mão), sempre presos ao ombro.
    pal: S/s pele e sombra, H/h cabelo e brilho, C/c roupa e sombra, P calça. hair: estilo do cabelo; extra: acessório. */
-const PEOPLE = {
+const DEFAULT_PEOPLE = {
   triage: { pal: { S: '#8d5a3b', s: '#6f4329', H: '#1c1a1e', h: '#3a3540', C: '#49b5b0', c: '#2c7f7b', P: '#3d4560' }, hair: 'curly', shirt: 'lanyard' },
   planner: { pal: { S: '#f1c9a5', s: '#d9a982', H: '#b5532f', h: '#d9784a', C: '#6f7de0', c: '#4450a8', P: '#6b5a4a' }, hair: 'long', shirt: 'cardigan' },
   implementer: { pal: { S: '#c68c5f', s: '#a8714a', H: '#2b2320', h: '#4a3a33', C: '#e0894e', c: '#a85f30', P: '#55607d' }, hair: 'short', extra: 'headset', shirt: 'hoodie' },
@@ -403,6 +403,40 @@ const PEOPLE = {
   /* Code review: coque no alto, óculos de leitura e camisa âmbar com gravata. */
   code_review: { pal: { S: '#d29a6e', s: '#b27d53', H: '#4a2c22', h: '#7a4c3a', C: '#d9a441', c: '#9c7226', P: '#3f4a63' }, hair: 'topknot', extra: 'readers', shirt: 'tie' }
 };
+/* Visual configurado pelo usuário (setOfficeLooks), por papel, já no formato de DEFAULT_PEOPLE. LOOK_TAG entra nas
+   chaves dos sprites da pessoa: trocar o visual gera bitmaps novos em vez de reaproveitar os da memória. */
+const LOOKS = {}, LOOK_TAG = {};
+const people = role => LOOKS[role] || DEFAULT_PEOPLE[role];
+const personKey = role => role + (LOOK_TAG[role] || '');
+function lookToPerson(l) {
+  return {
+    pal: { S: l.skin, s: l.skin_shade || shade(l.skin, 0.16), H: l.hair, h: l.hair_light || lit(l.hair, 0.22), C: l.shirt, c: l.shirt_shade || shade(l.shirt, 0.3), P: l.pants },
+    hair: l.hair_style, extra: l.accessory || undefined, shirt: l.outfit
+  };
+}
+function lookTag(l) {
+  const t = JSON.stringify(l); let h = 5381;
+  for (let i = 0; i < t.length; i++) h = (Math.imul(h, 33) ^ t.charCodeAt(i)) | 0;
+  return '~' + (h >>> 0).toString(36);
+}
+/* Tira da memória os bitmaps de um visual que saiu de uso. */
+function dropLook(role) {
+  const tag = LOOK_TAG[role];
+  if (!tag) return;
+  const mark = role + tag;
+  Object.keys(MEMO).forEach(key => {
+    if (!key.startsWith('art:') || key.indexOf(mark) < 0) return;
+    if (MEMO[key].href) URL.revokeObjectURL(MEMO[key].href);
+    delete MEMO[key];
+  });
+  HITS.forEach((_, key) => { if (key.indexOf(mark) >= 0) HITS.delete(key); });
+}
+function setLook(role, look) {
+  const tag = look ? lookTag(look) : '';
+  if ((LOOK_TAG[role] || '') === tag) return;
+  dropLook(role);
+  if (look) { LOOKS[role] = lookToPerson(look); LOOK_TAG[role] = tag; } else { delete LOOKS[role]; delete LOOK_TAG[role]; }
+}
 const EYE = '#1a1b20', WHITE = '#f4f5f7';
 
 /* Tela fina ampliada 2x pelo Scale2x (cores como símbolos): as curvas e diagonais ganham degraus finos. */
@@ -670,8 +704,8 @@ const STEP = ['..PP..PP..', '..PP..PP..', '..PP..PP..', '..WW..WW..'];
 const LEG_FR = [STEP, ['..PP..PP..', '..PP..PP..', '..PP..WW..', '..WW......'], STEP, ['..PP..PP..', '..PP..PP..', '..WW..PP..', '......WW..']];
 
 function walkerSprites(role, back, carry, frame) {
-  const p = PEOPLE[role], still = frame != null, out = [], id = role + (back ? '-b' : '-f');
-  const legs = i => SO('wk-legs-' + role + i, '', '', t => {
+  const p = people(role), still = frame != null, out = [], id = personKey(role) + (back ? '-b' : '-f');
+  const legs = i => SO('wk-legs-' + personKey(role) + '-' + i, '', '', t => {
     /* Sombra no chão, embaixo dos pés (translúcida: o contorno não a pega). */
     const sh = canvas(); sh.ell(12, 39.6, 7, 1.7, '#05060a66'); sh.ell(12, 39.6, 4.5, 1.1, '#05060a80'); t.fine(0, 0, sh, false);
     t.map(1, 13, HIPS, p.pal); t.map(1, 16, LEG_FR[i], p.pal);
@@ -696,7 +730,7 @@ function walkerSprites(role, back, carry, frame) {
 /* Pessoa sentada atrás da mesa, de frente para a câmera. body vai antes da mesa (a mesa esconde o colo);
    hands vai depois (braços que descansam no tampo). cls é a animação da camada do corpo. */
 function seatedParts(role, v, i) {
-  const p = PEOPLE[role], g = geo(role), id = '-' + role;
+  const p = people(role), g = geo(role), id = '-' + personKey(role);
   const put = draw => t => { const cv = canvas(g.se); draw(cv); t.fine(g.seat[0] * R, g.seat[1] * R, cv, g.se); };
   const arm = pts => put(cv => drawArm(cv, p, pts));
   const body = [SO('torso' + id, '', '', put(cv => { drawTorso(cv, p, 0, -14, 8); drawHead(cv, p, HEAD_C[0], HEAD_C[1], false); }))];
@@ -1348,4 +1382,48 @@ export function officeScenery(scale: number, dpr: number) {
     sceneryCache.set(TAG, cached);
   }
   return cached;
+}
+
+// ---- visual dos bonecos
+
+/** Visual de um boneco, como o usuário configura (cores `#rrggbb` e peças que o desenho sabe montar). */
+export interface BotLookShape {
+  skin: string;
+  skin_shade?: string;
+  hair: string;
+  hair_light?: string;
+  shirt: string;
+  shirt_shade?: string;
+  pants: string;
+  hair_style: string;
+  accessory: string | null;
+  outfit: string;
+}
+
+/** Aplica os visuais configurados (papel ausente volta ao boneco padrão). Quem monta a cena refaz a vista depois. */
+export function setOfficeLooks(looks: Partial<Record<string, BotLookShape>>): void {
+  const roles = new Set([...Object.keys(DEFAULT_PEOPLE), ...Object.keys(LOOKS)].filter((r) => r !== PREVIEW));
+  roles.forEach((role) => setLook(role, looks[role] ?? null));
+}
+
+/** O boneco padrão de um papel no formato do editor (a roupa exclusiva da sua mesa vira moletom). */
+export function defaultLook(role: string): BotLookShape {
+  const p = (DEFAULT_PEOPLE as Record<string, { pal: Record<string, string>; hair: string; extra?: string; shirt: string }>)[role] ?? DEFAULT_PEOPLE.implementer;
+  return {
+    skin: p.pal.S, skin_shade: p.pal.s, hair: p.pal.H, hair_light: p.pal.h, shirt: p.pal.C, shirt_shade: p.pal.c, pants: p.pal.P,
+    hair_style: p.hair, accessory: p.extra ?? null, outfit: p.shirt === "gremio" ? "hoodie" : p.shirt,
+  };
+}
+
+const PREVIEW = "__preview";
+const botSvg = (role: string): string =>
+  `<svg viewBox="0 0 12 20" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">${spritesSvg(walkerSprites(role, false, false, 0))}</svg>`;
+/** Boneco de pé de um papel, como aparece hoje no escritório (com o visual configurado, se houver). */
+export function officeBot(role: string): string {
+  return botSvg(role);
+}
+/** Boneco de pé com um visual ainda não salvo, para a prévia do editor. Só a prévia mais recente fica na memória. */
+export function botPreview(look: BotLookShape): string {
+  setLook(PREVIEW, look);
+  return botSvg(PREVIEW);
 }

@@ -215,6 +215,20 @@ impl ManagePipelines {
         self.settings.text(super::prefs::PIPELINE_MODELS).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
 
+    /// Visual dos bonecos do escritório que o usuário configurou (papel sem visual fica com o padrão).
+    pub fn looks(&self) -> crate::domain::office::OfficeLooks {
+        self.settings.text(super::prefs::OFFICE_LOOKS).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    pub fn save_looks(&self, looks: crate::domain::office::OfficeLooks) -> AppResult<crate::domain::office::OfficeLooks> {
+        // Só papéis que existem; o resto seria guardado sem nunca aparecer.
+        let looks: crate::domain::office::OfficeLooks =
+            looks.into_iter().filter(|(role, _)| Role::parse(role).is_some()).map(|(role, look)| (role, look.normalized())).collect();
+        let text = serde_json::to_string(&looks).map_err(|e| AppError(e.to_string()))?;
+        self.settings.set_text(super::prefs::OFFICE_LOOKS, &text)?;
+        Ok(looks)
+    }
+
     /// Modelos que o CLI do serviço aceita, para escolher em uma lista.
     pub async fn cli_models(&self, provider: Provider) -> AppResult<Vec<String>> {
         self.catalog.models(provider).await

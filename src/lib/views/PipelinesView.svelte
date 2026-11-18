@@ -4,6 +4,7 @@
   import { api, errorMessage } from "../api";
   import PipelineRunView from "../components/pipeline/PipelineRunView.svelte";
   import PipelineModelsCard from "../components/pipeline/PipelineModelsCard.svelte";
+  import OfficeLooksCard from "../components/pipeline/OfficeLooksCard.svelte";
   import JiraTaskPicker, { ago, typeTone, type PickedTask } from "../components/pipeline/JiraTaskPicker.svelte";
   import { jira } from "../state/jira.svelte";
   import { activeAccount } from "../state/accounts.svelte";
@@ -282,6 +283,8 @@
       />
 
       <PipelineModelsCard />
+
+      <OfficeLooksCard />
 
       <section class="card" aria-label="Execuções">
         <div class="head"><h2 class="section-title">Execuções</h2></div>

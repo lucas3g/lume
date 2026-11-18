@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
   Account, AccountConnector, Agent, ConnectorsElsewhere, JiraBoards, JiraIssueList, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
+  MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, BotLook, OfficeLooks, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -106,6 +106,9 @@ export const api = {
   cliModels: (provider: Provider) => invoke<string[]>("cli_models", { provider }),
   pipelineModels: () => invoke<TierModels>("pipeline_models"),
   savePipelineModels: (models: TierModels) => invoke<TierModels>("save_pipeline_models", { models }),
+  officeLooks: () => invoke<OfficeLooks>("office_looks"),
+  saveOfficeLooks: (looks: OfficeLooks) => invoke<OfficeLooks>("save_office_looks", { looks }),
+  draftBotLook: (image: PastedImage) => invoke<BotLook>("draft_bot_look", { image }),
   listPipelines: () => invoke<PipelineRun[]>("list_pipelines"),
   pipelineDetail: (id: string) => invoke<PipelineDetail>("pipeline_detail", { id }),
   listJiraIssues: (query: string | null = null, statuses: string[] | null = null) => invoke<JiraIssueList>("list_jira_issues", { query, statuses }),

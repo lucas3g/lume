@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod conversations;
 pub mod draft_agent;
+pub mod draft_look;
 pub mod extensions;
 pub mod history;
 pub mod jira_issues;
@@ -60,6 +61,8 @@ pub mod prefs {
     pub const PROJECT_ORDERS: [&str; 3] = ["recent", "name", "created"];
     /// Modelo de cada nível em cada serviço para a esteira de bots (JSON de `TierModels`).
     pub const PIPELINE_MODELS: &str = "pipeline_models";
+    /// Visual dos bonecos do escritório, por papel (JSON de `OfficeLooks`).
+    pub const OFFICE_LOOKS: &str = "office_looks";
     /// Como a execução aberta da esteira aparece: "track" (trilha de cartões) ou "office" (escritório em pixel art).
     pub const PIPELINE_VIEW: &str = "pipeline_view";
     pub const PIPELINE_VIEWS: [&str; 2] = ["track", "office"];
