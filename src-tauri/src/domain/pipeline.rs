@@ -950,7 +950,11 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                              `date +%Y-%m-%dT%H:%M:%S.000%z` e mande no formato que o campo pede (data e hora, ou só a data se o \
                              campo for só de data). Se a task já tiver uma data nele, substitua: vale a entrega mais recente. ";
             let coder_existing = coder("se estiverem vazios", "Não mude o Relator nem o Responsável.");
-            let coder_new = coder("mesmo que o modelo traga outra pessoa neles", "Não copie do modelo o Relator nem o Responsável: o Jira põe você como relator, e o responsável fica sem ninguém.");
+            let coder_new = coder(
+                "mesmo que o modelo traga outra pessoa neles",
+                "Coloque o mesmo usuário também como Responsável (assignee), pelo accountId, na criação ou logo depois dela; \
+                 não copie do modelo o Relator nem o Responsável (o Jira põe você como relator).",
+            );
             let jira = match &run.jira_key {
                 Some(key) => format!(
                     "Escreva na task {key} do Jira (conector do Atlassian) o que foi feito, direto na descrição: não comente na \
@@ -1832,6 +1836,8 @@ mod tests {
             assert!(p.contains("Responsável"));
             assert!(p.contains("\"Data entregue\"") && p.contains("date +%Y-%m-%dT%H:%M:%S.000%z"), "a data e a hora da entrega vão na task");
         }
+        assert!(prompt.contains("também como Responsável (assignee)"), "na task criada, o usuário é o responsável");
+        assert!(!existing.contains("também como Responsável"), "na task que já existe, o responsável não muda");
 
         // Correções escolhidas no code review e feitas depois: não são pendências, e o Relator vê todas as passagens.
         use StageStatus::*;
