@@ -155,8 +155,12 @@ pub trait VersionControl: Send + Sync {
     fn diff(&self, root: &str, path: &str) -> AppResult<String>;
     /// Registra todas as alterações em um commit.
     fn commit(&self, root: &str, message: &str) -> AppResult<()>;
-    /// Cria uma cópia de trabalho isolada do repositório em `path`, no ramo novo `branch`.
-    fn add_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()>;
+    /// Cria uma cópia de trabalho isolada do repositório em `path`, no ramo novo `branch`, a partir
+    /// de `from` (sem ele, do HEAD). Se falhar, a pasta e o ramo que a tentativa criou saem.
+    fn add_worktree(&self, root: &str, path: &str, branch: &str, from: Option<&str>) -> AppResult<()>;
+    /// Descarta uma cópia que ficou pela metade (ex.: o app fechou durante o checkout), sem
+    /// pedir que esteja limpa, e apaga o ramo dela.
+    fn discard_worktree(&self, root: &str, path: &str, branch: &str);
     /// Caminhos das cópias de trabalho que o repositório já tem (inclusive a principal).
     fn worktrees(&self, root: &str) -> AppResult<Vec<String>>;
     /// Diz se o repositório já tem o ramo local `branch` (ele fica depois que a cópia é removida).

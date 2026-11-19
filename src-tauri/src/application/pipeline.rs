@@ -2,7 +2,7 @@
 //! numa sessão própria e decide a próxima pelo registro das anteriores.
 
 use super::{
-    projects::add_free_worktree,
+    projects::free_worktree,
     ports::{
         AgentRepository, Clock, ConversationRepository, EventSink, IdGenerator, ModelCatalog, PipelineRepository, ProjectRepository, Settings,
         StageRunner, VersionControl,
@@ -34,6 +34,9 @@ const EXTRA_BUDGET_MINUTES: i64 = 30;
 const CONFIG_PREFIX: &str = "pipeline_config:";
 /// Foto da pasta que o Revisor revisou por último em cada execução: a próxima revisão recebe só o que mudou depois dela.
 const REVIEWED_PREFIX: &str = "pipeline_reviewed:";
+/// Marca de que a cópia isolada da execução terminou de ser criada (sem ela, uma pasta no lugar é
+/// de uma criação interrompida).
+const WORKTREE_READY_PREFIX: &str = "pipeline_worktree_ready:";
 /// Sessão que já ocupa esta parte do contexto do modelo não é continuada: a etapa abre uma nova, com o
 /// resumo do que importa no prompt, em vez de reenviar uma conversa longa a cada chamada.
 const MAX_RESUME_CONTEXT_PERCENT: i64 = 50;
@@ -55,6 +58,9 @@ pub struct ManagePipelines {
     pub active: Mutex<HashSet<String>>,
     /// Execuções que o usuário mandou parar.
     pub cancelled: Mutex<HashSet<String>>,
+    /// Reservar o nome da cópia e gravar a execução é um passo só: dois `start` ao mesmo tempo
+    /// não ficam com a mesma cópia (ela só é criada depois, na condução).
+    pub reserving: Mutex<()>,
 }
 
 /// Pedido de uma execução vindo da interface.
@@ -304,9 +310,12 @@ impl ManagePipelines {
                 "A pasta do projeto tem alterações sem commit: faça o commit ou guarde-as (git stash) antes, ou ligue a cópia isolada no projeto.".into(),
             ));
         }
+        let _reserving = lock(&self.reserving);
         let (mode, workdir, branch) = match (has_git, project.isolate) {
             (true, true) => {
-                let (path, branch) = self.create_worktree(&folder, &branch_slug(jira_key.as_deref(), &id))?;
+                // Só reserva o nome: criar a cópia (checkout de todo o projeto) fica para a condução, em
+                // segundo plano, e o clique não espera por ela.
+                let (path, branch) = self.reserve_worktree(&folder, &branch_slug(jira_key.as_deref(), &id))?;
                 (WorkMode::Worktree, path, Some(branch))
             }
             (true, false) => (WorkMode::InPlace, normalize_folder(&folder), None),
@@ -345,10 +354,19 @@ impl ManagePipelines {
         Ok(run)
     }
 
-    /// Cópia isolada ao lado da pasta do projeto: pasta "<projeto>-<slug>", ramo "lume/<slug>".
-    fn create_worktree(&self, folder: &str, slug: &str) -> AppResult<(String, String)> {
+    /// Nome da cópia isolada ao lado da pasta do projeto: pasta "<projeto>-<slug>", ramo "lume/<slug>".
+    /// As cópias de outras execuções contam como usadas (a de uma que acabou de começar ainda não existe).
+    fn reserve_worktree(&self, folder: &str, slug: &str) -> AppResult<(String, String)> {
         let base = folder_name(folder);
-        add_free_worktree(&*self.vcs, folder, &[], |n| {
+        // As entregues com a cópia removida (e o ramo apagado) liberam o nome.
+        let taken: Vec<String> = self
+            .pipelines
+            .runs()?
+            .into_iter()
+            .filter(|r| r.mode == WorkMode::Worktree && r.delivered.as_ref().is_none_or(|d| !d.worktree_removed))
+            .map(|r| r.workdir)
+            .collect();
+        free_worktree(&*self.vcs, folder, &taken, |n| {
             let suffix = if n == 1 { slug.to_owned() } else { format!("{slug}-{n}") };
             (format!("{base}-{suffix}"), format!("lume/{suffix}"))
         })
@@ -389,7 +407,38 @@ impl ManagePipelines {
         }
     }
 
+    /// Cria a cópia isolada reservada no `start`, antes da primeira etapa (fora da thread do tokio:
+    /// o checkout de um projeto grande leva segundos).
+    async fn create_worktree(&self, run_id: &str) -> AppResult<()> {
+        let run = self.get(run_id)?;
+        let Some(branch) = run.branch.clone().filter(|_| run.mode == WorkMode::Worktree && run.status == RunStatus::Running) else {
+            return Ok(());
+        };
+        // Pronta (marca gravada ao criar) ou de antes desta marca (já com etapas): nada a fazer.
+        let ready_key = format!("{WORKTREE_READY_PREFIX}{run_id}");
+        if self.settings.flag(&ready_key, false) || !self.pipelines.stages(run_id)?.is_empty() {
+            return Ok(());
+        }
+        let project = self.projects.get(&run.project_id)?.ok_or_else(|| AppError("Projeto não encontrado.".into()))?;
+        let folder = project.folder.ok_or_else(|| AppError("A esteira precisa de um projeto com pasta no computador.".into()))?;
+        let vcs = self.vcs.clone();
+        let (workdir, base) = (run.workdir.clone(), run.base_commit.clone());
+        tokio::task::spawn_blocking(move || {
+            // A pasta sem a marca é de uma criação interrompida (o app fechou no meio do checkout): o
+            // nome foi reservado livre e nenhuma etapa rodou, então nada dos bots se perde.
+            if std::path::Path::new(&workdir).exists() {
+                vcs.discard_worktree(&folder, &workdir, &branch);
+            }
+            // Do commit gravado no início: commits seus feitos depois não viram trabalho dos bots.
+            vcs.add_worktree(&folder, &workdir, &branch, base.as_deref())
+        })
+        .await
+        .map_err(|e| AppError(format!("Não foi possível criar a cópia isolada: {e}")))??;
+        self.settings.set_flag(&ready_key, true)
+    }
+
     async fn drive(&self, run_id: &str, runner: &dyn StageRunner) -> AppResult<()> {
+        self.create_worktree(run_id).await?;
         loop {
             let mut run = self.get(run_id)?;
             if run.status != RunStatus::Running {
@@ -1004,7 +1053,8 @@ impl ManagePipelines {
             return Err(AppError("Cancele a execução antes de apagá-la.".into()));
         }
         self.pipelines.delete_run(run_id)?;
-        // A foto da última revisão só serve à execução: apagada ela, não fica para trás.
+        // A foto da última revisão e a marca da cópia só servem à execução: apagada ela, não ficam para trás.
+        self.settings.set_flag(&format!("{WORKTREE_READY_PREFIX}{run_id}"), false)?;
         self.settings.set_text(&format!("{REVIEWED_PREFIX}{run_id}"), "")
     }
 
@@ -1156,6 +1206,7 @@ mod tests {
             clock: Arc::new(FixedClock(1000)),
             active: Mutex::default(),
             cancelled: Mutex::default(),
+            reserving: Mutex::default(),
         };
         (world, uc, vcs)
     }
@@ -1280,10 +1331,13 @@ mod tests {
         uc.save_models(models).unwrap();
         let run = uc.start(input(Some("loja-7"))).unwrap();
         assert_eq!((run.mode, run.workdir.as_str(), run.branch.as_deref()), (WorkMode::Worktree, "/dev/loja-esteira-loja-7", Some("lume/esteira-loja-7")));
-        assert_eq!(vcs.commits.lock().unwrap()[0].1, "worktree /dev/loja-esteira-loja-7 lume/esteira-loja-7");
+        assert!(vcs.commits.lock().unwrap().is_empty(), "o clique não espera a cópia: ela é criada na condução");
+        let next = uc.start(input(Some("loja-7"))).unwrap();
+        assert_eq!(next.workdir, "/dev/loja-esteira-loja-7-2", "a cópia reservada e ainda não criada conta como usada");
 
         let bots = Bots::spending(vec![Ok("VEREDITO: CLARO"), Ok("## Plano\nfazer X")], &world);
         uc.advance(&run.id, &bots).await.unwrap();
+        assert_eq!(vcs.commits.lock().unwrap()[0].1, "worktree /dev/loja-esteira-loja-7 lume/esteira-loja-7 c0", "do commit gravado no início");
         let detail = uc.detail(&run.id).unwrap();
         assert_eq!(detail.run.status, RunStatus::AwaitingApproval);
         assert_eq!(roles(&uc, &run.id), [("triage", "done"), ("planner", "done"), ("approval", "running")]);

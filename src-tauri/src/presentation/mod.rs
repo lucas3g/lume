@@ -225,6 +225,7 @@ impl Container {
                 clock: clock.clone(),
                 active: Default::default(),
                 cancelled: Default::default(),
+                reserving: Default::default(),
             },
             terminals: ManageTerminals {
                 conversations: store.clone(),

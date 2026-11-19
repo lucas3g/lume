@@ -403,9 +403,13 @@ impl VersionControl for FakeVcs {
         self.commits.lock().unwrap().push((root.to_owned(), message.to_owned()));
         Ok(())
     }
-    fn add_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()> {
-        self.commits.lock().unwrap().push((root.to_owned(), format!("worktree {path} {branch}")));
+    fn add_worktree(&self, root: &str, path: &str, branch: &str, from: Option<&str>) -> AppResult<()> {
+        let from = from.map(|c| format!(" {c}")).unwrap_or_default();
+        self.commits.lock().unwrap().push((root.to_owned(), format!("worktree {path} {branch}{from}")));
         Ok(())
+    }
+    fn discard_worktree(&self, root: &str, path: &str, branch: &str) {
+        self.commits.lock().unwrap().push((root.to_owned(), format!("discard {path} {branch}")));
     }
     /// As cópias pedidas continuam em disco mesmo depois de a conversa delas sumir.
     fn worktrees(&self, root: &str) -> AppResult<Vec<String>> {

@@ -62,6 +62,19 @@ pub fn add_free_worktree(
     taken: &[String],
     candidate: impl Fn(u32) -> (String, String),
 ) -> AppResult<(String, String)> {
+    let (path, branch) = free_worktree(vcs, folder, taken, candidate)?;
+    vcs.add_worktree(folder, &path, &branch, None)?;
+    Ok((path, branch))
+}
+
+/// O primeiro nome livre de `add_free_worktree`, sem criar a cópia (quem cria depois, como a
+/// esteira em segundo plano, põe em `taken` as que reservou e ainda não criou).
+pub fn free_worktree(
+    vcs: &dyn VersionControl,
+    folder: &str,
+    taken: &[String],
+    candidate: impl Fn(u32) -> (String, String),
+) -> AppResult<(String, String)> {
     let mut used: Vec<String> = taken.iter().map(|t| normalize_folder(t)).collect();
     used.extend(vcs.worktrees(folder)?.iter().map(|w| normalize_folder(w)));
     let parent = normalize_folder(folder).rsplit_once(['/', '\\']).map(|(p, _)| p.to_owned()).unwrap_or_default();
@@ -74,7 +87,6 @@ pub fn add_free_worktree(
         }
         n += 1;
     };
-    vcs.add_worktree(folder, &path, &branch)?;
     Ok((path, branch))
 }
 

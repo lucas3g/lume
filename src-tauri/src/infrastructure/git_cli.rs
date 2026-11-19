@@ -178,11 +178,35 @@ impl VersionControl for GitCli {
         Ok(())
     }
 
-    fn add_worktree(&self, root: &str, path: &str, branch: &str) -> AppResult<()> {
-        if !self.status(root).is_repo {
+    fn add_worktree(&self, root: &str, path: &str, branch: &str, from: Option<&str>) -> AppResult<()> {
+        // Só saber se é repositório: o `status` completo lista e lê cada arquivo novo.
+        if !self.is_repo(root) {
             return Err(AppError("A pasta do projeto não é um repositório git.".into()));
         }
-        git_or_error(root, &["worktree", "add", "-b", branch, path]).map(|_| ())
+        let (had_branch, had_path) = (self.has_branch(root, branch), std::path::Path::new(path).exists());
+        let mut args = vec!["worktree", "add", "-b", branch, path];
+        args.extend(from);
+        let added = git_or_error(root, &args).map(|_| ());
+        // Nada pela metade: o que esta tentativa criou sai, e tentar de novo começa do zero. O que
+        // já existia (ex.: o ramo com esse nome, motivo da recusa) fica.
+        if added.is_err() {
+            if !had_path {
+                let _ = git(root, &["worktree", "remove", "--force", path]);
+                let _ = fs::remove_dir_all(path);
+                let _ = git(root, &["worktree", "prune"]);
+            }
+            if !had_branch {
+                let _ = git(root, &["branch", "-D", branch]);
+            }
+        }
+        added
+    }
+
+    fn discard_worktree(&self, root: &str, path: &str, branch: &str) {
+        let _ = git(root, &["worktree", "remove", "--force", path]);
+        let _ = fs::remove_dir_all(path);
+        let _ = git(root, &["worktree", "prune"]);
+        let _ = git(root, &["branch", "-D", branch]);
     }
 
     fn worktrees(&self, root: &str) -> AppResult<Vec<String>> {
@@ -336,9 +360,23 @@ mod tests {
 
         assert_eq!(GitCli.worktrees(&root).unwrap().len(), 1, "só a cópia principal");
         let branch_dir = dir.with_file_name(format!("{}-ramo", dir.file_name().unwrap().to_string_lossy()));
-        GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo").unwrap();
+        GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo", None).unwrap();
         assert_eq!(GitCli.worktrees(&root).unwrap().len(), 2);
-        assert!(GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo").is_err(), "nome repetido é recusado");
+        assert!(GitCli.add_worktree(&root, &branch_dir.to_string_lossy(), "lume/ramo", None).is_err(), "nome repetido é recusado");
+        assert!(branch_dir.exists() && GitCli.has_branch(&root, "lume/ramo"), "a recusa não apaga a cópia nem o ramo que já existiam");
+        // Falha no meio (commit de partida inexistente): não sobra pasta nem ramo, e dá para tentar de novo.
+        let other = dir.with_file_name(format!("{}-outro", dir.file_name().unwrap().to_string_lossy()));
+        let other_root = other.to_string_lossy().into_owned();
+        assert!(GitCli.add_worktree(&root, &other_root, "lume/outro", Some("0123456789abcdef0123456789abcdef01234567")).is_err());
+        assert!(!other.exists() && !GitCli.has_branch(&root, "lume/outro"));
+        let first = GitCli.head(&root).unwrap();
+        fs::write(dir.join("a.txt"), "um\ndois\n").unwrap();
+        GitCli.commit(&root, "Depois da reserva").unwrap();
+        GitCli.add_worktree(&root, &other_root, "lume/outro", Some(&first)).unwrap();
+        assert_eq!(GitCli.head(&other_root).as_deref(), Some(first.as_str()), "a cópia parte do commit pedido, não do HEAD");
+        fs::write(other.join("a.txt"), "pela metade\n").unwrap();
+        GitCli.discard_worktree(&root, &other_root, "lume/outro");
+        assert!(!other.exists() && !GitCli.has_branch(&root, "lume/outro") && GitCli.worktrees(&root).unwrap().len() == 2);
         fs::remove_dir_all(&branch_dir).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
@@ -365,7 +403,7 @@ mod tests {
         assert_eq!(GitCli.current_branch(&root).as_deref(), Some("main"));
         let copy = dir.with_file_name(format!("{}-esteira", dir.file_name().unwrap().to_string_lossy()));
         let copy_root = copy.to_string_lossy().into_owned();
-        GitCli.add_worktree(&root, &copy_root, "lume/esteira").unwrap();
+        GitCli.add_worktree(&root, &copy_root, "lume/esteira", None).unwrap();
         fs::write(copy.join("b.txt"), "novo\n").unwrap();
         GitCli.commit(&copy_root, "Exporta CSV").unwrap();
 

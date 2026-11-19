@@ -790,7 +790,8 @@ pub async fn list_jira_boards(app: App<'_>) -> AppResult<JiraBoards> {
     app.jira_issues.boards().await
 }
 
-/// Cria a execução (e a cópia isolada, se o projeto tem versionamento) e põe os bots para trabalhar.
+/// Cria a execução (reservando a cópia isolada, se o projeto tem versionamento) e põe os bots para trabalhar;
+/// a cópia é criada em segundo plano, antes da primeira etapa.
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn start_pipeline(
