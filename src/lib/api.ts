@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
-  Account, AccountConnector, Agent, ConnectorsElsewhere, JiraBoards, JiraIssueList, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
+  Account, AccountConnector, Agent, ConnectorsElsewhere, JiraBoards, JiraIssueList, JiraTaskBrief, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
   Delivery, GitInfo, MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, BotLook, OfficeLooks, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
 } from "./types";
 
@@ -113,6 +113,7 @@ export const api = {
   pipelineDetail: (id: string) => invoke<PipelineDetail>("pipeline_detail", { id }),
   listJiraIssues: (query: string | null = null, statuses: string[] | null = null) => invoke<JiraIssueList>("list_jira_issues", { query, statuses }),
   listJiraBoards: () => invoke<JiraBoards>("list_jira_boards"),
+  briefJiraTask: (key: string, site: string | null) => invoke<JiraTaskBrief>("brief_jira_task", { key, site }),
   startPipeline: (input: { projectId: string; jiraKey: string | null; jiraSite: string | null; title: string; request: string; budgetMinutes: number | null; images: PastedImage[]; design: boolean }) =>
     invoke<PipelineRun>("start_pipeline", input),
   pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),

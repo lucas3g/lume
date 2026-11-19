@@ -8,6 +8,8 @@
 .office-room{--s:3;--u:calc(var(--s)*1px);position:relative;width:calc(360px*var(--s));height:calc(186px*var(--s));overflow:hidden;isolation:isolate;margin:0 auto;background:var(--bg);contain:strict}
 .office-room svg{display:block;overflow:visible;shape-rendering:crispEdges;image-rendering:pixelated}
 .office-room image{image-rendering:pixelated;pointer-events:none}
+/* Pessoas: chibi vetorial, rasterizado liso pelo navegador. */
+.office-room image.vec{image-rendering:auto}
 .office-room .bg{position:absolute;left:0;top:0;width:100%;height:100%;z-index:0}
 .office-room .row{list-style:none;margin:0;padding:0}
 .office-room .it,.office-room .desk{position:absolute;left:calc(var(--x)*var(--u));top:calc(var(--y)*var(--u));width:calc(var(--w)*var(--u));height:calc(var(--h)*var(--u))}
@@ -46,13 +48,14 @@
    então nenhum quadro filho reaparece depois (visibility dos filhos não vence a opacity do trecho).
    O z-index anima junto com a posição, para a pessoa passar na frente ou atrás das mesas. ---- */
 .office-room .trip{display:contents}
-.office-room .leg{position:absolute;left:0;top:0;width:calc(12px*var(--s));height:calc(20px*var(--s));opacity:0;pointer-events:none;animation:of-leg var(--dur) var(--ease) var(--t0) 1}
+.office-room .leg{position:absolute;left:0;top:0;width:calc(14px*var(--s));height:calc(24px*var(--s));opacity:0;pointer-events:none;animation:of-leg var(--dur) var(--ease) var(--t0) 1}
 .office-room .leg>svg{width:100%;height:100%}
 /* De pé esperando na sua mesa: o último trecho fica à vista depois de acabar. */
 .office-room .leg.hold{animation-fill-mode:forwards}
-.office-room .leg.f-se>svg,.office-room .leg.f-ne>svg{scale:-1 1}
+/* Quem anda já vem espelhado no desenho (a luz segue da esquerda); só o aviãozinho vira pelo CSS. */
+.office-room .leg.plane.f-se>svg{scale:-1 1}
 @keyframes of-leg{from{opacity:1;z-index:var(--z0);transform:translate(calc(var(--x0)*var(--u)),calc(var(--y0)*var(--u)))}to{opacity:1;z-index:var(--z1);transform:translate(calc(var(--x1)*var(--u)),calc(var(--y1)*var(--u)))}}
-.office-room .leg.plane{height:calc(6px*var(--s))}
+.office-room .leg.plane{width:calc(12px*var(--s));height:calc(6px*var(--s))}
 .office-room .leg.plane>svg{animation:of-arc var(--dur) steps(18) var(--t0) 1}
 @keyframes of-arc{0%,100%{transform:none}25%,75%{transform:translateY(calc(var(--u)*-13))}50%{transform:translateY(calc(var(--u)*-17))}}
 

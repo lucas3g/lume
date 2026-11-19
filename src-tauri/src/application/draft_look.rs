@@ -7,7 +7,7 @@ use super::{
 };
 use crate::domain::{
     chat::{Attachment, AttachmentKind},
-    office::{parse_bot_look, BotLook, ACCESSORIES, HAIR_STYLES, OUTFITS},
+    office::{parse_bot_look, BotLook, ACCESSORIES, BEARDS, HAIR_STYLES, OUTFITS},
 };
 use std::sync::Arc;
 
@@ -22,11 +22,11 @@ pub struct DraftLook {
 /// O formato da resposta e as peças que o desenho sabe montar.
 fn system_prompt() -> String {
     format!(
-        "Você transforma a foto de uma pessoa num boneco de pixel art pequeno (cerca de 20x30 pixels), visto em 3/4. \
+        "Você transforma a foto de uma pessoa num boneco chibi pequeno (cabeça grande, desenho liso), visto em 3/4. \
          Olhe a pessoa principal da foto e responda apenas com um JSON, sem comentários, no formato \
          {{\"skin\": \"#rrggbb\", \"skin_shade\": \"#rrggbb\", \"hair\": \"#rrggbb\", \"hair_light\": \"#rrggbb\", \
          \"shirt\": \"#rrggbb\", \"shirt_shade\": \"#rrggbb\", \"pants\": \"#rrggbb\", \"hair_style\": \"...\", \
-         \"accessory\": \"...\" ou null, \"outfit\": \"...\"}}.\n\
+         \"accessory\": \"...\" ou null, \"outfit\": \"...\", \"beard\": \"...\", \"beard_color\": \"#rrggbb\" ou null}}.\n\
          - skin: tom de pele médio da pessoa; skin_shade: o mesmo tom uns 15% mais escuro.\n\
          - hair: cor do cabelo (ou da barba, se for careca); hair_light: um brilho um pouco mais claro.\n\
          - shirt: cor predominante da roupa de cima; shirt_shade: a mesma uns 25% mais escura; pants: cor da calça \
@@ -36,11 +36,15 @@ fn system_prompt() -> String {
          - accessory, um destes ou null: {acc} (glasses = óculos de armação escura, readers = óculos de armação \
          clara ou metálica, headset = fone de ouvido, goggles = óculos de proteção).\n\
          - outfit, o que mais lembrar a roupa: {out} (hoodie = moletom/camiseta, lanyard = crachá, cardigan = \
-         casaco aberto/camisa social aberta, pearls = colar, coat = jaleco/blazer, scarf = cachecol, tie = gravata).\n\
-         Cores vivas o bastante para ler bem em pixel art; não use preto puro nem branco puro.",
+         casaco aberto/camisa social aberta, pearls = colar, coat = jaleco/blazer, scarf = cachecol, tie = gravata, \
+         gremio = camisa do Grêmio, vneck = camiseta lisa de gola V).\n\
+         - beard, um destes: {beard} (none = sem barba, stubble = barba curta/por fazer, full = barba cheia); \
+         beard_color: a cor da barba se for bem diferente da do cabelo, senão null.\n\
+         Cores vivas o bastante para ler bem num boneco pequeno; não use preto puro nem branco puro.",
         hair = HAIR_STYLES.join(", "),
         acc = ACCESSORIES.join(", "),
         out = OUTFITS.join(", "),
+        beard = BEARDS.join(", "),
     )
 }
 

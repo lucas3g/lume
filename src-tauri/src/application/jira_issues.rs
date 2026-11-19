@@ -11,7 +11,11 @@ use crate::domain::{
     account::{pick_next, Provider},
     chat::{TurnEnd, TurnRequest},
     extension::{cli_server_key, server_deny_rule},
-    jira::{boards_system_prompt, issues_jql, issues_system_prompt, parse_boards, parse_issue_list, JiraBoards, JiraIssueList},
+    jira::{
+        boards_system_prompt, brief_system_prompt, issues_jql, issues_system_prompt, parse_boards, parse_brief, parse_issue_list, JiraBoards,
+        JiraIssueList, JiraTaskBrief,
+    },
+    pipeline::normalize_jira_key,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -19,6 +23,31 @@ const LIST_MODEL: &str = "haiku";
 
 /// Tempo máximo de uma consulta: um conector travado (ex.: esperando login) não prende a lista para sempre.
 const LIST_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Ler a task inteira e entender o pedido pede um modelo melhor e mais tempo que listar.
+const BRIEF_MODEL: &str = "sonnet";
+const BRIEF_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Ferramentas de leitura para entender uma task: a task, os comentários e o que ela cita (Confluence, Loom).
+pub const JIRA_BRIEF_TOOLS: [&str; 7] = [
+    "mcp__claude_ai_Atlassian__getAccessibleAtlassianResources",
+    "mcp__claude_ai_Atlassian__getJiraIssue",
+    "mcp__claude_ai_Atlassian__listJiraIssueComments",
+    "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql",
+    "mcp__claude_ai_Atlassian__getConfluenceContent",
+    "mcp__claude_ai_Atlassian__getLoomObjectsContent",
+    "mcp__claude_ai_Atlassian__executeRead",
+];
+
+/// Como roda um turno de consulta: modelo, esforço, ferramentas liberadas e tempo máximo.
+struct Ask<'a> {
+    model: &'a str,
+    effort: &'a str,
+    tools: &'a [&'a str],
+    timeout: Duration,
+}
+
+const LIST_ASK: Ask<'static> = Ask { model: LIST_MODEL, effort: "low", tools: &JIRA_READ_TOOLS, timeout: LIST_TIMEOUT };
 
 /// Só as ferramentas de leitura do conector ficam liberadas. O `executeRead` roda as operações de
 /// leitura (busca com filtro de campos, quadros e colunas); as de escrita ficam em outras ferramentas.
@@ -90,7 +119,7 @@ impl JiraIssues {
     /// a busca por texto ou chave em todo o Jira.
     pub async fn list(&self, query: Option<&str>, statuses: &[String]) -> AppResult<JiraIssueList> {
         let (jql, fallback) = issues_jql(query, statuses);
-        let (text, account_id) = self.ask("Liste as tasks do Jira.", issues_system_prompt(&jql, fallback.as_deref())).await?;
+        let (text, account_id) = self.ask("Liste as tasks do Jira.", issues_system_prompt(&jql, fallback.as_deref()), LIST_ASK).await?;
         match parse_issue_list(&text) {
             Ok(Some(list)) => Ok(JiraIssueList { account_id: Some(account_id), ..list }),
             Ok(None) => Err(AppError("O Jira não respondeu numa forma legível. Tente de novo.".into())),
@@ -100,7 +129,7 @@ impl JiraIssues {
 
     /// Quadros do Jira e as colunas de cada um, para escolher de qual coluna vêm as tasks.
     pub async fn boards(&self) -> AppResult<JiraBoards> {
-        let (text, account_id) = self.ask("Liste os quadros do Jira.", boards_system_prompt()).await?;
+        let (text, account_id) = self.ask("Liste os quadros do Jira.", boards_system_prompt(), LIST_ASK).await?;
         match parse_boards(&text) {
             Ok(Some(boards)) => Ok(JiraBoards { account_id: Some(account_id), ..boards }),
             Ok(None) => Err(AppError("O Jira não respondeu numa forma legível. Tente de novo.".into())),
@@ -108,10 +137,23 @@ impl JiraIssues {
         }
     }
 
+    /// Lê a task inteira (descrição, critérios, comentários, anexos e o que ela cita) e escreve o título e
+    /// o que fazer, para preencher o formulário da esteira (não salva nada).
+    pub async fn brief(&self, key: &str, site: Option<&str>) -> AppResult<JiraTaskBrief> {
+        let key = normalize_jira_key(key).ok_or_else(|| AppError("Escolha uma task do Jira antes de gerar.".into()))?;
+        let ask = Ask { model: BRIEF_MODEL, effort: "medium", tools: &JIRA_BRIEF_TOOLS, timeout: BRIEF_TIMEOUT };
+        let (text, _) = self.ask(&format!("Leia a task {key} e escreva o que fazer."), brief_system_prompt(&key, site), ask).await?;
+        match parse_brief(&text) {
+            Ok(Some(brief)) => Ok(brief),
+            Ok(None) => Err(AppError("O modelo não devolveu um texto para a task. Tente de novo.".into())),
+            Err(reason) => Err(unreadable(&reason)),
+        }
+    }
+
     /// Roda um turno curto de consulta e devolve a resposta e a conta que respondeu.
     /// Usa a conta que atende a próxima mensagem (a mesma da tela de Conectores); no limite ou sem
     /// login, tenta a seguinte.
-    async fn ask(&self, prompt: &str, system: String) -> AppResult<(String, String)> {
+    async fn ask(&self, prompt: &str, system: String, how: Ask<'_>) -> AppResult<(String, String)> {
         let all: Vec<_> = self.accounts.all()?.into_iter().filter(|a| a.provider == Provider::Claude).collect();
         let mut tried: Vec<String> = Vec::new();
         let mut last = AppError("Nenhuma conta do Claude disponível para consultar o Jira.".into());
@@ -130,19 +172,19 @@ impl JiraIssues {
                 provider: Provider::Claude,
                 config_dir: account.config_dir.clone(),
                 cwd: self.chat_dir.clone(),
-                model: LIST_MODEL.into(),
+                model: how.model.into(),
                 resume: None,
                 prompt: prompt.into(),
                 attachments: vec![],
                 extra_system: Some(system.clone()),
                 tools: String::new(),
-                effort: "low".into(),
+                effort: how.effort.into(),
                 permission_mode: "auto".into(),
                 interactive: false,
                 denied_skills: vec![],
                 denied_tools: denied.clone(),
                 mcp_config: None,
-                allowed_tools: JIRA_READ_TOOLS.iter().map(|t| (*t).to_owned()).collect(),
+                allowed_tools: how.tools.iter().map(|t| (*t).to_owned()).collect(),
                 read_dirs: vec![],
                 mcp_servers: vec![],
                 artifacts: false,
@@ -150,8 +192,9 @@ impl JiraIssues {
             };
             let (mut control, _handle) = TurnControl::new();
             let cancel = control.cancel.clone();
+            let timeout = how.timeout;
             let timer = tokio::spawn(async move {
-                tokio::time::sleep(LIST_TIMEOUT).await;
+                tokio::time::sleep(timeout).await;
                 cancel.notify_one();
             });
             let end = self.engine.run_turn(&request, &mut control, &mut |_| {}).await;
@@ -175,7 +218,7 @@ impl JiraIssues {
                 }
                 TurnEnd::Failed(message) => return Err(AppError(message)),
                 TurnEnd::Cancelled => {
-                    return Err(AppError(format!("O Jira não respondeu em {} minutos. Tente de novo.", LIST_TIMEOUT.as_secs() / 60)));
+                    return Err(AppError(format!("O Jira não respondeu em {} minutos. Tente de novo.", how.timeout.as_secs() / 60)));
                 }
             }
         }
@@ -272,6 +315,22 @@ mod tests {
         let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Done { session_id: None, text: r#"{"error":"conector ausente"}"#.into() }));
         let error = service(engine).list(None, &[]).await.unwrap_err();
         assert!(error.0.contains("conector ausente") && error.0.contains("Conectores"));
+    }
+
+    #[tokio::test]
+    async fn briefs_a_task_with_the_read_tools_only() {
+        let engine = ScriptedEngine::new(|req, _| {
+            assert_eq!(req.model, BRIEF_MODEL);
+            assert_eq!(req.allowed_tools, JIRA_BRIEF_TOOLS);
+            assert!(req.denied_tools.iter().any(|t| t.ends_with("__editJiraIssue")));
+            assert!(req.extra_system.as_deref().unwrap().contains("LOJA-7"));
+            let text = r#"{"title":"Exportar CSV","request":"Exportar a lista em CSV."}"#;
+            (vec![], TurnEnd::Done { session_id: None, text: text.into() })
+        });
+        let uc = service(engine);
+        let brief = uc.brief("loja-7", None).await.unwrap();
+        assert_eq!((brief.title.as_deref(), brief.request.as_str()), (Some("Exportar CSV"), "Exportar a lista em CSV."));
+        assert!(uc.brief("não é chave", None).await.is_err());
     }
 
     #[tokio::test]

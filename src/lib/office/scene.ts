@@ -3,7 +3,9 @@
    Grade lógica 360x186 px escalada por inteiro (--s), desenhada por dentro com 2x2 pixels finos por px lógico
    (contorno, luz de borda, sombras e poças de luz). Sprites são mapas de caracteres ampliados pelo Scale2x e
    convertidos em um bitmap (PNG) desenhado como <image> sem suavizar; a animação fica toda no CSS (steps()) de office.css.
+   As pessoas são a exceção: chibi vetorial (chibi.ts), servido como SVG num <image> liso.
    Funções puras: estado da cena -> modelo de desenho. Os tipos públicos ficam no fim do arquivo. */
+import { chibiArms, chibiBody, chibiCells, chibiEyes, chibiLegs, chibiMouth, chibiShadow } from './chibi';
 const LW = 360, LH = 186, HW = 12, HH = 6, OX = 180, OY = 26, GRID = 13, WALL = 24, SPEED = 3.2, HAND = 0.6;
 const ORDER = ['triage', 'planner', 'approval', 'implementer', 'reviewer', 'tester', 'code_review', 'reporter'];
 /* Estações: área de 2x2 tiles a partir de `at`. Na moldura local, u corre ao longo da mesa (0..2) e v vai da
@@ -58,8 +60,8 @@ const CASE = ['#3d424d', '#2b2e36', '#1f2127'], SCREEN = '#12151d';
    bordas e contornos saem com mais definição, e os mapas de caracteres passam pelo Scale2x (uma vez em R = 2,
    duas em R = 4). R depende da densidade da tela (ver density): 4 onde há pixels de tela para isso (retina, escala
    alta), 2 nas telas comuns, onde a grade mais fina só seria jogada fora ao reduzir.
-   Os desenhos à mão (pessoas, texturas) seguem na grade de 2 por px lógico: em R = 4 as pessoas são ampliadas
-   pelo Scale2x e as texturas recebem as coordenadas nessa grade, então o pontilhado não muda de tamanho. */
+   As texturas desenhadas à mão seguem na grade de 2 por px lógico: em R = 4 recebem as coordenadas nessa grade,
+   então o pontilhado não muda de tamanho. As pessoas são vetoriais (chibi.ts) e não passam por aqui. */
 let R = 2;
 /* Pixel fino -> grade de 2 por px lógico (a dos desenhos à mão). */
 const half = v => Math.floor(v * 2 / R);
@@ -208,14 +210,8 @@ function iso(g) {
   };
   /* Carimbo ancorado num ponto do chão: (tx, ty, z) vira o centro da base do mapa. */
   const at = (tx, ty, z, lines, pal, flip) => stamp(g, Math.round(sx(tx, ty) - lines[0].length / 2), Math.round(sy(tx, ty, z)) - lines.length, lines, pal, flip);
-  /* Tela fina (canvas) copiada para a grade com origem em (ox, oy) pixels finos; flip espelha em x. */
-  /* (ox, oy) em pixels finos da grade; o desenho está na grade de 2 por px lógico e, em R = 4, sai ampliado pelo Scale2x. */
-  const fine = (ox, oy, cv, flip) => {
-    const m = R === 4 ? upscale(cv.m) : cv.m;
-    Object.keys(m).forEach(y => Object.keys(m[y]).forEach(x => paint(g, flip ? ox - +x - 1 : ox + +x, oy + +y, 1, 1, m[y][x])));
-  };
   const px = (x, y, w, h, c) => paint(g, Math.round(x * R), Math.round(y * R), Math.round(w * R), Math.round(h * R), c);
-  return { top: top, faceY: faceY, faceX: faceX, box: box, glow: glow, fine: fine, at: at, map: (x, y, lines, pal, flip) => stamp(g, x, y, lines, pal, flip), px: px };
+  return { top: top, faceY: faceY, faceX: faceX, box: box, glow: glow, at: at, map: (x, y, lines, pal, flip) => stamp(g, x, y, lines, pal, flip), px: px };
 }
 /* Os mesmos desenhos na moldura local de uma estação (o espelho 'se' troca os eixos e vira os carimbos). */
 function kit(t, g) {
@@ -304,122 +300,32 @@ function frames(n, dur, make) {
   return out;
 }
 
-/* Você: retrato em pixel art desenhado à mão, um caractere por pixel fino (sem Scale2x); '.' é vazio.
-   Cabeça em 3/4 olhando para a esquerda, como as outras: cabelo castanho curto com as laterais baixas (degradê),
-   barba curta acobreada cobrindo bochechas, bigode e queixo, sorriso aberto com os dentes e orelhas rosadas.
-   Camisa do Grêmio: xadrez de blocos grandes azul-celeste e branco, gola careca azul, escudo e três estrelas. */
-const YOU = {
-  pal: {
-    /* cabelo: sombra, base, luz, brilho; degradê das laterais, do escuro ao claro perto da orelha */
-    d: '#30231d', H: '#4a372d', h: '#68503f', y: '#8a6f5b', F: '#6a5244', f: '#94776a', g: '#bb9b88',
-    /* pele: luz, base, sombra, sombra funda, rubor */
-    L: '#fcdcc4', S: '#f2c6a6', s: '#dca383', z: '#c3866a', r: '#eda48e',
-    /* barba: luz, base, sombra, fios sobre a pele */
-    b: '#c98652', B: '#a9663b', D: '#844a2b', t: '#dba07a',
-    /* sobrancelha, olho fechado, dentes, boca; q é a sombra da franja na testa */
-    e: '#5e3d2c', E: '#3a2620', W: '#fbf8f1', m: '#6a2723', q: '#e9b393',
-    /* olhos abertos */
-    o: '#1a1b20', i: '#f4f5f7',
-    /* camisa: branco e sombra, celeste e sombra, gola; escudo (anel, faixa, azul) e estrelas (bronze, prata, ouro) */
-    w: '#f3f6f9', v: '#d0dae5', C: '#a9d3f2', c: '#80b0d9', K: '#2f7fc4',
-    N: '#2c3a5c', X: '#15171d', x: '#3f95e0', '1': '#d08c50', '2': '#e8ebf0', '3': '#f2c44c'
-  },
-  /* Cabeça, linhas cy-9 (topo do cabelo) a cy+10 (pescoço, até a gola), colunas cx-9 a cx+7. A luz vem do alto à
-     esquerda: franja com sombra na testa, lado do rosto e nuca mais escuros, orelha em (cx+3..cx+5, cy-1..cy+3).
-     Nos olhos fica a linha do olho fechado (E): é o que aparece quando a camada dos olhos some, na piscada. */
-  head: [
-    '.....hyyhH.......',
-    '...hhyhHhhHd.....',
-    '.hhyhHHhyhHHdd...',
-    '.hHHhHHhHHdHHdd..',
-    'HHdHHHdHHHdHHddd.',
-    'dHHdHHHdHHdFFFFFF',
-    '.qqqqqqqqqFfffFFF',
-    '.SLLLSSSSsgffffFF',
-    'SeeeSSeeeesggrrgF',
-    'SSSSSSSSSstgrzrfF',
-    'SSSSSsSSSStBrzrfF',
-    'SSEESsSEESBtSrsgF',
-    'SrrSLzSrrtBBzsgF.',
-    'ttbbBBBBttBBDDgf.',
-    'bmWWWWWmBBBDDzg..',
-    'bBBmmmBBBBDDzz...',
-    '.bbBBBBBBDDzzs...',
-    '..DBBBBDDDzzs....',
-    '.......zzzzss....',
-    '.......zssss.....'
-  ],
-  /* Camadas do rosto, com a mesma origem da cabeça: olhos abertos com brilho (linhas cy+1 e cy+2), olhos fechados
-     sorrindo (^ ^ sobre a linha do olho fechado) e, na falha, dentes cerrados por cima do sorriso. */
-  eyes: ['', '', '', '', '', '', '', '', '', '', '..io....io', '..oo....oo'],
-  happy: ['', '', '', '', '', '', '', '', '', '', '..E....EE', '.ESE..ESSE'],
-  grimace: ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '.mWWWWWm', 'BmWWWWWmB'],
-  /* Camisa, de top para baixo, colunas cx-9 a cx+8 (a mesa cobre a parte de baixo). Blocos: em cima branco, celeste,
-     branco (com as três estrelas e o escudo) e celeste; embaixo invertido. Lado direito na sombra. */
-  shirt: [
-    '...wCKsssssKwwC...',
-    '.wwwCCKsssKwwwCcc.',
-    'wwwwCCCKKKwwwwCccc',
-    'wwwwCCC1w2w3wwCccc',
-    'wwwwCCCwwwwwwwCccc',
-    'wwwwCCCwNNNwwwCccc',
-    'wwwwCCCNxWxNwwCccc',
-    'wwwwCCCNXXXNwwCccc',
-    'wwwwCCCNxWxNwwCccc',
-    'wwwwCCCwNNNwwwCccc',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv',
-    'CCCCwwwCCCCCCCwvvv'
-  ]
-};
-/* Copia um mapa desenhado à mão para a tela fina a partir de (x0, y0). */
-function blit(cv, x0, y0, rows, pal) {
-  rows.forEach((ln, j) => { for (let i = 0; i < ln.length; i++) { const c = pal[ln[i]]; if (c) cv.set(x0 + i, y0 + j, c); } });
-}
-
-/* Pessoas: uma por papel, com a roupa na cor do papel, desenhadas direto na grade fina (2x2 por px lógico) a partir
-   de formas: cabeça em 3/4 virada para a esquerda (olha para sudoeste; o espelho dá sudeste), tronco com gola e um
-   detalhe do papel, e braços como membros de verdade (ombro -> cotovelo -> mão), sempre presos ao ombro.
-   pal: S/s pele e sombra, H/h cabelo e brilho, C/c roupa e sombra, P calça. hair: estilo do cabelo; extra: acessório. */
+/* Pessoas: uma por papel, em chibi vetorial (chibi.ts): cabeça grande em 3/4 olhando para sudoeste (o espelho dá
+   sudeste, com a luz ainda vindo da esquerda), tronco, braços por pose, olhos numa camada própria (para piscar) e boca
+   por expressão. O visual de cada papel segue o formato do editor (BotLookShape + barba). */
 const DEFAULT_PEOPLE = {
-  triage: { pal: { S: '#8d5a3b', s: '#6f4329', H: '#1c1a1e', h: '#3a3540', C: '#49b5b0', c: '#2c7f7b', P: '#3d4560' }, hair: 'curly', shirt: 'lanyard' },
-  planner: { pal: { S: '#f1c9a5', s: '#d9a982', H: '#b5532f', h: '#d9784a', C: '#6f7de0', c: '#4450a8', P: '#6b5a4a' }, hair: 'long', shirt: 'cardigan' },
-  implementer: { pal: { S: '#c68c5f', s: '#a8714a', H: '#2b2320', h: '#4a3a33', C: '#e0894e', c: '#a85f30', P: '#55607d' }, hair: 'short', extra: 'headset', shirt: 'hoodie' },
-  reviewer: { pal: { S: '#f7dcc4', s: '#e0bea2', H: '#c9ccd4', h: '#eef0f3', C: '#dd6a83', c: '#9c4257', P: '#5d6270' }, hair: 'bun', extra: 'glasses', shirt: 'pearls' },
-  tester: { pal: { S: '#e0ac7e', s: '#c48f62', H: '#15161a', h: '#34363e', C: '#8fc45a', c: '#5c8a35', P: '#4a5578' }, hair: 'short', extra: 'goggles', shirt: 'coat' },
-  reporter: { pal: { S: '#a9714b', s: '#8a5a3a', H: '#3a2a20', h: '#5a4232', C: '#b377d9', c: '#7d4a9e', P: '#6b5a4a' }, hair: 'beanie', shirt: 'scarf' },
-  /* Você, na mesa de aprovação: retrato desenhado à mão (YOU), no lugar das formas. hair fica para a vista de costas. */
-  approval: { pal: { S: '#f2c6a6', s: '#dca383', H: '#5e4030', h: '#82604a', C: '#a9d3f2', c: '#7fb0d8', P: '#2f3646' }, hair: 'fade', shirt: 'gremio', art: YOU },
+  triage: { skin: '#8d5a3b', skin_shade: '#6f4329', hair: '#1c1a1e', hair_light: '#3a3540', shirt: '#49b5b0', shirt_shade: '#2c7f7b', pants: '#3d4560', hair_style: 'curly', accessory: null, outfit: 'lanyard', beard: 'none' },
+  planner: { skin: '#f1c9a5', skin_shade: '#d9a982', hair: '#b5532f', hair_light: '#d9784a', shirt: '#6f7de0', shirt_shade: '#4450a8', pants: '#6b5a4a', hair_style: 'long', accessory: null, outfit: 'cardigan', beard: 'none' },
+  implementer: { skin: '#c68c5f', skin_shade: '#a8714a', hair: '#2b2320', hair_light: '#4a3a33', shirt: '#e0894e', shirt_shade: '#a85f30', pants: '#55607d', hair_style: 'short', accessory: 'headset', outfit: 'hoodie', beard: 'stubble' },
+  reviewer: { skin: '#f7dcc4', skin_shade: '#e0bea2', hair: '#c9ccd4', hair_light: '#eef0f3', shirt: '#dd6a83', shirt_shade: '#9c4257', pants: '#5d6270', hair_style: 'bun', accessory: 'glasses', outfit: 'pearls', beard: 'none' },
+  tester: { skin: '#e0ac7e', skin_shade: '#c48f62', hair: '#15161a', hair_light: '#34363e', shirt: '#8fc45a', shirt_shade: '#5c8a35', pants: '#4a5578', hair_style: 'short', accessory: 'goggles', outfit: 'coat', beard: 'none' },
+  reporter: { skin: '#a9714b', skin_shade: '#8a5a3a', hair: '#3a2a20', hair_light: '#5a4232', shirt: '#b377d9', shirt_shade: '#7d4a9e', pants: '#6b5a4a', hair_style: 'beanie', accessory: null, outfit: 'scarf', beard: 'full' },
+  /* Você, na mesa de aprovação: degradê castanho, barba curta acobreada e a camisa do Grêmio. */
+  approval: { skin: '#f2c6a6', skin_shade: '#dca383', hair: '#5e4030', hair_light: '#82604a', shirt: '#a9d3f2', shirt_shade: '#7fb0d8', pants: '#2f3646', hair_style: 'fade', accessory: null, outfit: 'gremio', beard: 'stubble', beard_color: '#a9663b' },
   /* Code review: coque no alto, óculos de leitura e camisa âmbar com gravata. */
-  code_review: { pal: { S: '#d29a6e', s: '#b27d53', H: '#4a2c22', h: '#7a4c3a', C: '#d9a441', c: '#9c7226', P: '#3f4a63' }, hair: 'topknot', extra: 'readers', shirt: 'tie' }
+  code_review: { skin: '#d29a6e', skin_shade: '#b27d53', hair: '#4a2c22', hair_light: '#7a4c3a', shirt: '#d9a441', shirt_shade: '#9c7226', pants: '#3f4a63', hair_style: 'topknot', accessory: 'readers', outfit: 'tie', beard: 'none' }
 };
-/* Visual configurado pelo usuário (setOfficeLooks), por papel, já no formato de DEFAULT_PEOPLE. LOOK_TAG entra nas
-   chaves dos sprites da pessoa: trocar o visual gera bitmaps novos em vez de reaproveitar os da memória. */
+/* Visual configurado pelo usuário (setOfficeLooks), por papel. LOOK_TAG entra nas chaves dos sprites da pessoa:
+   trocar o visual gera desenhos novos em vez de reaproveitar os da memória. */
 const LOOKS = {}, LOOK_TAG = {};
-const people = role => LOOKS[role] || DEFAULT_PEOPLE[role];
+const people = role => LOOKS[role] || DEFAULT_PEOPLE[role] || DEFAULT_PEOPLE.implementer;
 const personKey = role => role + (LOOK_TAG[role] || '');
-function lookToPerson(l) {
-  return {
-    pal: { S: l.skin, s: l.skin_shade || shade(l.skin, 0.16), H: l.hair, h: l.hair_light || lit(l.hair, 0.22), C: l.shirt, c: l.shirt_shade || shade(l.shirt, 0.3), P: l.pants },
-    hair: l.hair_style, extra: l.accessory || undefined, shirt: l.outfit
-  };
-}
 function lookTag(l) {
   const t = JSON.stringify(l); let h = 5381;
   for (let i = 0; i < t.length; i++) h = (Math.imul(h, 33) ^ t.charCodeAt(i)) | 0;
   return '~' + (h >>> 0).toString(36);
 }
-/* Tira da memória os bitmaps de um visual que saiu de uso. */
+/* Tira da memória os desenhos de um visual que saiu de uso. */
 function dropLook(role) {
   const tag = LOOK_TAG[role];
   if (!tag) return;
@@ -435,294 +341,44 @@ function setLook(role, look) {
   const tag = look ? lookTag(look) : '';
   if ((LOOK_TAG[role] || '') === tag) return;
   dropLook(role);
-  if (look) { LOOKS[role] = lookToPerson(look); LOOK_TAG[role] = tag; } else { delete LOOKS[role]; delete LOOK_TAG[role]; }
-}
-const EYE = '#1a1b20', WHITE = '#f4f5f7';
-
-/* Tela fina ampliada 2x pelo Scale2x (cores como símbolos): as curvas e diagonais ganham degraus finos. */
-function upscale(m) {
-  const ys = Object.keys(m).map(Number);
-  if (!ys.length) return {};
-  let x0 = 1e9, x1 = -1e9;
-  ys.forEach(y => Object.keys(m[y]).forEach(xs => { x0 = Math.min(x0, +xs); x1 = Math.max(x1, +xs); }));
-  const y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), src = [];
-  for (let y = y0; y <= y1; y++) { const r = []; for (let x = x0; x <= x1; x++) r.push((m[y] && m[y][x]) || '.'); src.push(r); }
-  const up = scale2x(src), out = {};
-  up.forEach((r, j) => r.forEach((c, i) => { if (c !== '.') (out[y0 * 2 + j] || (out[y0 * 2 + j] = {}))[x0 * 2 + i] = c; }));
-  return out;
-}
-/* Volume por parte do corpo: a luz vem do alto à esquerda da tela. Cada pixel mede quanto do desenho da própria
-   parte há até a borda virada para a luz e até a oposta, na horizontal e na vertical; isso dá a posição dele na forma
-   (0 na borda iluminada, 1 na da sombra), como numa forma arredondada. Daí saem quatro faixas de tom (brilho, base,
-   sombra e sombra funda), com pontilhado só na passagem de uma para a outra, como na pixel art sombreada à mão.
-   wx, wy: quanto a luz vem de lado e de cima nessa parte. No desenho espelhado a luz troca de lado no espaço local. */
-function shapeLight(cv, wx, wy, bias, noise) {
-  const m = cv.m, L = cv.flip ? 1 : -1, has = (x, y) => !!(m[y] && m[y][x] && m[y][x].length <= 7), out = [];
-  const run = (x, y, dx, dy) => { let k = 1; while (k < 24 && has(x + dx * k, y + dy * k)) k++; return k; };
-  Object.keys(m).forEach(ys => Object.keys(m[ys]).forEach(xs => {
-    const x = +xs, y = +ys, c = m[y][x]; if (c.length > 7) return;
-    const a = run(x, y, L, 0), b = run(x, y, -L, 0), up = run(x, y, 0, -1), dn = run(x, y, 0, 1);
-    const u = (a - 0.5) / Math.max(1, a + b - 1), v = (up - 0.5) / Math.max(1, up + dn - 1);
-    const n = (0.5 - u) * wx + (0.5 - v) * wy + bias + (bayer(x, y) - 0.5) * noise;
-    const t = n > 0.3 ? 0.13 : n > -0.08 ? 0 : n > -0.38 ? -0.13 : -0.24;
-    if (t) out.push([x, y, tone(c, t)]);
-  }));
-  out.forEach(o => { m[o[1]][o[0]] = o[2]; });
-}
-/* Desenha uma parte do corpo numa tela própria (que enxerga a de baixo, para o pescoço não cobrir a gola), dá volume
-   a ela e a assenta na tela de baixo, projetando sombra de `cast` px para baixo e para o lado oposto à luz sobre o
-   que já estava lá (o braço no tronco, a cabeça no pescoço), mais forte junto da borda. Onde a parte encosta em
-   outra, a borda de cima ganha um fio de luz e a de baixo um de sombra: as duas não se fundem mesmo com a mesma cor.
-   flat: desenho à mão, já sombreado. skin: cores de pele da parte; a sombra que cai depois sobre esses pixels (a mão
-   de baixo nos braços cruzados) fica bem mais leve, e a própria parte só escurece a pele um degrau leve: a mão não
-   vira uma mancha escura. */
-function part(cv, draw, wx, wy, cast, flat, bias, noise, skin) {
-  const sub = canvas(cv.flip, cv);
-  draw(sub);
-  const bare = {};
-  if (skin) Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => { const c = sub.m[ys][xs]; if (skin.has(c)) { cv.soft[ys + ',' + xs] = 1; bare[ys + ',' + xs] = c; } }));
-  const L = cv.flip ? 1 : -1, own = (x, y) => !!(sub.m[y] && sub.m[y][x]), dark = {};
-  const under = (x, y) => { const c = cv.m[y] && cv.m[y][x]; return !!c && c.length <= 7 && !own(x, y); };
-  if (!flat) {
-    shapeLight(sub, wx, wy, bias || 0, noise == null ? 0.12 : noise);
-    const edge = [];
-    Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => {
-      const x = +xs, y = +ys, c = sub.m[y][x]; if (c.length > 7) return;
-      let d = 0;
-      if (under(x, y + 1) || under(x - L, y)) d -= 0.12;
-      else if (under(x, y - 1) || under(x + L, y)) d += 0.1;
-      if (d) edge.push([x, y, tone(c, d)]);
-    }));
-    edge.forEach(e => { sub.m[e[1]][e[0]] = e[2]; });
-    const sum = c => rgb(c).reduce((a, b) => a + b, 0);
-    Object.keys(bare).forEach(key => {
-      const xy = key.split(','), y = +xy[0], x = +xy[1], c = sub.m[y][x], o = bare[key];
-      if (sum(c) < sum(o)) sub.m[y][x] = tone(o, -0.07);
-    });
-  }
-  Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => {
-    for (let k = 1; k <= cast; k++) {
-      const x = +xs - L * Math.ceil(k / 2), y = +ys + k, key = y + ',' + x;
-      if (under(x, y) && !(key in dark && dark[key][3] <= k)) dark[key] = [x, y, cv.m[y][x], k];
-    }
-  }));
-  Object.keys(dark).forEach(key => {
-    const d = dark[key], soft = cv.soft[key];
-    if (!soft || d[3] === 1) cv.m[d[1]][d[0]] = tone(d[2], soft ? -0.07 : d[3] === 1 ? -0.24 : -0.15);
-  });
-  Object.keys(sub.m).forEach(ys => Object.keys(sub.m[ys]).forEach(xs => cv.set(+xs, +ys, sub.m[ys][xs])));
-}
-/* Tela fina: pixels soltos em coordenadas locais (origem no quadril), copiados depois para a grade com espelho. */
-function canvas(flip, under) {
-  const m = {};
-  const set = (x, y, c) => { if (c === null) { if (m[y]) delete m[y][x]; } else if (c) (m[y] || (m[y] = {}))[x] = c; };
-  const get = (x, y) => (m[y] && m[y][x]) || (under && under.get(x, y));
-  /* Elipse amostrada no centro do pixel; keep(x, y) filtra. */
-  const ell = (cx, cy, rx, ry, c, keep) => {
-    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
-      const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
-      if (dx * dx + dy * dy <= 1 && (!keep || keep(x, y))) set(x, y, typeof c === 'function' ? c(x, y) : c);
-    }
-  };
-  const rect = (x0, y0, x1, y1, c) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) set(x, y, c); };
-  /* Traço grosso por uma linha de pontos (membros): discos de raio r ao longo de cada trecho. */
-  const limb = (pts, r, c) => {
-    for (let i = 0; i + 1 < pts.length; i++) {
-      const a = pts[i], b = pts[i + 1], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) * 3));
-      for (let k = 0; k <= n; k++) ell(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, r, r, c);
-    }
-  };
-  return { m: m, soft: {}, flip: !!flip, set: set, get: get, ell: ell, rect: rect, limb: limb };
+  if (look) { LOOKS[role] = Object.assign({}, look); LOOK_TAG[role] = tag; } else { delete LOOKS[role]; delete LOOK_TAG[role]; }
 }
 
-/* Cabeça em 3/4 (olhando para a esquerda) com centro do crânio em (cx, cy). back: vista de costas (só cabelo,
-   orelha e nuca). Os olhos ficam fora: são uma camada própria, para piscar. */
-/* Cabeça: forma redonda (luz de lado e de cima), com sombra no pescoço e na gola. */
-function drawHead(cv, p, cx, cy, back) { part(cv, s => headShape(s, p, cx, cy, back), 0.75, 0.55, 2, !!p.art && !back, 0.22, 0.04); }
-function headShape(cv, p, cx, cy, back) {
-  if (p.art && !back) { blit(cv, cx - 9, cy - 9, p.art.head, p.art.pal); return; }
-  const S = p.pal.S, s = p.pal.s, H = p.pal.H, h = p.pal.h, Hd = shade(H, 0.35);
-  /* Pescoço e crânio: calota larga em cima e queixo mais estreito, puxado para a frente. */
-  /* O pescoço só preenche o vão até o tronco (não cobre a gola). */
-  for (let y = cy + 5; y <= cy + 11; y++) for (let x = cx - 3; x <= cx + 1; x++) if (!cv.get(x, y)) cv.set(x, y, s);
-  const skull = (x, y) => {
-    const a = (x + 0.5 - cx) / 8, b = (y + 0.5 - cy + 0.5) / 7.5, j = (x + 0.5 - cx + 0.5) / 6.5, k = (y + 0.5 - cy - 2.5) / 5;
-    return a * a + b * b <= 1 || j * j + k * k <= 1;
-  };
-  for (let y = cy - 9; y <= cy + 8; y++) for (let x = cx - 9; x <= cx + 9; x++) if (skull(x, y)) cv.set(x, y, x >= cx + 4 || y >= cy + 7 ? s : S);
-  /* Cabelo: tudo da calota acima da linha do cabelo; atrás da orelha desce até a nuca. hl(x) = linha do cabelo. */
-  const st = p.hair;
-  const cap = (hl, grow) => {
-    for (let y = cy - 10; y <= cy + 14; y++) for (let x = cx - 10; x <= cx + 10; x++) {
-      const a = (x + 0.5 - cx) / (8 + grow), b = (y + 0.5 - cy + 0.8) / (7.6 + grow);
-      if (a * a + b * b <= 1 && (back || y < hl(x))) cv.set(x, y, H);
-    }
-  };
-  const fringe = x => (x >= cx + 2 ? cy + 4 : x <= cx - 7 ? cy + 1 : cy - 2 - ((x + 40) % 3 === 0 ? 1 : 0));
-  if (st === 'curly') {
-    cap(fringe, 1);
-    for (let i = 0; i < 9; i++) { const th = Math.PI * (0.95 + i * 0.13); cv.ell(cx + Math.cos(th) * 8.6, cy - 1 + Math.sin(th) * 8, 1.7, 1.7, H); }
-  } else if (st === 'long') {
-    cap(x => (x >= cx + 1 ? cy + 13 : x <= cx - 7 ? cy + 6 : cy - 2 + (x > cx - 3 ? 0 : 1)), 1.2);
-    cv.rect(cx + 2, cy + 4, cx + 9, cy + 13, H);
-    for (let y = cy + 9; y <= cy + 13; y++) cv.set(cx + 9 - ((y - cy) % 2), y, null);
-  } else if (st === 'bun' || st === 'topknot') {
-    cap(fringe, 0.6);
-    if (st === 'bun') cv.ell(cx + 5, cy - 6, 3.4, 3.2, H); else cv.ell(cx, cy - 10, 3.2, 2.8, H);
-  } else if (st === 'beanie') {
-    cap(fringe, 0.4);
-    const C = p.pal.C, c = p.pal.c;
-    cv.ell(cx, cy - 3, 9, 7, C, (x, y) => y <= cy - 2);
-    cv.rect(cx - 9, cy - 3, cx + 9, cy - 2, c);
-    for (let x = cx - 8; x <= cx + 8; x += 2) cv.set(x, cy - 3, shade(c, 0.2));
-    cv.ell(cx + 1, cy - 10, 2, 1.8, WHITE);
-  } else if (st === 'fade') {
-    /* Topete curto e laterais raspadas, mais claras perto da orelha. */
-    cap(x => (x >= cx + 2 ? cy + 2 : x <= cx - 7 ? cy - 1 : cy - 3), 0.4);
-    const fade = mix(H, S, 0.45);
-    for (let y = cy - 2; y <= cy + 3; y++) for (let x = cx - 10; x <= cx + 10; x++) if (cv.get(x, y) === H) cv.set(x, y, fade);
-  } else cap(fringe, 0.5);
-  /* Brilho do cabelo: um arco claro no alto da cabeça. */
-  if (st !== 'beanie') for (let x = cx - 4; x <= cx + 3; x++) { const y = Math.round(cy - 6.6 + Math.pow((x - cx + 0.5) / 4.5, 2) * 2); if (cv.get(x, y) === H) cv.set(x, y, h); }
-  /* Orelha atrás da bochecha (de costas, dos dois lados). */
-  const ear = ex => { cv.ell(ex, cy + 1.5, 1.7, 2.3, S); cv.set(Math.floor(ex), cy + 1, s); cv.set(Math.floor(ex), cy + 2, s); };
-  if (st !== 'long') ear(cx + 4.5); if (back && st !== 'long') ear(cx - 6.5);
-  if (!back) {
-    /* Sobrancelhas, nariz, boca e bochechas. Os olhos ficam em (cx-6, cy+1) e (cx-1, cy+1). */
-    cv.rect(cx - 7, cy - 1, cx - 5, cy - 1, Hd); cv.rect(cx - 2, cy - 1, cx, cy - 1, Hd);
-    cv.set(cx - 4, cy + 3, s); cv.set(cx - 5, cy + 4, s);
-    cv.rect(cx - 6, cy + 6, cx - 4, cy + 6, mix(S, '#6a2420', 0.55));
-    cv.set(cx - 8, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 1, cy + 4, mix(S, '#ff7a7a', 0.3)); cv.set(cx + 2, cy + 4, mix(S, '#ff7a7a', 0.3));
-  }
-  /* Acessórios. */
-  const ex = p.extra;
-  if (ex === 'headset') {
-    for (let i = 0; i <= 12; i++) { const th = Math.PI * (1.05 + i * 0.075); cv.set(Math.round(cx + 0.5 + Math.cos(th) * 9), Math.round(cy + Math.sin(th) * 8.6), '#5a5f69'); }
-    cv.ell(cx + 4.5, cy + 1.5, 2.6, 3.2, '#3d424d'); cv.ell(cx + 4.2, cy + 1.2, 1.2, 1.6, '#e0894e');
-    if (!back) { cv.rect(cx - 2, cy + 6, cx + 3, cy + 6, '#3d424d'); cv.set(cx - 3, cy + 6, '#e0894e'); }
-  } else if (ex === 'goggles') {
-    cv.rect(cx - 8, cy - 4, cx + 8, cy - 3, '#5b6ad9');
-    if (!back) { cv.rect(cx - 8, cy - 5, cx - 5, cy - 2, '#a6b0f7'); cv.rect(cx - 3, cy - 5, cx, cy - 2, '#a6b0f7'); cv.set(cx - 7, cy - 4, WHITE); cv.set(cx - 2, cy - 4, WHITE); }
-  } else if ((ex === 'glasses' || ex === 'readers') && !back) {
-    const fr = ex === 'glasses' ? '#3a3e48' : '#7a3b2a';
-    [cx - 6, cx - 1].forEach(x => { cv.rect(x - 2, cy - 1, x + 2, cy - 1, fr); cv.rect(x - 2, cy + 3, x + 2, cy + 3, fr); cv.rect(x - 2, cy, x - 2, cy + 2, fr); cv.rect(x + 2, cy, x + 2, cy + 2, fr); });
-    cv.set(cx - 3, cy, fr); cv.rect(cx + 2, cy, cx + 4, cy, fr);
-  }
+/* Sprite vetorial: peças do chibi (px lógicos relativos ao quadril) transladadas até (ox, oy), num SVG próprio
+   servido por blob: URL e desenhado como <image> liso (classe "vec"): repintar um quadro de animação continua sendo
+   copiar um bitmap já rasterizado pelo navegador. A máscara de clique vem das células da silhueta. */
+function vecArt(pieces, ox, oy) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  pieces.forEach(pc => { if (pc.box[2] > 0) { x0 = Math.min(x0, pc.box[0]); y0 = Math.min(y0, pc.box[1]); x1 = Math.max(x1, pc.box[0] + pc.box[2]); y1 = Math.max(y1, pc.box[1] + pc.box[3]); } });
+  if (x1 <= x0) return { href: '', vec: true, x: 0, y: 0, w: 0, h: 0, box: [0, 0, 0, 0], mx: 0, my: 0, mw: 0, mask: new Uint8Array(0) };
+  const pad = 0.4; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  const w = x1 - x0, h = y1 - y0, px = R * K;
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + [x0, y0, w, h].map(n => +n.toFixed(3)).join(' ') + '" width="' + Math.ceil(w * px) + '" height="' + Math.ceil(h * px) + '">' + pieces.map(pc => pc.svg).join('') + '</svg>';
+  const href = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  const cells = chibiCells(pieces);
+  let mx = 1e9, my = 1e9, mx1 = -1e9, my1 = -1e9;
+  cells.forEach(c => { mx = Math.min(mx, c[0] + ox); my = Math.min(my, c[1] + oy); mx1 = Math.max(mx1, c[0] + ox + 1); my1 = Math.max(my1, c[1] + oy + 1); });
+  const mw = cells.length ? mx1 - mx : 0, mask = new Uint8Array(cells.length ? mw * (my1 - my) : 0);
+  cells.forEach(c => { mask[(c[1] + oy - my) * mw + c[0] + ox - mx] = 1; });
+  const box = [x0 + ox, y0 + oy, w, h];
+  return { href: href, vec: true, x: box[0], y: box[1], w: w, h: h, box: box, mx: cells.length ? mx : 0, my: cells.length ? my : 0, mw: mw, mask: mask };
 }
-/* Olhos (camada própria): abertos com brilho, ou fechados e sorrindo. */
-function drawEyes(cv, p, cx, cy, happy) {
-  if (p.art) { blit(cv, cx - 9, cy - 9, happy ? p.art.happy : p.art.eyes, p.art.pal); return; }
-  [cx - 6, cx - 1].forEach(x => {
-    if (happy) { cv.set(x - 1, cy + 2, EYE); cv.set(x, cy + 1, EYE); cv.set(x + 1, cy + 2, EYE); return; }
-    cv.rect(x - 1, cy + 1, x, cy + 2, EYE); cv.set(x - 1, cy + 1, WHITE);
-  });
-}
-/* Tronco: ombros arredondados, sombra do lado de trás, gola em V e o detalhe da roupa do papel. */
-/* Tronco: cilindro de pé (luz mais de lado), escurecendo para baixo, onde a mesa cobre. */
-function drawTorso(cv, p, cx, top, bottom) { part(cv, s => torsoShape(s, p, cx, top, bottom), 0.95, 0.35, 0, !!p.art); }
-function torsoShape(cv, p, cx, top, bottom) {
-  if (p.art && p.shirt) { blit(cv, cx - 9, top, p.art.shirt.slice(0, bottom - top + 1), p.art.pal); return; }
-  const C = p.pal.C, c = p.pal.c, S = p.pal.S;
-  for (let y = top; y <= bottom; y++) {
-    const r = y === top ? 5 : y === top + 1 ? 7 : 8;
-    for (let x = cx - r - 1; x <= cx + r; x++) cv.set(x, y, x >= cx + r - 2 ? c : x === cx - r - 1 ? lit(C, 0.18) : C);
-  }
-  cv.rect(cx - 3, top, cx + 1, top, S); cv.rect(cx - 2, top + 1, cx, top + 1, S); cv.set(cx - 1, top + 2, S);
-  cv.set(cx - 4, top, lit(C, 0.3)); cv.set(cx + 2, top, lit(C, 0.3));
-  const sh = p.shirt;
-  if (sh === 'lanyard') { for (let y = top; y <= top + 6; y++) cv.set(cx - 4 + Math.floor((y - top) / 3), y, '#e3ba6a'); cv.rect(cx - 4, top + 7, cx - 1, top + 10, WHITE); cv.rect(cx - 3, top + 8, cx - 2, top + 8, '#5b6ad9'); }
-  else if (sh === 'cardigan') { for (let y = top + 3; y <= bottom; y++) cv.set(cx - 1, y, c); for (let y = top + 4; y <= bottom; y += 3) cv.set(cx - 2, y, WHITE); }
-  else if (sh === 'hoodie') { cv.rect(cx + 1, top - 1, cx + 6, top, c); cv.rect(cx - 3, top + 2, cx - 3, top + 6, WHITE); cv.rect(cx, top + 2, cx, top + 5, WHITE); cv.rect(cx - 5, top + 9, cx + 3, top + 9, c); }
-  else if (sh === 'pearls') { [[-4, 1], [-3, 2], [-1, 3], [1, 2], [2, 1]].forEach(d => cv.set(cx + d[0], top + d[1], WHITE)); }
-  else if (sh === 'coat') { for (let y = top; y <= bottom; y++) { cv.set(cx - 5, y, WHITE); cv.set(cx - 4, y, '#d8dbe2'); cv.set(cx + 3, y, '#d8dbe2'); cv.set(cx + 4, y, WHITE); } cv.rect(cx + 5, top + 5, cx + 6, top + 6, '#5b6ad9'); }
-  else if (sh === 'scarf') { cv.rect(cx - 5, top, cx + 4, top + 2, '#e3ba6a'); cv.rect(cx - 4, top + 3, cx - 2, top + 8, '#e3ba6a'); for (let y = top; y <= top + 8; y += 2) cv.set(cx - 3, y, '#d9645a'); }
-  else if (sh === 'tie') { cv.rect(cx - 2, top + 2, cx - 1, top + 9, '#3f4a63'); cv.set(cx - 2, top + 10, '#3f4a63'); cv.rect(cx - 4, top, cx - 3, top + 1, WHITE); cv.rect(cx, top, cx + 1, top + 1, WHITE); }
-}
-/* Braço: manga do ombro ao cotovelo e até o pulso, mão na ponta; opcionalmente algo na mão (caneca). */
-/* Braço: membro fino, iluminado por cima; projeta sombra no tronco. */
-function drawArm(cv, p, pts) { part(cv, s => armShape(s, p, pts), 0.6, 0.8, 2, !!p.art, 0.05, 0.06, new Set([p.pal.S, p.pal.s])); }
-function armShape(cv, p, pts) {
-  if (p.art) { armYou(cv, p.art.pal, pts); return; }
-  const C = p.pal.C, c = p.pal.c, S = p.pal.S, s = p.pal.s, end = pts[pts.length - 1];
-  cv.limb(pts, 2.1, C);
-  /* Sombra da manga: o lado de baixo de cada trecho. */
-  cv.limb(pts.map(q => [q[0] + 0.6, q[1] + 0.9]), 1.1, (x, y) => (cv.get(x, y) === C && !(cv.get(x, y + 2) === C) ? c : cv.get(x, y)));
-  cv.ell(end[0], end[1], 1.9, 1.8, S); cv.set(Math.round(end[0]), Math.round(end[1]) + 1, s);
-}
+function V(key, cls, style, make, ox, oy) { return { k: key, cls: cls || '', style: style || '', art: memo('art:' + key + '@' + TAG, () => vecArt(make(), ox || 0, oy || 0)) }; }
 
-/* Braço do usuário, pixel a pixel: antebraço de pele (cápsula por trecho) e manga curta do ombro até perto do
-   cotovelo, em três faixas como na camisa (celeste, branco, barra celeste). A luz vem do alto à esquerda: o lado
-   oposto de cada trecho fica na sombra, em qualquer direção. Braço levantado termina em mão aberta. */
-function armYou(cv, A, pts) {
-  const sh = pts[0], el = pts[1], end = pts[pts.length - 1], LX = -0.6, LY = -0.8;
-  /* Ponto mais próximo de (px, py) no trecho a-b: distância, deslocamento (ox, oy) e t ao longo do trecho. */
-  const near = (a, b, px, py) => {
-    const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy || 1;
-    const t = Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / l2)), ox = px - a[0] - dx * t, oy = py - a[1] - dy * t;
-    return { d: Math.hypot(ox, oy), lit: ox * LX + oy * LY, t: t };
-  };
-  const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
-  const x0 = Math.floor(Math.min.apply(null, xs)) - 3, x1 = Math.ceil(Math.max.apply(null, xs)) + 3;
-  const y0 = Math.floor(Math.min.apply(null, ys)) - 3, y1 = Math.ceil(Math.max.apply(null, ys)) + 3;
-  const L1 = Math.hypot(el[0] - sh[0], el[1] - sh[1]), cuff = 0.72;
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    const px = x + 0.5, py = y + 0.5;
-    let best = null;
-    for (let i = 0; i + 1 < pts.length; i++) { const q = near(pts[i], pts[i + 1], px, py); if (!best || q.d < best.d) best = q; }
-    /* Manga: só no trecho ombro-cotovelo, até cuff do comprimento (corte reto, perpendicular ao braço). */
-    const u = near(sh, el, px, py), along = u.t * L1;
-    if (u.d <= 2.4 && along <= L1 * cuff) {
-      const dark = u.lit < -0.9, band = along < L1 * cuff * 0.45 || along > L1 * cuff - 1.3;
-      cv.set(x, y, band ? (dark ? A.c : A.C) : dark ? A.v : A.w);
-    } else if (best.d <= 1.6) cv.set(x, y, best.lit < -0.45 ? A.s : A.S);
-  }
-  /* Antebraço apontando para cima (aceno, alongar, mão no rosto): mão aberta, com o polegar para o lado do corpo. */
-  const fx = end[0] - el[0], fy = end[1] - el[1];
-  if (fy < -0.6 * Math.hypot(fx, fy)) { blit(cv, Math.round(end[0]) - 2, Math.round(end[1]) - 3, sh[0] > 0 ? HAND_OPEN : HAND_OPEN.map(r => r.split('').reverse().join('')), A); return; }
-  cv.ell(end[0], end[1], 1.9, 1.8, A.S); cv.set(Math.round(end[0]), Math.round(end[1]) + 1, A.s);
-}
-/* Mão aberta de frente (polegar à esquerda), ancorada na palma: coluna 2, linha 3. */
-const HAND_OPEN = ['..S.S', '.SSSS', '.SSSS', 'SSSSs', '.SSss'];
-
-/* Poses dos braços (pontos finos relativos ao quadril, olhando para sudoeste). Ombros em L e R. */
-const SH_L = [-8, -11], SH_R = [6, -11];
-const POSE = {
-  restL: [SH_L, [-11, -4], [-14, 1]],
-  restR: [SH_R, [8, -3], [-3, 3]],
-  crossL: [SH_L, [-10, -4], [4, -6]],
-  crossR: [SH_R, [8, -3], [-6, -7]],
-  sipR: [SH_R, [9, -4], [-5, -17]],
-  palmL: [SH_L, [-12, -5], [-8, -22]],
-  stretch: [[[SH_L, [-12, -21], [-8, -35]], [SH_R, [10, -21], [6, -35]]], [[SH_L, [-13, -23], [-10, -38]], [SH_R, [11, -23], [8, -38]]]],
-  wave: [[SH_R, [12, -18], [11, -30]], [SH_R, [13, -17], [15, -28]]]
-};
-const HEAD_C = [-1, -25];
-
-/* Caminhada (caixa 12x20 px lógicos, pés na última linha): quadris e ciclo de pernas nos mapas; o resto na grade fina. */
-const HIPS = ['..PPPPPP..', '..PPPPPP..', '..PP..PP..'];
-const STEP = ['..PP..PP..', '..PP..PP..', '..PP..PP..', '..WW..WW..'];
-const LEG_FR = [STEP, ['..PP..PP..', '..PP..PP..', '..PP..WW..', '..WW......'], STEP, ['..PP..PP..', '..PP..PP..', '..WW..PP..', '......WW..']];
-
-function walkerSprites(role, back, carry, frame) {
-  const p = people(role), still = frame != null, out = [], id = personKey(role) + (back ? '-b' : '-f');
-  const legs = i => SO('wk-legs-' + personKey(role) + '-' + i, '', '', t => {
-    /* Sombra no chão, embaixo dos pés (translúcida: o contorno não a pega). */
-    const sh = canvas(); sh.ell(12, 39.6, 7, 1.7, '#05060a66'); sh.ell(12, 39.6, 4.5, 1.1, '#05060a80'); t.fine(0, 0, sh, false);
-    t.map(1, 13, HIPS, p.pal); t.map(1, 16, LEG_FR[i], p.pal);
-  });
-  if (still) out.push(legs(frame)); else frames(4, 0.44, legs).forEach(s => out.push(s));
+/* Caminhada: caixa de 14x24 px lógicos (x de -7 a 7, y de -18 a +6 a partir do quadril), pés na última linha.
+   Pernas e sombra num quadro por passo; corpo, rosto e braços numa camada que balança (a-walkbob). flip espelha
+   (sudeste e nordeste) no próprio desenho, para a luz continuar vindo da esquerda. */
+function walkerSprites(role, back, carry, frame, flip) {
+  const p = people(role), still = frame != null, out = [], view = back ? 'back' : 'front', o = { flip: !!flip, cells: false };
+  const id = personKey(role) + (back ? '-b' : '-f') + (flip ? 'm' : '');
+  const legs = i => V('wk-legs-' + id + '-' + i, '', '', () => [chibiShadow(o), chibiLegs(p, i, view, o)]);
+  if (still) out.push(legs('stand')); else frames(4, 0.44, legs).forEach(s => out.push(s));
   const fold = carry && !back;
-  out.push(SO('wk-up-' + id + (fold ? '-c' : ''), still ? '' : 'a-walkbob', '', t => {
-    const cv = canvas();
-    drawTorso(cv, back ? Object.assign({}, p, { shirt: '' }) : p, 12, 16, 27);
-    drawHead(cv, p, 12, 8, back);
-    if (fold) {
-      drawArm(cv, p, [[4, 18], [3, 23], [6, 23]]); drawArm(cv, p, [[19, 18], [20, 23], [17, 23]]);
-      cv.rect(5, 20, 18, 25, '#d9a441'); cv.rect(5, 19, 9, 19, '#e3ba6a'); cv.rect(7, 21, 16, 22, WHITE); cv.rect(5, 25, 18, 25, '#9c7226');
-      cv.ell(6, 23, 1.8, 1.7, p.pal.S); cv.ell(17, 23, 1.8, 1.7, p.pal.S);
-    } else { drawArm(cv, p, [[4, 18], [3, 23], [3, 27]]); drawArm(cv, p, [[19, 18], [20, 23], [20, 27]]); }
-    if (!back) drawEyes(cv, p, 12, 8, false);
-    t.fine(0, 0, cv, false);
+  out.push(V('wk-up-' + id + (fold ? '-c' : ''), still ? '' : 'a-walkbob', '', () => {
+    const pcs = [chibiBody(p, view, o)];
+    if (!back) { pcs.push(chibiEyes(p, 'open', o)); pcs.push(chibiMouth(p, role === 'approval' ? 'grin' : 'smile', o)); }
+    pcs.push(chibiArms(p, fold ? 'fold' : 'hang', o));
+    return pcs;
   }));
   return out;
 }
@@ -730,47 +386,45 @@ function walkerSprites(role, back, carry, frame) {
 /* Pessoa sentada atrás da mesa, de frente para a câmera. body vai antes da mesa (a mesa esconde o colo);
    hands vai depois (braços que descansam no tampo). cls é a animação da camada do corpo. */
 function seatedParts(role, v, i) {
-  const p = people(role), g = geo(role), id = '-' + personKey(role);
-  const put = draw => t => { const cv = canvas(g.se); draw(cv); t.fine(g.seat[0] * R, g.seat[1] * R, cv, g.se); };
-  const arm = pts => put(cv => drawArm(cv, p, pts));
-  const body = [SO('torso' + id, '', '', put(cv => { drawTorso(cv, p, 0, -14, 8); drawHead(cv, p, HEAD_C[0], HEAD_C[1], false); }))];
-  const hands = [];
-  const eyes = (cls, happy) => body.push(S('eyes' + (happy ? '-happy' : '') + id, cls, '', put(cv => drawEyes(cv, p, HEAD_C[0], HEAD_C[1], happy))));
+  const p = people(role), g = geo(role), id = '-' + personKey(role), o = { flip: g.se };
+  const put = (key, cls, style, make) => V(key + id, cls, style, make, g.seat[0], g.seat[1]);
+  const arm = (key, cls, style, pose) => put(key, cls, style, () => [chibiArms(p, pose, o)]);
+  const you = role === 'approval';
   /* Na mesa de aprovação não há caneca (o canto é do vaso). */
-  const desk = role !== 'approval', sip = desk && v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
+  const desk = !you, sip = desk && v === 'waiting' && i % 2 === 0, d = sip ? 'animation-delay:-' + ((i * 1.9) % 7).toFixed(1) + 's' : '';
+  const mouth = v === 'working' ? 'neutral' : v === 'done' ? 'grin' : v === 'failed' ? 'grimace' : v === 'returned' ? 'ohh' : sip ? 'neutral' : you ? 'grin' : 'smile';
+  /* Corpo e boca em sprites separados: trocar a expressão não refaz (nem rasteriza de novo) o corpo inteiro. */
+  const body = [put('torso', '', '', () => [chibiBody(p, 'front', Object.assign({ seated: true }, o))]), put('mouth-' + mouth, '', '', () => [chibiMouth(p, mouth, o)])];
+  const hands = [];
+  const eyes = (cls, happy) => body.push(put('eyes' + (happy ? '-happy' : ''), cls, '', () => [chibiEyes(p, happy ? 'happy' : 'open', o)]));
   if (desk) hands.push(mug(role, sip ? 'a-sipA' : '', d));
   let cls = 'a-bob';
   if (v === 'working') {
     cls = ''; eyes('a-wink');
-    hands.push(SO('typeL' + id, 'a-tapL', '', arm(POSE.restL)));
-    hands.push(SO('typeR' + id, 'a-tapR', '', arm(POSE.restR)));
+    hands.push(arm('typeL', 'a-tapL', '', 'restL'));
+    hands.push(arm('typeR', 'a-tapR', '', 'restR'));
   } else if (v === 'waiting') {
     eyes('a-wink');
     if (sip) {
-      hands.push(SO('handL' + id, '', '', arm(POSE.restL)));
-      hands.push(SO('handR' + id, 'a-sipA', d, arm(POSE.restR)));
-      body.push(SO('sip' + id, 'a-sipB', d, put(cv => {
-        drawArm(cv, p, POSE.sipR);
-        cv.rect(-10, -21, -6, -16, WHITE); cv.rect(-10, -16, -6, -16, '#b4b8c0'); cv.rect(-5, -20, -5, -18, WHITE);
-        cv.ell(-5, -17, 1.9, 1.8, p.pal.S);
-      })));
-    } else body.push(SO('crossed' + id, '', '', put(cv => { drawArm(cv, p, POSE.crossR); drawArm(cv, p, POSE.crossL); })));
+      hands.push(arm('handL', '', '', 'restL'));
+      hands.push(arm('handR', 'a-sipA', d, 'restR'));
+      body.push(arm('sip', 'a-sipB', d, 'sipR'));
+    } else body.push(put('crossed', '', '', () => [chibiArms(p, 'crossR', o), chibiArms(p, 'crossL', o)]));
   } else if (v === 'you') {
     eyes('a-wink');
-    frames(2, 0.5, n => SO('wave' + n + id, '', '', arm(POSE.wave[n]))).forEach(s => body.push(s));
-    hands.push(SO('handL' + id, '', '', arm(POSE.restL)));
+    frames(2, 0.5, n => arm('wave' + n, '', '', 'wave' + n)).forEach(s => body.push(s));
+    hands.push(arm('handL', '', '', 'restL'));
   } else if (v === 'done') {
     cls = ''; eyes('', true);
-    frames(2, 1.8, n => SO('stretch' + n + id, '', '', put(cv => POSE.stretch[n].forEach(a => drawArm(cv, p, a))))).forEach(s => body.push(s));
+    frames(2, 1.8, n => arm('stretch' + n, '', '', 'stretch' + n)).forEach(s => body.push(s));
   } else if (v === 'failed') {
     cls = 'a-nod'; eyes('');
-    if (p.art) body.push(S('grimace' + id, '', '', put(cv => blit(cv, HEAD_C[0] - 9, HEAD_C[1] - 9, p.art.grimace, p.art.pal))));
-    body.push(SO('facepalm' + id, '', '', arm(POSE.palmL)));
-    hands.push(SO('handR' + id, '', '', arm(POSE.restR)));
+    body.push(arm('facepalm', '', '', 'palmL'));
+    hands.push(arm('handR', '', '', 'restR'));
   } else {
     eyes('a-wink');
-    hands.push(SO('handL' + id, '', '', arm(POSE.restL)));
-    hands.push(SO('handR' + id, '', '', arm(POSE.restR)));
+    hands.push(arm('handL', '', '', 'restL'));
+    hands.push(arm('handR', '', '', 'restR'));
   }
   return { cls: cls, body: body, hands: hands };
 }
@@ -930,7 +584,7 @@ function stationLayers(st, c) {
   if (c.folder) add([SO('folder' + id, '', '', t => drawFolder(kit(t, g)))], c.to ? 'g-from' : '', c.to ? at(c.arrive) : '');
   const badge = vis => {
     const b = { you: 'a-bounce', done: 'a-pop', returned: '', failed: '' }[vis];
-    return b == null ? [] : [SO('badge-' + vis + id, b, '', t => t.map(g.seat[0] - 5, g.seat[1] - (vis === 'done' ? 30 : 27), BADGE[vis]))];
+    return b == null ? [] : [SO('badge-' + vis + id, b, '', t => t.map(g.seat[0] - 5, g.seat[1] - (vis === 'done' ? 32 : 29), BADGE[vis]))];
   };
   /* Quem foi até a sua mesa leva o pedido junto: o selo não fica na mesa vazia. */
   if (!c.visiting) slot(badge, c.away ? c.td : null);
@@ -1137,8 +791,8 @@ function legStyle(a, b, za, zb, t0, dur, steps) {
   return '--x0:' + a[0] + ';--y0:' + a[1] + ';--x1:' + b[0] + ';--y1:' + b[1] + ';--z0:' + za + ';--z1:' + zb +
     ';--t0:' + t0.toFixed(2) + 's;--dur:' + dur.toFixed(2) + 's;--ease:steps(' + steps + ',end)';
 }
-/* Canto superior esquerdo da caixa 12x20 de quem anda, com os pés no ponto do chão p. */
-const feet = p => [sx(p[0], p[1]) - 6, sy(p[0], p[1]) - 20];
+/* Canto superior esquerdo da caixa 14x24 de quem anda, com os pés no ponto do chão p. */
+const feet = p => [sx(p[0], p[1]) - 7, sy(p[0], p[1]) - 24];
 /* Rota a pé da mesa de origem até a ponta da mesa de destino, só com os cantos: a pessoa levanta (de pé atrás da
    mesa), sai pelo lado de caminho mais curto e anda pelos corredores. null se não houver caminho. */
 function walkPath(from, to) {
@@ -1166,7 +820,7 @@ function walker(role, bare) {
   const face = (p, q) => (q[0] > p[0] ? 'se' : q[0] < p[0] ? 'nw' : q[1] > p[1] ? 'sw' : 'ne');
   w.leg = (p, q, dir, carry, hold) => {
     const len = Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]), dur = len ? len / SPEED : HAND;
-    w.legs.push({ cls: 'leg f-' + dir + (hold ? ' hold' : ''), vb: '0 0 12 20', style: legStyle(feet(p), feet(q), depth(p), depth(q), w.t, dur, Math.max(1, Math.round(len * 6))), sprites: bare ? [] : walkerSprites(role, dir === 'ne' || dir === 'nw', carry, len ? null : 0) });
+    w.legs.push({ cls: 'leg f-' + dir + (hold ? ' hold' : ''), vb: '-7 -18 14 24', style: legStyle(feet(p), feet(q), depth(p), depth(q), w.t, dur, Math.max(1, Math.round(len * 6))), sprites: bare ? [] : walkerSprites(role, dir === 'ne' || dir === 'nw', carry, len ? null : 0, dir === 'se' || dir === 'ne') });
     w.t += dur;
   };
   w.go = (pts, carry) => { for (let i = 0; i + 1 < pts.length; i++) w.leg(pts[i], pts[i + 1], face(pts[i], pts[i + 1]), carry); };
@@ -1238,7 +892,7 @@ function buildView(scene, opt) {
       vb: b.join(' '), aria: aria, pressed: selected, layers: layers, label: st.label, passText: st.pass || '',
       balloon: working && st.activity ? {
         cls: 'balloon al-' + (ax < 120 ? 'l' : ax > 240 ? 'r' : 'c') + (to ? ' g-from' : ''),
-        style: '--bx:' + ax + ';--by:' + (g.seat[1] - 18) + (to ? ';--at:' + trip.arrive.toFixed(2) + 's' : ''),
+        style: '--bx:' + ax + ';--by:' + (g.seat[1] - 21) + (to ? ';--at:' + trip.arrive.toFixed(2) + 's' : ''),
         activity: st.activity, meta: meta
       } : null
     };
@@ -1276,7 +930,7 @@ export interface OfficeScene {
   visit: { index: number; phase: "go" | "stay" | "back"; id: number } | null;
 }
 
-interface Art { href: string; x: number; y: number; w: number; h: number; box: number[]; mx: number; my: number; mw: number; mask: Uint8Array }
+interface Art { href: string; vec?: boolean; x: number; y: number; w: number; h: number; box: number[]; mx: number; my: number; mw: number; mask: Uint8Array }
 interface Sprite { k: string; cls: string; style: string; art: Art }
 interface Layer { cls: string; style: string; sprites: Sprite[] }
 
@@ -1312,7 +966,7 @@ export const officeTrip = (scene: OfficeScene): OfficeTrip | null => tripOf(scen
 /** Rota e duração da visita atual à sua mesa, sem os sprites. */
 export const officeVisit = (scene: OfficeScene): OfficeTrip | null => visitOf(scene, true);
 
-const imageSvg = (a: Art): string => (a.href ? `<image href="${a.href}" x="${a.x}" y="${a.y}" width="${a.w}" height="${a.h}"/>` : "");
+const imageSvg = (a: Art): string => (a.href ? `<image${a.vec ? ' class="vec"' : ""} href="${a.href}" x="${a.x}" y="${a.y}" width="${a.w}" height="${a.h}"/>` : "");
 const spritesSvg = (list: Sprite[]): string => list.map((s) => `<g class="${s.cls}" style="${s.style}">${imageSvg(s.art)}</g>`).join("");
 
 /* Máscara de clique: um <path> transparente com as células de px lógico pintadas pelos sprites da mesa
@@ -1398,6 +1052,8 @@ export interface BotLookShape {
   hair_style: string;
   accessory: string | null;
   outfit: string;
+  beard?: string;
+  beard_color?: string;
 }
 
 /** Aplica os visuais configurados (papel ausente volta ao boneco padrão). Quem monta a cena refaz a vista depois. */
@@ -1406,18 +1062,15 @@ export function setOfficeLooks(looks: Partial<Record<string, BotLookShape>>): vo
   roles.forEach((role) => setLook(role, looks[role] ?? null));
 }
 
-/** O boneco padrão de um papel no formato do editor (a roupa exclusiva da sua mesa vira moletom). */
+/** O boneco padrão de um papel no formato do editor. */
 export function defaultLook(role: string): BotLookShape {
-  const p = (DEFAULT_PEOPLE as Record<string, { pal: Record<string, string>; hair: string; extra?: string; shirt: string }>)[role] ?? DEFAULT_PEOPLE.implementer;
-  return {
-    skin: p.pal.S, skin_shade: p.pal.s, hair: p.pal.H, hair_light: p.pal.h, shirt: p.pal.C, shirt_shade: p.pal.c, pants: p.pal.P,
-    hair_style: p.hair, accessory: p.extra ?? null, outfit: p.shirt === "gremio" ? "hoodie" : p.shirt,
-  };
+  const p = (DEFAULT_PEOPLE as Record<string, BotLookShape>)[role] ?? DEFAULT_PEOPLE.implementer;
+  return { ...p };
 }
 
 const PREVIEW = "__preview";
 const botSvg = (role: string): string =>
-  `<svg viewBox="0 0 12 20" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">${spritesSvg(walkerSprites(role, false, false, 0))}</svg>`;
+  `<svg viewBox="-8.5 -21 17 28.3" xmlns="http://www.w3.org/2000/svg">${spritesSvg(walkerSprites(role, false, false, 0))}</svg>`;
 /** Boneco de pé de um papel, como aparece hoje no escritório (com o visual configurado, se houver). */
 export function officeBot(role: string): string {
   return botSvg(role);

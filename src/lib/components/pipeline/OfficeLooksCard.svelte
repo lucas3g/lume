@@ -5,7 +5,7 @@
   import { readPastedImage } from "../../paste";
   import { STATIONS } from "../../pipeline";
   import { loadOfficeLooks, officeLooks, saveOfficeLooks } from "../../state/officeLooks.svelte";
-  import type { Accessory, BotLook, HairStyle, Outfit, PipelineRole } from "../../types";
+  import type { Accessory, Beard, BotLook, HairStyle, Outfit, PipelineRole } from "../../types";
 
   /** Os papéis que têm mesa (e boneco) no escritório. */
   const ROLES = STATIONS.map((s) => ({ role: s.role, name: s.name }));
@@ -34,6 +34,13 @@
     { id: "coat", label: "Jaleco" },
     { id: "scarf", label: "Cachecol" },
     { id: "tie", label: "Gravata" },
+    { id: "vneck", label: "Camiseta gola V" },
+    { id: "gremio", label: "Camisa do Grêmio" },
+  ];
+  const BEARD: { id: Beard; label: string }[] = [
+    { id: "none", label: "Sem barba" },
+    { id: "stubble", label: "Curta" },
+    { id: "full", label: "Cheia" },
   ];
   const COLORS: { key: "skin" | "hair" | "shirt" | "pants"; label: string }[] = [
     { key: "skin", label: "Pele" },
@@ -97,7 +104,7 @@
 
   async function save() {
     if (!editing || !draft) return;
-    // Sem visual salvo e sem mudança, não há o que salvar (na sua mesa, salvar trocaria o retrato desenhado à mão).
+    // Sem visual salvo e sem mudança, não há o que salvar (o papel segue com o boneco padrão).
     if (!officeLooks.looks[editing] && JSON.stringify($state.snapshot(draft)) === JSON.stringify(defaultLook(editing))) {
       close();
       return;
@@ -224,6 +231,18 @@
             {#each OUTFIT as o (o.id)}<option value={o.id}>{o.label}</option>{/each}
           </select>
         </label>
+        <label class="row">
+          <span class="small">Barba</span>
+          <select class="input" value={draft.beard ?? "none"} onchange={(e) => draft && (draft.beard = e.currentTarget.value as Beard)}>
+            {#each BEARD as b (b.id)}<option value={b.id}>{b.label}</option>{/each}
+          </select>
+        </label>
+        {#if draft.beard && draft.beard !== "none"}
+          <label class="color">
+            <input type="color" value={draft.beard_color ?? draft.hair} oninput={(e) => draft && (draft.beard_color = e.currentTarget.value)} />
+            <span class="small">Cor da barba</span>
+          </label>
+        {/if}
         <p class="muted tiny">
           {generating ? "O Claude está olhando a foto…" : "Também dá para colar ou arrastar uma foto aqui. A foto só vai no pedido ao Claude e não fica guardada."}
         </p>
@@ -256,10 +275,9 @@
   .bot.on { outline: 2px solid var(--accent, #6f7de0); outline-offset: -1px; }
   .name { font-size: 12px; text-align: center; }
   .tiny { font-size: 11px; }
-  .figure { display: block; width: 36px; height: 60px; image-rendering: pixelated; }
+  .figure { display: block; width: 36px; height: 60px; }
   .figure.big { width: 72px; height: 120px; }
   .figure :global(svg) { width: 100%; height: 100%; display: block; }
-  .figure :global(image) { image-rendering: pixelated; }
   .editor { display: flex; gap: 20px; padding: 4px 20px 18px; border-top: 1px solid var(--border); padding-top: 16px; }
   .stage { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 96px; }
   .photo { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }

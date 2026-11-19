@@ -35,9 +35,45 @@
   /** Dados da task escolhida: os da escolha ou, para uma chave digitada, os da lista se ela aparecer depois. */
   const taskIssue = $derived(task ? (task.issue ?? jira.issues.find((i) => i.key === task!.key) ?? null) : null);
 
+  /** Último título posto pela task: trocar ou tirar a task troca ou limpa só esse, não um digitado. */
+  let autoTitle = "";
   function pick(picked: PickedTask) {
     task = picked;
     picking = false;
+    briefError = null;
+    const summary = picked.issue?.summary ?? "";
+    if (!title.trim() || title === autoTitle) title = autoTitle = summary;
+  }
+  function unpick() {
+    task = null;
+    briefError = null;
+    if (title === autoTitle) title = autoTitle = "";
+  }
+
+  /** Task sendo lida no Jira para escrever o que fazer (vale só enquanto ela segue escolhida). */
+  let briefingKey = $state<string | null>(null);
+  const briefing = $derived(!!task && briefingKey === task.key);
+  /** Último texto gerado: o que você escreveu além dele não se perde ao gerar de novo. */
+  let autoRequest = "";
+  let briefError = $state<string | null>(null);
+  /** Lê a task (descrição, critérios, comentários, anexos) e escreve o que fazer no campo. */
+  async function brief() {
+    if (!task || briefing) return;
+    const key = task.key;
+    briefingKey = key;
+    briefError = null;
+    try {
+      const result = await api.briefJiraTask(key, task.site);
+      if (task?.key !== key) return;
+      const mine = autoRequest && request.startsWith(autoRequest) ? request.slice(autoRequest.length).trim() : request.trim();
+      autoRequest = result.request;
+      request = mine ? `${autoRequest}\n\n${mine}` : autoRequest;
+      if (result.title && !title.trim()) title = autoTitle = result.title;
+    } catch (e) {
+      if (task?.key === key) briefError = errorMessage(e);
+    } finally {
+      if (briefingKey === key) briefingKey = null;
+    }
   }
   let error = $state<string | null>(null);
   let busy = $state(false);
@@ -109,7 +145,7 @@
         images: images.map(({ name, media_type, data }) => ({ name, media_type, data })),
         design,
       });
-      title = request = "";
+      title = request = autoTitle = autoRequest = "";
       images = [];
       design = false;
       task = null;
@@ -175,7 +211,7 @@
                 </div>
                 <div class="tactions">
                   <button type="button" class="btn small" onclick={() => (picking = true)}>Trocar</button>
-                  <button type="button" class="btn small icon" aria-label="Seguir sem task" title="Seguir sem task" onclick={() => (task = null)}>
+                  <button type="button" class="btn small icon" aria-label="Seguir sem task" title="Seguir sem task" onclick={unpick}>
                     <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
                   </button>
                 </div>
@@ -200,12 +236,22 @@
           <label><span>Título <span class="opt">{task ? "(opcional: sem ele, vale a chave da task)" : "(opcional: sem ele, vale a primeira linha da descrição)"}</span></span>
             <input class="input" bind:value={title} placeholder={taskIssue?.summary ?? "Ex.: Exportar conversa em Markdown"} />
           </label>
-          <label><span>{task ? "Observações para os bots" : "O que fazer"}{#if task}<span class="opt"> (opcional)</span>{/if}</span>
-            <textarea class="input" rows="4" bind:value={request} onpaste={onPaste}
+          <div class="field">
+            <div class="field-head">
+              <label class="field-label" for="pipeline-request">O que fazer{#if task}<span class="opt"> (opcional: a Triagem também lê a task)</span>{/if}</label>
+              {#if task}
+                <button type="button" class="btn small gen" onclick={brief} disabled={briefing}
+                  title={`Lê a ${task.key} no Jira (descrição, critérios de aceite, comentários e anexos) e escreve o que fazer`}>
+                  {#if briefing}<span class="spinner" aria-hidden="true"></span>Lendo a {task.key}…{:else}Gerar a partir da task{/if}
+                </button>
+              {/if}
+            </div>
+            <textarea id="pipeline-request" class="input" rows={request.length > 300 ? 10 : 4} bind:value={request} onpaste={onPaste} disabled={briefing}
               placeholder={task
-                ? "Algo além do que está na task: restrições, por onde começar, o que não mexer. Cole imagens aqui."
+                ? "Use \"Gerar a partir da task\" para escrever o pedido com o que está na task, ou escreva algo além dela: restrições, por onde começar, o que não mexer. Cole imagens aqui."
                 : "Descreva o problema ou a funcionalidade, com o que conta como pronto. Cole imagens aqui (prints de tela, layouts)."}></textarea>
-          </label>
+            {#if briefError}<p class="error-text small" role="alert">{briefError}</p>{/if}
+          </div>
           {#if images.length}
             <div class="thumbs" role="list" aria-label="Imagens coladas">
               {#each images as image, i (i)}
@@ -310,6 +356,11 @@
   .opt { font-weight: 400; color: var(--muted); }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field-label { font-size: 13px; font-weight: 500; }
+  .field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 26px; }
+  .gen { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  .spinner { width: 11px; height: 11px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: brief-spin 0.8s linear infinite; }
+  @keyframes brief-spin { to { transform: rotate(360deg); } }
+  .field textarea { padding: 8px 12px; resize: vertical; font-weight: 400; }
   .task-empty { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 1px dashed var(--border-strong); border-radius: 10px; background: none; color: inherit; text-align: left; transition: border-color 0.15s, background 0.15s; }
   .task-empty:hover { border-color: var(--accent); background: rgba(91, 106, 217, 0.06); }
   .task-empty .plus { flex: none; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; background: rgba(91, 106, 217, 0.16); color: var(--accent-text); }

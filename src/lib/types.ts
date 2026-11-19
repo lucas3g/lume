@@ -532,6 +532,12 @@ export interface JiraBoards {
   boards: JiraBoard[];
 }
 
+/** Título e o que fazer sugeridos pelo modelo a partir de uma task do Jira. */
+export interface JiraTaskBrief {
+  title: string | null;
+  request: string;
+}
+
 export interface JiraIssueList {
   /** Conta do Claude cujo conector respondeu. */
   account_id: string | null;
@@ -594,7 +600,8 @@ export interface TierModels {
 /** Estilos de cabelo, acessórios e roupas que o boneco do escritório sabe desenhar. */
 export type HairStyle = "short" | "curly" | "long" | "bun" | "topknot" | "beanie" | "fade";
 export type Accessory = "glasses" | "readers" | "headset" | "goggles";
-export type Outfit = "hoodie" | "lanyard" | "cardigan" | "pearls" | "coat" | "scarf" | "tie";
+export type Outfit = "hoodie" | "lanyard" | "cardigan" | "pearls" | "coat" | "scarf" | "tie" | "gremio" | "vneck";
+export type Beard = "none" | "stubble" | "full";
 
 /** Visual de um boneco do escritório. Cores em `#rrggbb`; sem as sombras, o desenho deriva das cores base. */
 export interface BotLook {
@@ -608,6 +615,10 @@ export interface BotLook {
   hair_style: HairStyle;
   accessory: Accessory | null;
   outfit: Outfit;
+  /** Barba; ausente = sem barba. */
+  beard?: Beard;
+  /** Cor da barba, quando difere da do cabelo. */
+  beard_color?: string;
 }
 
 /** Visual de cada papel; papel ausente fica com o boneco padrão. Vale para todos os projetos. */

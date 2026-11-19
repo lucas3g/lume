@@ -1,12 +1,13 @@
-//! Visual dos bonecos do escritório da esteira: cores e peças que o desenho em pixel art sabe montar.
+//! Visual dos bonecos do escritório da esteira: cores e peças que o desenho chibi sabe montar.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Estilos de cabelo, acessórios e roupas que o desenho trata (ver `headShape` e `torsoShape` em `scene.ts`).
+/// Estilos de cabelo, acessórios, roupas e barbas que o desenho trata (ver `chibi.ts`).
 pub const HAIR_STYLES: [&str; 7] = ["short", "curly", "long", "bun", "topknot", "beanie", "fade"];
 pub const ACCESSORIES: [&str; 4] = ["glasses", "readers", "headset", "goggles"];
-pub const OUTFITS: [&str; 7] = ["hoodie", "lanyard", "cardigan", "pearls", "coat", "scarf", "tie"];
+pub const OUTFITS: [&str; 9] = ["hoodie", "lanyard", "cardigan", "pearls", "coat", "scarf", "tie", "gremio", "vneck"];
+pub const BEARDS: [&str; 3] = ["none", "stubble", "full"];
 
 /// Visual de um boneco. As sombras (`skin_shade`, `hair_light`, `shirt_shade`) são opcionais: sem elas, o desenho
 /// deriva das cores base.
@@ -26,6 +27,12 @@ pub struct BotLook {
     #[serde(default)]
     pub accessory: Option<String>,
     pub outfit: String,
+    /// Barba (`none`, `stubble`, `full`); visuais salvos antes dela ficam sem.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beard: Option<String>,
+    /// Cor da barba, quando difere da do cabelo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beard_color: Option<String>,
 }
 
 /// Visual de cada papel (chave = papel da esteira). Papel fora do mapa fica com o boneco padrão.
@@ -60,6 +67,8 @@ impl BotLook {
             hair_style: pick(&self.hair_style, &HAIR_STYLES).unwrap_or_else(|| HAIR_STYLES[0].into()),
             accessory: self.accessory.as_deref().and_then(|a| pick(a, &ACCESSORIES)),
             outfit: pick(&self.outfit, &OUTFITS).unwrap_or_else(|| OUTFITS[0].into()),
+            beard: self.beard.as_deref().and_then(|b| pick(b, &BEARDS)),
+            beard_color: self.beard_color.as_deref().and_then(hex),
         }
     }
 }
@@ -82,6 +91,8 @@ pub fn parse_bot_look(text: &str) -> Option<BotLook> {
         hair_style: s("hair_style").unwrap_or_default(),
         accessory: s("accessory").filter(|a| !a.trim().is_empty() && a.trim() != "none"),
         outfit: s("outfit").unwrap_or_default(),
+        beard: s("beard"),
+        beard_color: s("beard_color"),
     };
     Some(look.normalized())
 }
@@ -105,6 +116,14 @@ mod tests {
         assert_eq!(look.skin, FALLBACK.0);
         assert_eq!(look.pants, FALLBACK.3);
         assert_eq!((look.hair_style.as_str(), look.accessory, look.outfit.as_str()), ("short", None, "hoodie"));
+    }
+
+    #[test]
+    fn reads_the_beard() {
+        let look = parse_bot_look(r##"{"skin":"#fff","hair":"#000000","shirt":"#111111","beard":"Full","beard_color":"A9663B"}"##).unwrap();
+        assert_eq!((look.beard.as_deref(), look.beard_color.as_deref()), (Some("full"), Some("#a9663b")));
+        let look = parse_bot_look(r##"{"skin":"#fff","hair":"#000000","shirt":"#111111","beard":"bigode"}"##).unwrap();
+        assert_eq!(look.beard, None);
     }
 
     #[test]

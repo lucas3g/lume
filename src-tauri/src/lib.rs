@@ -97,6 +97,7 @@ pub fn run() {
             commands::draft_agent,
             commands::list_jira_issues,
             commands::list_jira_boards,
+            commands::brief_jira_task,
             commands::connectors_elsewhere,
             commands::set_connector_bridge,
             commands::login_connector_chatgpt,
