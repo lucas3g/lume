@@ -383,7 +383,7 @@ const TORSO: Node[] = [
 ];
 const HIPS: Node[] = [[-3.75, -0.5, 1], [3.35, -0.5, 1], [3.45, 1.4], [2.4, 2.2], [-2.9, 2.2], [-3.9, 1.4]];
 const LAP: Node[] = [[-4.0, 0.0, 1], [3.6, 0.0, 1], [3.9, 6.2, 1], [-4.3, 6.2, 1]];
-const SH_L: Pt = [-3.25, -4.35], SH_R: Pt = [2.85, -4.35];
+const SH_L: Pt = [-3.7, -4.6], SH_R: Pt = [3.25, -4.6];
 
 // ---- cabelo
 
@@ -630,7 +630,6 @@ function head(c: Ctx, p: Pal, l: ChibiLook, view: ChibiView): void {
   const st = l.hair_style, front = view === "front", hr = front ? hairFront(st) : hairBack(st);
   if (front) {
     part(c, spline(EAR_F), p.skin, p.skinSh, { off: [0.45, 0.4], inner: `<path d="${earLine(1)}" fill="none" stroke="${p.skinDk}" stroke-width=".26"/>` });
-    if (hr.back) part(c, spline(hr.back), p.hair, p.hairSh, { off: [0.8, 0.6] });
     /* Sombra da franja (ou do gorro) na testa. */
     const cast = st === "beanie" ? spline(BRIM) : hr.front ? spline(hr.front) : null;
     part(c, spline(HEAD_F), p.skin, p.skinSh, { off: [0.95, 0.55], inner: cast ? `<path d="${dOf(cast, -c.side * 0.3, 0.6)}" fill="${p.skinSh}"/>` : "" });
@@ -711,7 +710,7 @@ function mouth(c: Ctx, kind: ChibiMouth): void {
 /** Pontos dos braços por pose (ombro, cotovelo, mão), em px lógicos relativos ao quadril, sem espelho.
     L e R são os lados da tela, como no POSE do scene.ts: L é o braço de longe, R o de perto. */
 export const CHIBI_POSE: Readonly<Record<ChibiPose, ReadonlyArray<readonly Pt[]>>> = {
-  hang: [[SH_L, [-4.25, -2.3], [-4.45, -0.35]], [SH_R, [3.85, -2.3], [4.05, -0.35]]],
+  hang: [[SH_L, [-4.35, -2.4], [-4.5, -0.35]], [SH_R, [3.95, -2.4], [4.1, -0.35]]],
   restL: [[SH_L, [-5.2, -2.0], [-5.6, 0.45]]],
   restR: [[SH_R, [4.15, -1.5], [-1.8, 2.05]]],
   crossL: [[SH_L, [-4.45, -2.3], [1.85, -2.05]]],
@@ -801,6 +800,9 @@ export function chibiShadow(opts?: ChibiOpts): ChibiPiece {
 /** Corpo: tronco e cabeça, com as pálpebras fechadas (sem olhos abertos nem boca). seated: o colo desce até +6,2. */
 export function chibiBody(look: ChibiLook, view: ChibiView = "front", opts?: ChibiOpts & { seated?: boolean }): ChibiPiece {
   const c = ctx(opts), p = palette(look);
+  /* O cabelo comprido cai atrás dos ombros: a parte de trás vem antes do tronco, senão cobre a roupa como uma capa. */
+  const back = view === "front" ? hairFront(look.hair_style).back : undefined;
+  if (back) part(c, spline(back), p.hair, p.hairSh, { off: [0.8, 0.6] });
   torso(c, p, look, view, !!(opts && opts.seated));
   head(c, p, look, view);
   return finish(c);
