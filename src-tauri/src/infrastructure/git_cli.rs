@@ -316,6 +316,8 @@ mod tests {
         git(&root, &["init", "-q", "-b", "principal"]).unwrap();
         git(&root, &["config", "user.email", "teste@exemplo.com"]).unwrap();
         git(&root, &["config", "user.name", "Teste"]).unwrap();
+        // O git do Windows (ex.: o do GitHub Actions) vem com autocrlf ligado e reescreveria os arquivos com \r\n.
+        git(&root, &["config", "core.autocrlf", "false"]).unwrap();
         fs::write(dir.join("a.txt"), "um\ndois\n").unwrap();
 
         let fresh = GitCli.status(&root);
@@ -348,6 +350,8 @@ mod tests {
         git(&root, &["init", "-q", "-b", "main"]).unwrap();
         git(&root, &["config", "user.email", "teste@exemplo.com"]).unwrap();
         git(&root, &["config", "user.name", "Teste"]).unwrap();
+        // O git do Windows (ex.: o do GitHub Actions) vem com autocrlf ligado e reescreveria os arquivos com \r\n.
+        git(&root, &["config", "core.autocrlf", "false"]).unwrap();
         fs::write(dir.join("a.txt"), "um\n").unwrap();
         GitCli.commit(&root, "Primeiro").unwrap();
         (dir, root)
@@ -405,6 +409,8 @@ mod tests {
         git(&root, &["init", "-q"]).unwrap();
         git(&root, &["config", "user.email", "teste@exemplo.com"]).unwrap();
         git(&root, &["config", "user.name", "Teste"]).unwrap();
+        // O git do Windows (ex.: o do GitHub Actions) vem com autocrlf ligado e reescreveria os arquivos com \r\n.
+        git(&root, &["config", "core.autocrlf", "false"]).unwrap();
         fs::write(dir.join("a.txt"), "um\n").unwrap();
         GitCli.commit(&root, "Primeiro").unwrap();
 
