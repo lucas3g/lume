@@ -286,10 +286,13 @@
             {/if}
           </p>
           {#if !task && !config?.skipped.includes("reporter")}
-            <label class="create-jira">
-              <input type="checkbox" bind:checked={createJira} />
-              Criar task no Jira no fim
-            </label>
+            <div class="design-opt">
+              <div>
+                <strong>Criar task no Jira no fim</strong>
+                <span class="muted small">Sem task escolhida, o Relator cria uma no Jira com o que foi feito e mostra o link. Desligado, a esteira não usa o Jira.</span>
+              </div>
+              <Toggle checked={createJira} label={createJira ? "Não criar task no Jira" : "Criar task no Jira no fim"} onchange={(v) => (createJira = v)} />
+            </div>
           {/if}
           {#if project && git}
             <p class="mode" class:warn={!git.is_repo}>
@@ -359,7 +362,6 @@
 {/if}
 
 <style>
-  .create-jira { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
   .design-opt { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
   .design-opt > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .panel { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
