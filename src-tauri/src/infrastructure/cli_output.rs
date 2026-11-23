@@ -36,8 +36,15 @@ pub(crate) fn login_url(line: &str) -> Option<String> {
         let url = url.trim_end_matches(['.', ',', ';', ')', ']', '>', '"', '\'']);
         // Todo pedido de autorização OAuth leva `client_id`; um endereço cortado antes dele não serve.
         // Conectores da conta claude.ai começam o login numa página do próprio claude.ai, sem ele.
-        (url.contains("client_id=") || is_claude_ai_connector_auth(url)).then(|| url.to_owned())
+        (url.contains("client_id=") || is_claude_ai_connector_auth(url) || is_short_claude_ai_auth(url)).then(|| url.to_owned())
     })
+}
+
+/// Endereço curto de login que o Claude Code imprime desde a 2.1.330: no claude.ai, com um código
+/// só na consulta. Um endereço comprido cortado antes do client_id tem `=` e não passa.
+fn is_short_claude_ai_auth(url: &str) -> bool {
+    url.strip_prefix("https://claude.ai/oauth/authorize?")
+        .is_some_and(|code| !code.is_empty() && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
 }
 
 /// Página do claude.ai que começa o login de um conector da conta. Só vale no próprio
@@ -391,6 +398,16 @@ mod tests {
             login_url("navigate to this URL: https://auth.openai.com/oauth/authorize?client_id=a&state=b.").as_deref(),
             Some("https://auth.openai.com/oauth/authorize?client_id=a&state=b")
         );
+    }
+
+    #[test]
+    fn finds_short_authorization_url_of_recent_claude_code() {
+        // Desde a 2.1.330, o endereço impresso é curto: um código só, sem client_id.
+        let url = "https://claude.ai/oauth/authorize?z-uI6k7KSpydqPMkN1OHfeNWGvVut_TYf_3-TecOkceNU";
+        assert_eq!(login_url(url).as_deref(), Some(url));
+        // O mesmo caminho fora do claude.ai não é o login do Claude.
+        assert_eq!(login_url("https://exemplo.com/oauth/authorize?z-uI6k7KSpydqPMkN1OHfe"), None);
+        assert_eq!(login_url("https://claude.ai/oauth/authorize?"), None);
     }
 
     #[test]
