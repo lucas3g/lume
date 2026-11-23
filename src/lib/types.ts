@@ -489,6 +489,8 @@ export interface PipelineRun {
   budget_minutes: number;
   /** A execução começa pelo design no Claude Design, com a sua aprovação antes do plano. */
   design: boolean;
+  /** Sem task escolhida, o Relator cria uma no Jira no fim; desligado, a esteira não usa o Jira. */
+  create_jira: boolean;
   note: string | null;
   created_at: number;
   updated_at: number;

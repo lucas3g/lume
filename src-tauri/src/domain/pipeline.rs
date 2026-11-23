@@ -486,6 +486,8 @@ pub struct PipelineRun {
     pub budget_minutes: i64,
     /// A execução começa pelo design no Claude Design (Designer e a aprovação do design).
     pub design: bool,
+    /// Sem task escolhida, o Relator cria uma no Jira no fim; desligado, a esteira não usa o Jira.
+    pub create_jira: bool,
     /// Motivo do fim, quando falhou ou parou.
     pub note: Option<String>,
     pub created_at: i64,
@@ -669,7 +671,7 @@ fn design_block(ctx: &StageContext) -> String {
 /// - Os demais trabalham com o plano e o código.
 pub fn uses_jira(role: Role, run: &PipelineRun, ctx: &StageContext) -> bool {
     match role {
-        Role::Reporter => true,
+        Role::Reporter => run.jira_key.is_some() || run.create_jira,
         Role::Triage => run.jira_key.is_some(),
         Role::Designer | Role::Planner => run.jira_key.is_some() && ctx.triage.is_none(),
         _ => false,
@@ -955,7 +957,12 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 "Coloque o mesmo usuário também como Responsável (assignee), pelo accountId, na criação ou logo depois dela; \
                  não copie do modelo o Relator nem o Responsável (o Jira põe você como relator).",
             );
+            // Sem task e sem criar uma, não há task em que escrever.
+            let leave_out = if run.jira_key.is_none() && !run.create_jira { String::new() } else { format!("{leave_out}\n") };
             let jira = match &run.jira_key {
+                None if !run.create_jira => {
+                    "Não há task do Jira para este pedido e o usuário pediu para não criar uma: não use o Jira.".to_owned()
+                }
                 Some(key) => format!(
                     "Escreva na task {key} do Jira (conector do Atlassian) o que foi feito, direto na descrição: não comente na \
                      task. Leia a descrição atual e preencha o item \"Solução:\" dela {qa} Se o item já tiver texto, substitua \
@@ -986,7 +993,7 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             };
             format!(
                 "{task}\n{round}<plano>\n{}\n</plano>\n<implementacao>\n{}\n</implementacao>\n<revisao>\n{}\n</revisao>\n<testes>\n{}\n</testes>\n{}\n\
-                 {jira}\n{leave_out}\nNão faça commit nem push. Responda com o relatório final e uma sugestão de mensagem de commit em uma linha \
+                 {jira}\n{leave_out}Não faça commit nem push. Responda com o relatório final e uma sugestão de mensagem de commit em uma linha \
                  na última linha, no formato `COMMIT: <mensagem>`.",
                 ctx.plan.as_deref().unwrap_or(""),
                 match ctx.implementations.as_slice() {
@@ -1509,6 +1516,7 @@ mod tests {
             efforts: BTreeMap::new(),
             budget_minutes: 60,
             design: false,
+            create_jira: true,
             note: None,
             created_at: 0,
             updated_at: 0,
@@ -1816,6 +1824,16 @@ mod tests {
         assert!(stage_prompt(Role::Planner, &with_images, &StageContext::default()).contains("2 imagem(ns)"));
         assert!(!stage_prompt(Role::Reviewer, &with_images, &StageContext::default()).contains("imagem"));
         assert!(!stage_prompt(Role::Planner, &run(WorkMode::Direct, None), &StageContext::default()).contains("imagem(ns)"));
+    }
+
+    #[test]
+    fn reporter_leaves_jira_alone_when_asked_not_to_create_the_task() {
+        let no_task = PipelineRun { create_jira: false, ..run(WorkMode::Direct, None) };
+        let prompt = stage_prompt(Role::Reporter, &no_task, &StageContext::default());
+        assert!(prompt.contains("não use o Jira") && !prompt.contains("crie uma no Jira") && !prompt.contains("TASK_CRIADA") && !prompt.contains("Não escreva na task"));
+        assert!(!uses_jira(Role::Reporter, &no_task, &StageContext::default()));
+        let picked = PipelineRun { create_jira: false, ..run(WorkMode::Direct, Some("EI-7")) };
+        assert!(uses_jira(Role::Reporter, &picked, &StageContext::default()), "com task escolhida, o Relator escreve nela");
     }
 
     #[test]

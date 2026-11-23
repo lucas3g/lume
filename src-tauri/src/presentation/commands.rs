@@ -804,13 +804,14 @@ pub fn start_pipeline(
     budget_minutes: Option<i64>,
     images: Option<Vec<PastedImage>>,
     design: Option<bool>,
+    create_jira: Option<bool>,
 ) -> AppResult<PipelineRun> {
     let images = images
         .unwrap_or_default()
         .into_iter()
         .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
         .collect();
-    let run = app.pipelines.start(StartInput { project_id, jira_key, jira_site, title, request, budget_minutes, images, design: design.unwrap_or(false) })?;
+    let run = app.pipelines.start(StartInput { project_id, jira_key, jira_site, title, request, budget_minutes, images, design: design.unwrap_or(false), create_jira: create_jira.unwrap_or(true) })?;
     app.spawn_pipeline(run.id.clone());
     Ok(run)
 }

@@ -29,6 +29,8 @@
   let budget = $state(90);
   /** Começar pelo design no Claude Design (desligado por padrão, por execução). */
   let design = $state(false);
+  /** Sem task escolhida, o Relator cria uma no Jira no fim (ligado por padrão, por execução). */
+  let createJira = $state(true);
   /** Task do Jira escolhida; sem ela a esteira segue só com a descrição e não consulta o Jira. */
   let task = $state<PickedTask | null>(null);
   let picking = $state(false);
@@ -144,10 +146,12 @@
         budgetMinutes: Number(budget) || null,
         images: images.map(({ name, media_type, data }) => ({ name, media_type, data })),
         design,
+        createJira,
       });
       title = request = autoTitle = autoRequest = "";
       images = [];
       design = false;
+      createJira = true;
       task = null;
       await loadPipelines();
       await openPipeline(run.id);
@@ -272,6 +276,8 @@
               Sem task escolhida, nenhum bot procura task no Jira: a esteira segue só com a descrição.
               {#if config?.skipped.includes("reporter")}
                 O Relator está desligado neste projeto: nenhuma task é criada.
+              {:else if !createJira}
+                Nenhuma task é criada no Jira.
               {:else if config?.jira_template || config?.default_jira_template}
                 No fim, o Relator cria uma task no Jira pelo modelo {config.jira_template ? "do projeto" : "padrão"} e mostra o link.
               {:else if config}
@@ -279,6 +285,12 @@
               {/if}
             {/if}
           </p>
+          {#if !task && !config?.skipped.includes("reporter")}
+            <label class="create-jira">
+              <input type="checkbox" bind:checked={createJira} />
+              Criar task no Jira no fim
+            </label>
+          {/if}
           {#if project && git}
             <p class="mode" class:warn={!git.is_repo}>
               {#if !git.is_repo}
@@ -347,6 +359,7 @@
 {/if}
 
 <style>
+  .create-jira { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
   .design-opt { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
   .design-opt > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .panel { padding: 20px; display: flex; flex-direction: column; gap: 12px; }

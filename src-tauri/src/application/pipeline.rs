@@ -76,6 +76,8 @@ pub struct StartInput {
     pub images: Vec<Attachment>,
     /// Começar pelo design no Claude Design, com a sua aprovação antes do plano.
     pub design: bool,
+    /// Sem task escolhida, o Relator cria uma no Jira no fim.
+    pub create_jira: bool,
 }
 
 /// Execução com o registro das etapas, para a tela de acompanhamento.
@@ -344,6 +346,7 @@ impl ManagePipelines {
             efforts,
             budget_minutes: input.budget_minutes.filter(|m| *m > 0).unwrap_or(DEFAULT_BUDGET_MINUTES),
             design: input.design,
+            create_jira: input.create_jira,
             note: None,
             created_at: now,
             updated_at: now,
@@ -629,7 +632,7 @@ impl ManagePipelines {
             self.pipelines.set_stage_usage(&stage.id, &spent)?;
         }
         // Sem task para o pedido, o Relator cria uma pelo modelo do projeto: ela passa a ser a da execução.
-        if role == Role::Reporter && run.jira_key.is_none() && stage.status == StageStatus::Done
+        if role == Role::Reporter && run.jira_key.is_none() && run.create_jira && stage.status == StageStatus::Done
             && let Some((key, url)) = stage.output.as_deref().and_then(created_task)
         {
             run.jira_url = url.or_else(|| self.link_for(run.jira_template.as_deref(), &key));
@@ -1220,7 +1223,7 @@ mod tests {
     }
 
     fn input(jira: Option<&str>) -> StartInput {
-        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), jira_site: None, title: String::new(), request: String::new(), budget_minutes: None, images: vec![], design: false }
+        StartInput { project_id: "p1".into(), jira_key: jira.map(Into::into), jira_site: None, title: String::new(), request: String::new(), budget_minutes: None, images: vec![], design: false, create_jira: true }
     }
 
     fn roles(uc: &ManagePipelines, id: &str) -> Vec<(&'static str, &'static str)> {
