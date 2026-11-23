@@ -21,6 +21,9 @@ export const pipelines = $state({
     images: PastedImage[];
     /** Task do Jira escolhida na execução anterior (só a chave, quando a lista não a tem). */
     task: { key: string; site: string | null; issue: JiraIssue | null } | null;
+    /** Opções da execução anterior: voltam como estavam, para não precisar marcar de novo. */
+    design: boolean;
+    createJira: boolean;
   } | null,
 });
 

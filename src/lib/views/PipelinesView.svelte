@@ -127,6 +127,8 @@
     title = draft.title;
     request = draft.request;
     task = draft.task;
+    design = draft.design;
+    createJira = draft.createJira;
     images = draft.images.map((i) => ({ ...i, preview: `data:${i.media_type};base64,${i.data}` }));
     pipelines.draft = null;
   });

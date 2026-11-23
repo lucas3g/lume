@@ -380,6 +380,8 @@
       request: `${detail.request}\n\n${answersTemplate(answers)}`.trimStart(),
       images: $state.snapshot(images),
       task: key ? { key, site: detail.jira_url?.split("/browse/")[0] ?? null, issue: null } : null,
+      design: detail.design,
+      createJira: detail.create_jira,
     };
     void openPipeline(null);
   }
