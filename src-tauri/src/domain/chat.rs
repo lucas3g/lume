@@ -250,6 +250,8 @@ pub enum TurnEvent {
         input: String,
         description: String,
     },
+    /// O provedor desistiu de um pedido de autorização (ex.: a chamada foi interrompida): não espera mais a resposta.
+    PermissionCancelled(String),
     Rate(RateInfo),
     /// O provedor leu uma mensagem do usuário (eco com o identificador dela).
     UserRead(String),

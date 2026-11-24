@@ -2,6 +2,7 @@
 //! numa sessão própria e decide a próxima pelo registro das anteriores.
 
 use super::{
+    parked::ParkedTurns,
     projects::free_worktree,
     ports::{
         AgentRepository, Clock, ConversationRepository, EventSink, IdGenerator, ModelCatalog, PipelineRepository, ProjectRepository, Settings,
@@ -10,6 +11,7 @@ use super::{
     send_message::make_title,
     AppError, AppResult,
 };
+use crate::domain::ci::{ci_feedback, job_id, verdict, CiStatus, CiWatch, Verdict, CI_TIMEOUT_SECONDS, MAX_CI_FIXES, NO_CHECKS_GRACE_SECONDS};
 use crate::domain::mcp::server_rule;
 use crate::domain::permission::AUTO_APPROVE_PREFIX;
 use crate::domain::{
@@ -40,6 +42,13 @@ const WORKTREE_READY_PREFIX: &str = "pipeline_worktree_ready:";
 /// Sessão que já ocupa esta parte do contexto do modelo não é continuada: a etapa abre uma nova, com o
 /// resumo do que importa no prompt, em vez de reenviar uma conversa longa a cada chamada.
 const MAX_RESUME_CONTEXT_PERCENT: i64 = 50;
+/// Execução parada porque todas as contas atingiram o limite: quando a primeira deve voltar (0 sem
+/// previsão). Com a marca, a esteira retoma sozinha quando uma conta voltar.
+const RESUME_PREFIX: &str = "pipeline_resume:";
+/// Acompanhamento do CI do pull request da execução (JSON de `CiWatch`).
+const CI_PREFIX: &str = "pipeline_ci:";
+/// Mensagem do commit da correção do CI quando o Relator não sugere uma.
+const CI_FIX_MESSAGE: &str = "Corrige o CI do pull request";
 /// Modelo de task do Jira de todos os projetos (o de cada projeto vem antes).
 const DEFAULT_TEMPLATE_KEY: &str = "pipeline_default_template";
 
@@ -61,6 +70,8 @@ pub struct ManagePipelines {
     /// Reservar o nome da cópia e gravar a execução é um passo só: dois `start` ao mesmo tempo
     /// não ficam com a mesma cópia (ela só é criada depois, na condução).
     pub reserving: Mutex<()>,
+    /// Turnos parados no limite de todas as contas: o da etapa vira a espera da execução.
+    pub parked: Arc<ParkedTurns>,
 }
 
 /// Pedido de uma execução vindo da interface.
@@ -100,6 +111,12 @@ pub struct RunDetail {
     pub stage_usage: BTreeMap<String, TokenUsage>,
     /// Tokens de todas as etapas somados.
     pub usage: TokenUsage,
+    /// Parada no limite de todas as contas, esperando uma voltar para retomar sozinha.
+    pub waiting_account: bool,
+    /// Quando a primeira conta deve voltar, se o provedor informou.
+    pub resume_at: Option<i64>,
+    /// Acompanhamento do CI do pull request, se a entrega abriu um.
+    pub ci: Option<CiWatch>,
 }
 
 /// Modelo com que a etapa roda em cada serviço: no Claude, o do agente (se tiver) ou o do
@@ -158,7 +175,8 @@ impl ManagePipelines {
             let others = conversation.provider_models;
             stage_models.insert(stage.id.clone(), StageModels { claude, others });
         }
-        Ok(RunDetail { stage_models, stage_usage, usage, max_rounds: MAX_ROUNDS, round_limit: hit_round_limit(&stages), spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
+        let resume_at = self.waiting_since(id);
+        Ok(RunDetail { ci: self.ci(id), waiting_account: resume_at.is_some(), resume_at: resume_at.filter(|t| *t > 0), stage_models, stage_usage, usage, max_rounds: MAX_ROUNDS, round_limit: hit_round_limit(&stages), spent_seconds: spent_seconds(&stages, self.clock.now()), commit_message, run, stages })
     }
 
     /// Como a esteira roda no projeto; sem configuração, todos os papéis com as regras padrão.
@@ -611,8 +629,12 @@ impl ManagePipelines {
         };
         self.clear_stage_marks(&conversation_id)?;
         let cancelled = lock(&self.cancelled).contains(&run.id);
+        // A espera de conta é só deste turno: tirada já, não sobra para outra etapa da mesma conversa.
+        let parked = self.parked.take(&conversation_id)?;
         (stage.status, stage.output) = match result {
             _ if cancelled => (StageStatus::Cancelled, Some("Cancelada por você.".into())),
+            // Parou no limite com parte do trabalho feita: a resposta parcial não conta como a da etapa.
+            _ if parked.is_some() => (StageStatus::Failed, Some("todas as contas atingiram o limite.".into())),
             Ok(text) if role == Role::Designer && parse_design_url(&text).is_none() => (
                 StageStatus::Failed,
                 Some(format!("o design não foi publicado: a resposta não trouxe a linha `DESIGN: <link do artifact>`.\n\n{text}")),
@@ -639,7 +661,14 @@ impl ManagePipelines {
             run.jira_key = Some(key);
         }
         if stage.status == StageStatus::Failed {
-            let note = format!("{} não terminou: {}", role.label(), stage.output.clone().unwrap_or_default());
+            // Parou porque todas as contas atingiram o limite: a execução espera uma voltar e retoma sozinha.
+            let note = match parked {
+                Some(parked) => {
+                    self.settings.set_text(&format!("{RESUME_PREFIX}{}", run.id), &parked.resets_at.unwrap_or(0).to_string())?;
+                    format!("{}: todas as contas atingiram o limite. A esteira continua sozinha quando uma conta voltar.", role.label())
+                }
+                None => format!("{} não terminou: {}", role.label(), stage.output.clone().unwrap_or_default()),
+            };
             return self.finish(run, RunStatus::Failed, Some(note));
         }
         self.touch(run)
@@ -835,9 +864,38 @@ impl ManagePipelines {
             run.budget_minutes = (spent + 59) / 60 + EXTRA_BUDGET_MINUTES;
         }
         lock(&self.cancelled).remove(run_id);
+        self.stop_waiting(run_id)?;
         run.status = RunStatus::Running;
         run.note = None;
         self.touch(&mut run)
+    }
+
+    /// Quando a primeira conta deve voltar (0 sem previsão), se a execução espera uma para retomar.
+    fn waiting_since(&self, run_id: &str) -> Option<i64> {
+        self.settings.text(&format!("{RESUME_PREFIX}{run_id}")).and_then(|t| t.parse().ok())
+    }
+
+    /// Execuções paradas no limite de todas as contas, para retomar quando uma voltar.
+    pub fn waiting_for_account(&self) -> AppResult<Vec<String>> {
+        Ok(self
+            .pipelines
+            .runs()?
+            .into_iter()
+            .filter(|r| r.status == RunStatus::Failed && self.waiting_since(&r.id).is_some())
+            .map(|r| r.id)
+            .collect())
+    }
+
+    /// A execução deixa de esperar conta: só volta se você retomar.
+    pub fn stop_waiting(&self, run_id: &str) -> AppResult<()> {
+        if self.waiting_since(run_id).is_none() {
+            return Ok(());
+        }
+        self.settings.set_text(&format!("{RESUME_PREFIX}{run_id}"), "")?;
+        if let Ok(run) = self.get(run_id) {
+            self.events.pipeline_changed(&run);
+        }
+        Ok(())
     }
 
     /// Reabre uma execução concluída com um ajuste do usuário (algo que não funcionou ao
@@ -995,11 +1053,21 @@ impl ManagePipelines {
             Delivery::PullRequest | Delivery::PullRequestMerge => {
                 let remote = remote.expect("pull request tem remoto");
                 self.vcs.push(&run.workdir, &remote, &target)?;
-                let body = pr_body(&self.report(run_id)?, run.jira_url.as_deref());
-                let url = self.vcs.open_pr(&run.workdir, &base, &target, message, &body)?;
+                // Entregue de novo depois de um ajuste: o pull request do ramo, se ainda aberto, recebe o push.
+                // Juntado ou fechado no GitHub, abre outro.
+                let watch = self.ci(run_id).filter(|w| w.branch == target && self.vcs.pr_open(&run.workdir, &w.pr_url));
+                let url = match &watch {
+                    Some(w) => w.pr_url.clone(),
+                    None => {
+                        let body = pr_body(&self.report(run_id)?, run.jira_url.as_deref());
+                        self.vcs.open_pr(&run.workdir, &base, &target, message, &body)?
+                    }
+                };
                 // O pull request está aberto: se o merge falhar, ele fica para você juntar no GitHub.
                 run.delivered = Some(Delivered { kind: Delivery::PullRequest, ..delivered(&target, true, Some(url.clone()), false) });
                 self.touch(&mut run)?;
+                // O CI do pull request passa a ser acompanhado (de novo, a cada push).
+                self.save_ci(run_id, &CiWatch::new(&url, &target, watch.map_or(0, |w| w.fixes), now))?;
                 if kind == Delivery::PullRequestMerge {
                     self.vcs.merge_pr(&run.workdir, &url, &remote, &target).map_err(|e| {
                         AppError(format!("O pull request foi aberto, mas o merge foi recusado (junte pelo GitHub): {}", e.0))
@@ -1021,6 +1089,8 @@ impl ManagePipelines {
                     };
                     run.delivered = Some(delivered(&base, true, Some(url), removed));
                     self.touch(&mut run)?;
+                    // Já está na main: não há mais pull request para acompanhar.
+                    self.settings.set_text(&format!("{CI_PREFIX}{run_id}"), "")?;
                 }
             }
         }
@@ -1058,6 +1128,8 @@ impl ManagePipelines {
         self.pipelines.delete_run(run_id)?;
         // A foto da última revisão e a marca da cópia só servem à execução: apagada ela, não ficam para trás.
         self.settings.set_flag(&format!("{WORKTREE_READY_PREFIX}{run_id}"), false)?;
+        self.settings.set_text(&format!("{RESUME_PREFIX}{run_id}"), "")?;
+        self.settings.set_text(&format!("{CI_PREFIX}{run_id}"), "")?;
         self.settings.set_text(&format!("{REVIEWED_PREFIX}{run_id}"), "")
     }
 
@@ -1090,7 +1162,153 @@ impl ManagePipelines {
         lock(&self.cancelled).remove(&run.id);
         run.status = status;
         run.note = note;
-        self.touch(run)
+        self.touch(run)?;
+        match status {
+            RunStatus::Done => self.push_ci_fix(run),
+            // Cancelada no meio da correção do CI: o app não vai mais mandar nada ao pull request.
+            RunStatus::Cancelled => {
+                if let Some(mut watch) = self.ci(&run.id).filter(|w| w.status == CiStatus::Fixing) {
+                    watch.status = CiStatus::Stopped;
+                    watch.note = Some("A correção do CI foi cancelada: confira o pull request.".into());
+                    let _ = self.save_ci(&run.id, &watch);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn ci(&self, run_id: &str) -> Option<CiWatch> {
+        self.settings.text(&format!("{CI_PREFIX}{run_id}")).and_then(|t| serde_json::from_str(&t).ok())
+    }
+
+    fn save_ci(&self, run_id: &str, watch: &CiWatch) -> AppResult<()> {
+        let text = serde_json::to_string(watch).map_err(|e| AppError(e.to_string()))?;
+        self.settings.set_text(&format!("{CI_PREFIX}{run_id}"), &text)
+    }
+
+    /// Para de acompanhar o CI do pull request da execução.
+    pub fn stop_ci(&self, run_id: &str) -> AppResult<()> {
+        let Some(mut watch) = self.ci(run_id) else { return Ok(()) };
+        watch.status = CiStatus::Stopped;
+        watch.note = Some("Você parou de acompanhar o CI.".into());
+        self.save_ci(run_id, &watch)?;
+        self.events.pipeline_changed(&self.get(run_id)?);
+        Ok(())
+    }
+
+    /// A correção do CI terminou: o app faz o commit e o push no ramo do pull request, que volta a ser acompanhado.
+    fn push_ci_fix(&self, run: &mut PipelineRun) {
+        let Some(mut watch) = self.ci(&run.id).filter(|w| w.status == CiStatus::Fixing) else { return };
+        // Sem nada novo, o push não faz o GitHub rodar os checks de novo: a mesma falha voltaria.
+        if self.vcs.status(&run.workdir).files.is_empty() {
+            watch.status = CiStatus::Failed;
+            watch.note = Some("A correção não mudou nenhum arquivo, então o CI não rodaria de novo: confira o pull request.".into());
+            let _ = self.save_ci(&run.id, &watch);
+            self.events.notify(&format!("ci:{}", run.id), "CI: a correção não mudou nada", &run.title);
+            self.events.pipeline_changed(run);
+            return;
+        }
+        let message = self
+            .pipelines
+            .stages(&run.id)
+            .ok()
+            // Só o Relator desta correção (depois do último ajuste): o de antes descreve a entrega original.
+            .and_then(|stages| {
+                stages
+                    .iter()
+                    .rev()
+                    .take_while(|s| s.role != Role::Feedback)
+                    .find(|s| s.role == Role::Reporter && s.status == StageStatus::Done)
+                    .and_then(|s| s.output.as_deref().and_then(suggested_commit))
+            })
+            .unwrap_or_else(|| CI_FIX_MESSAGE.into());
+        match self.deliver(&run.id, Delivery::PullRequest, &message, true) {
+            Ok(updated) => *run = updated,
+            Err(e) => {
+                watch.status = CiStatus::Failed;
+                watch.note = Some(format!("A correção ficou pronta, mas não foi enviada ao pull request: {}. Entregue pela tela.", e.0));
+                let _ = self.save_ci(&run.id, &watch);
+                self.events.notify(&format!("ci:{}", run.id), "CI: correção não enviada", &run.title);
+                self.events.pipeline_changed(run);
+            }
+        }
+    }
+
+    /// Consulta o CI dos pull requests acompanhados que estão na vez. Falhando, reabre a execução com o
+    /// log da falha (até `MAX_CI_FIXES` vezes); devolve as execuções reabertas, para conduzir.
+    pub fn check_ci(&self) -> AppResult<Vec<String>> {
+        let now = self.clock.now();
+        let mut reopened = vec![];
+        for run in self.pipelines.runs()? {
+            // Só depois de entregue: reaberta por você, o pull request ainda não tem o que mudou.
+            if run.status != RunStatus::Done || run.delivered.is_none() {
+                continue;
+            }
+            let Some(mut watch) = self.ci(&run.id).filter(|w| w.due(now)) else { continue };
+            let before = watch.clone();
+            watch.checked_at = now;
+            let waited = now - watch.since;
+            let key = format!("ci:{}", run.id);
+            match self.vcs.pr_checks(&run.workdir, &watch.pr_url).map(|c| verdict(&c)) {
+                Err(e) => watch.note = Some(e.0),
+                Ok(Verdict::NoChecks) if waited >= NO_CHECKS_GRACE_SECONDS => {
+                    watch.status = CiStatus::NoChecks;
+                    watch.note = Some("O repositório não rodou nenhum check neste pull request.".into());
+                }
+                Ok(Verdict::NoChecks | Verdict::Pending) => watch.note = None,
+                Ok(Verdict::Passed) => {
+                    watch.status = CiStatus::Passed;
+                    watch.failed.clear();
+                    watch.note = None;
+                    self.events.notify(&key, "CI passou no pull request", &run.title);
+                }
+                Ok(Verdict::Failed(failed)) => {
+                    watch.failed = failed.iter().map(|c| c.name.clone()).collect();
+                    if watch.fixes >= MAX_CI_FIXES {
+                        watch.status = CiStatus::Failed;
+                        watch.note = Some(format!("A esteira já tentou corrigir {MAX_CI_FIXES} vezes: confira o pull request."));
+                        self.events.notify(&key, "CI falhou de novo no pull request", &run.title);
+                    } else {
+                        let logs: Vec<_> = failed
+                            .into_iter()
+                            .map(|c| {
+                                let log = c.link.as_deref().and_then(job_id).and_then(|id| self.vcs.failed_log(&run.workdir, &id));
+                                (c, log)
+                            })
+                            .collect();
+                        match self.reopen(&run.id, &ci_feedback(&watch.pr_url, &logs), &[]) {
+                            Ok(()) => {
+                                watch.status = CiStatus::Fixing;
+                                watch.fixes += 1;
+                                watch.note = None;
+                                reopened.push(run.id.clone());
+                                self.events.notify(&key, "CI falhou: a esteira está corrigindo", &run.title);
+                            }
+                            Err(e) => {
+                                watch.status = CiStatus::Failed;
+                                watch.note = Some(format!("Não deu para reabrir a execução: {}", e.0));
+                            }
+                        }
+                    }
+                }
+            }
+            if watch.status == CiStatus::Watching && waited >= CI_TIMEOUT_SECONDS {
+                watch.status = CiStatus::Stopped;
+                watch.note = Some("Os checks não terminaram em 6 horas: o app parou de acompanhar.".into());
+            }
+            // Mudou enquanto o gh respondia (ex.: você parou de acompanhar, ou entregou de novo): vale a mudança.
+            if self.ci(&run.id).as_ref() != Some(&before) {
+                continue;
+            }
+            // Um erro aqui (ex.: a execução foi apagada no meio) não deixa as outras sem consulta.
+            if self.save_ci(&run.id, &watch).is_ok()
+                && let Ok(run) = self.get(&run.id)
+            {
+                self.events.pipeline_changed(&run);
+            }
+        }
+        Ok(reopened)
     }
 
     fn touch(&self, run: &mut PipelineRun) -> AppResult<()> {
@@ -1151,12 +1369,14 @@ mod tests {
         spends_on: Option<Arc<crate::infrastructure::sqlite::SqliteStore>>,
         /// Por chamada (com `spends_on`): a etapa rodou sem os conectores da conta.
         connectors_off: Mutex<Vec<bool>>,
+        /// Toda chamada para no limite de todas as contas, como o turno real faria.
+        parks_on: Option<Arc<ParkedTurns>>,
     }
 
     impl Bots {
         fn new(answers: Vec<AppResult<&str>>) -> Bots {
             let answers = answers.into_iter().rev().map(|a| a.map(str::to_owned)).collect();
-            Bots { answers: Mutex::new(answers), prompts: Mutex::default(), images: Mutex::default(), spends_on: None, connectors_off: Mutex::default() }
+            Bots { answers: Mutex::new(answers), prompts: Mutex::default(), images: Mutex::default(), spends_on: None, connectors_off: Mutex::default(), parks_on: None }
         }
 
         fn spending(answers: Vec<AppResult<&str>>, world: &World) -> Bots {
@@ -1168,10 +1388,14 @@ mod tests {
     impl StageRunner for Bots {
         async fn run(&self, conversation_id: &str, prompt: &str, images: Vec<Attachment>) -> AppResult<String> {
             if let Some(store) = &self.spends_on {
-                store.add_usage(conversation_id, &TokenUsage { input: 10, cost_usd: Some(0.1), ..Default::default() }).unwrap();
+                store.add_usage(conversation_id, None, &TokenUsage { input: 10, cost_usd: Some(0.1), ..Default::default() }).unwrap();
                 self.connectors_off.lock().unwrap().push(store.flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{conversation_id}"), false));
                 // Como o turno real, a primeira resposta abre a sessão no provedor, que a próxima etapa do papel continua.
                 store.update(conversation_id, None, Some(&format!("sessao-{conversation_id}")), None).unwrap();
+            }
+            if let Some(parked) = &self.parks_on {
+                parked.park(conversation_id, crate::application::parked::Parked { resets_at: Some(5000), continuing: false, stage: true, message_id: None }).unwrap();
+                return Err(AppError("a etapa terminou sem resposta".into()));
             }
             self.prompts.lock().unwrap().push(prompt.to_owned());
             self.images.lock().unwrap().push(images.len());
@@ -1210,6 +1434,7 @@ mod tests {
             active: Mutex::default(),
             cancelled: Mutex::default(),
             reserving: Mutex::default(),
+            parked: Arc::new(ParkedTurns::new(world.store.clone())),
         };
         (world, uc, vcs)
     }
@@ -1353,7 +1578,7 @@ mod tests {
         assert_eq!(detail.stage_usage[&detail.stages[1].id].input, 10, "cada etapa com o que a conversa dela gastou");
         assert_eq!((detail.usage.input, detail.usage.cost_usd.map(|c| (c * 10.0).round())), (20, Some(2.0)), "e o total da execução");
         // Conversar com o Planejador depois não é gasto da execução.
-        world.store.add_usage(&detail.stages[1].conversation_id, &TokenUsage { input: 500, ..Default::default() }).unwrap();
+        world.store.add_usage(&detail.stages[1].conversation_id, None, &TokenUsage { input: 500, ..Default::default() }).unwrap();
         assert_eq!(uc.detail(&run.id).unwrap().usage.input, 20);
         assert_eq!((triage_conv.cwd.as_str(), triage_conv.model.as_str(), triage_conv.permission_mode.as_str()), ("/dev/loja-esteira-loja-7", "haiku", "manual"));
 
@@ -1500,6 +1725,104 @@ mod tests {
         let log: Vec<String> = vcs.commits.lock().unwrap()[1..].iter().map(|(_, m)| m.clone()).collect();
         let branch = run.branch.as_deref().unwrap();
         assert_eq!(log, ["Exporta CSV".into(), format!("push origin {branch}"), format!("pr main <- {branch}: Exporta CSV"), format!("merge_pr {url}"), "pull origin main".into(), format!("remove {} {branch}", run.workdir)]);
+    }
+
+    /// Faz a próxima consulta ao CI ficar na vez (o relógio dos testes não anda).
+    fn rewind_ci(uc: &ManagePipelines, run_id: &str) {
+        let mut watch = uc.ci(run_id).unwrap();
+        watch.checked_at = 0;
+        uc.save_ci(run_id, &watch).unwrap();
+    }
+
+    fn ci_check(name: &str, bucket: &str) -> crate::domain::ci::Check {
+        crate::domain::ci::Check { name: name.into(), bucket: bucket.into(), link: Some("https://github.com/loja/loja/actions/runs/5/job/77".into()) }
+    }
+
+    #[tokio::test]
+    async fn failing_ci_reopens_the_run_and_the_fix_goes_to_the_same_pull_request() {
+        let (_world, uc, vcs) = setup(true);
+        let run = finished(&uc).await;
+        *vcs.pending.lock().unwrap() = true;
+        uc.deliver(&run.id, Delivery::PullRequest, "Exporta CSV", false).unwrap();
+        assert_eq!(uc.ci(&run.id).unwrap().status, CiStatus::Watching);
+
+        *vcs.checks.lock().unwrap() = vec![ci_check("testes", "pending")];
+        assert!(uc.check_ci().unwrap().is_empty());
+        assert!(uc.check_ci().unwrap().is_empty(), "só consulta de minuto em minuto");
+
+        rewind_ci(&uc, &run.id);
+        *vcs.checks.lock().unwrap() = vec![ci_check("lint", "pass"), ci_check("testes", "fail")];
+        assert_eq!(uc.check_ci().unwrap(), std::slice::from_ref(&run.id));
+        let detail = uc.detail(&run.id).unwrap();
+        let ci = detail.ci.unwrap();
+        assert_eq!((detail.run.status, ci.status, ci.fixes, ci.failed), (RunStatus::Running, CiStatus::Fixing, 1, vec!["testes".to_owned()]));
+        let feedback = detail.stages.iter().find(|s| s.role == Role::Feedback).unwrap().output.clone().unwrap();
+        assert!(feedback.contains("## testes") && feedback.contains("log do job 77"), "{feedback}");
+
+        // A correção termina: o app faz o commit e o push no ramo, sem abrir outro pull request.
+        *vcs.pending.lock().unwrap() = true;
+        uc.advance(&run.id, &Bots::new(vec![Ok("corrigi o teste"), Ok("VEREDITO: APROVADO")])).await.unwrap();
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!(detail.run.delivered.unwrap().pr_url.as_deref(), Some("https://github.com/loja/loja/pull/12"));
+        assert_eq!(detail.ci.as_ref().map(|c| (c.status, c.fixes)), Some((CiStatus::Watching, 1)));
+        let log: Vec<String> = vcs.commits.lock().unwrap().iter().map(|(_, m)| m.clone()).collect();
+        assert_eq!(log.iter().filter(|m| m.starts_with("pr ")).count(), 1, "{log:?}");
+        assert_eq!(log.last().unwrap(), &format!("push origin {}", run.branch.as_deref().unwrap()));
+        assert_eq!(log[log.len() - 2], CI_FIX_MESSAGE);
+
+        rewind_ci(&uc, &run.id);
+        *vcs.checks.lock().unwrap() = vec![ci_check("testes", "pass")];
+        uc.check_ci().unwrap();
+        assert_eq!(uc.ci(&run.id).unwrap().status, CiStatus::Passed);
+    }
+
+    #[tokio::test]
+    async fn ci_fix_that_changes_nothing_is_not_pushed() {
+        let (_world, uc, vcs) = setup(true);
+        let run = finished(&uc).await;
+        *vcs.pending.lock().unwrap() = true;
+        uc.deliver(&run.id, Delivery::PullRequest, "Exporta CSV", false).unwrap();
+        *vcs.checks.lock().unwrap() = vec![ci_check("testes", "fail")];
+        assert_eq!(uc.check_ci().unwrap().len(), 1);
+        // O Implementador não muda nenhum arquivo.
+        uc.advance(&run.id, &Bots::new(vec![Ok("não há o que mudar"), Ok("VEREDITO: APROVADO")])).await.unwrap();
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!((detail.ci.unwrap().status, detail.run.delivered.is_none()), (CiStatus::Failed, true));
+        let pushes = vcs.commits.lock().unwrap().iter().filter(|(_, m)| m.starts_with("push ")).count();
+        assert_eq!(pushes, 1, "só o push da entrega");
+    }
+
+    #[tokio::test]
+    async fn delivering_again_after_the_pull_request_was_merged_opens_a_new_one() {
+        let (_world, uc, vcs) = setup(true);
+        let run = finished(&uc).await;
+        *vcs.pending.lock().unwrap() = true;
+        uc.deliver(&run.id, Delivery::PullRequest, "Exporta CSV", false).unwrap();
+        *vcs.pr_closed.lock().unwrap() = true;
+        uc.reopen(&run.id, "faltou o cabeçalho", &[]).unwrap();
+        uc.advance(&run.id, &Bots::new(vec![Ok("ajustei"), Ok("VEREDITO: APROVADO")])).await.unwrap();
+        *vcs.pending.lock().unwrap() = true;
+        uc.deliver(&run.id, Delivery::PullRequest, "Cabeçalho", false).unwrap();
+        let prs = vcs.commits.lock().unwrap().iter().filter(|(_, m)| m.starts_with("pr ")).count();
+        assert_eq!(prs, 2, "o pull request juntado não recebe o ajuste");
+        assert_eq!(uc.ci(&run.id).unwrap().fixes, 0);
+    }
+
+    #[tokio::test]
+    async fn ci_stops_fixing_after_the_limit_and_can_be_stopped() {
+        let (_world, uc, vcs) = setup(true);
+        let run = finished(&uc).await;
+        *vcs.pending.lock().unwrap() = true;
+        uc.deliver(&run.id, Delivery::PullRequest, "Exporta CSV", false).unwrap();
+        let mut watch = uc.ci(&run.id).unwrap();
+        watch.fixes = MAX_CI_FIXES;
+        uc.save_ci(&run.id, &watch).unwrap();
+        *vcs.checks.lock().unwrap() = vec![ci_check("testes", "fail")];
+        assert!(uc.check_ci().unwrap().is_empty());
+        assert_eq!((uc.ci(&run.id).unwrap().status, uc.get(&run.id).unwrap().status), (CiStatus::Failed, RunStatus::Done));
+
+        uc.stop_ci(&run.id).unwrap();
+        assert_eq!(uc.ci(&run.id).unwrap().status, CiStatus::Stopped);
     }
 
     #[tokio::test]
@@ -1728,6 +2051,28 @@ mod tests {
 
         let only_request = uc.start(StartInput { request: "Corrigir o frete\ncom CEP vazio".into(), ..input(None) }).unwrap();
         assert_eq!(only_request.title, "Corrigir o frete", "sem título, vale a primeira linha do pedido");
+    }
+
+    #[tokio::test]
+    async fn run_stopped_with_every_account_limited_waits_and_resumes() {
+        let (_world, uc, _vcs) = setup(false);
+        let run = uc.start(StartInput { request: "Trocar a cor do botão".into(), title: "Cor".into(), ..input(None) }).unwrap();
+        let bots = Bots { parks_on: Some(uc.parked.clone()), ..Bots::new(vec![]) };
+        uc.advance(&run.id, &bots).await.unwrap();
+        let detail = uc.detail(&run.id).unwrap();
+        assert_eq!((detail.run.status, detail.waiting_account, detail.resume_at), (RunStatus::Failed, true, Some(5000)));
+        assert!(detail.run.note.unwrap().contains("continua sozinha"));
+        assert!(uc.parked.all().is_empty(), "a espera passa da conversa da etapa para a execução");
+        assert_eq!(uc.waiting_for_account().unwrap(), std::slice::from_ref(&run.id));
+
+        uc.stop_waiting(&run.id).unwrap();
+        assert!(uc.waiting_for_account().unwrap().is_empty() && !uc.detail(&run.id).unwrap().waiting_account);
+
+        uc.retry(&run.id).unwrap();
+        uc.advance(&run.id, &bots).await.unwrap();
+        assert_eq!(uc.waiting_for_account().unwrap(), std::slice::from_ref(&run.id));
+        uc.retry(&run.id).unwrap();
+        assert!(uc.waiting_for_account().unwrap().is_empty(), "retomar tira da espera");
     }
 
     #[tokio::test]

@@ -275,6 +275,29 @@ impl ManageProjects {
         Ok(())
     }
 
+    /// Grava um arquivo de conhecimento escrito no app (ex.: as lições da esteira), no lugar do
+    /// que tiver o mesmo nome. Conteúdo vazio só apaga.
+    pub fn put_file(&self, project_id: &str, name: &str, content: &str) -> AppResult<()> {
+        let files = self.projects.files(project_id)?;
+        let others: usize = files.iter().filter(|f| f.name != name).map(|f| f.size).sum();
+        if others + content.chars().count() > MAX_KNOWLEDGE_CHARS {
+            return Err(AppError(format!("{name}: o projeto passaria do limite de conhecimento.")));
+        }
+        for file in files.iter().filter(|f| f.name == name) {
+            self.projects.remove_file(&file.id)?;
+        }
+        if !content.trim().is_empty() {
+            self.projects.add_file(&self.ids.new_id(), project_id, name, content.trim())?;
+        }
+        self.refresh_knowledge(project_id);
+        Ok(())
+    }
+
+    /// Conteúdo de um arquivo de conhecimento do projeto, pelo nome.
+    pub fn file_content(&self, project_id: &str, name: &str) -> AppResult<Option<String>> {
+        Ok(self.projects.knowledge(project_id)?.into_iter().find(|(n, _)| n == name).map(|(_, c)| c))
+    }
+
     pub fn remove_file(&self, project_id: &str, file_id: &str) -> AppResult<()> {
         self.projects.remove_file(file_id)?;
         // O arquivo removido sai do disco já, sem esperar a próxima mensagem do projeto.
@@ -298,6 +321,20 @@ mod tests {
     use crate::application::fakes::*;
     use crate::application::ports::ConversationRepository;
     use crate::domain::chat::Attachment;
+
+    #[test]
+    fn put_file_replaces_the_one_with_the_same_name() {
+        let world = World::with_accounts(vec![]);
+        let uc = use_case(&world, FakeFiles(vec![]));
+        let project = uc.save(None, "Loja", "").unwrap();
+        uc.put_file(&project.id, "licoes.md", "- um").unwrap();
+        uc.put_file(&project.id, "licoes.md", "- dois\n").unwrap();
+        assert_eq!(uc.file_content(&project.id, "licoes.md").unwrap().as_deref(), Some("- dois"));
+        assert_eq!(world.store.files(&project.id).unwrap().len(), 1);
+        assert!(uc.put_file(&project.id, "grande.md", &"x".repeat(MAX_KNOWLEDGE_CHARS)).is_err());
+        uc.put_file(&project.id, "licoes.md", " ").unwrap();
+        assert!(world.store.files(&project.id).unwrap().is_empty());
+    }
 
     fn use_case(world: &World, files: FakeFiles) -> ManageProjects {
         ManageProjects {

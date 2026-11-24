@@ -302,6 +302,34 @@ impl VersionControl for GitCli {
         hide_console(with_shell_path(&mut cmd)).output().is_ok_and(|o| o.status.success())
     }
 
+    fn pr_checks(&self, root: &str, url: &str) -> AppResult<Vec<crate::domain::ci::Check>> {
+        let mut cmd = Command::new("gh");
+        cmd.current_dir(root).args(["pr", "checks", url, "--json", "name,bucket,link"]);
+        let output = hide_console(with_shell_path(&mut cmd)).output().map_err(|e| AppError(format!("Não foi possível executar o gh: {e}")))?;
+        // Com checks rodando ou falhando, o gh sai com erro mas escreve a lista: vale a lista.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(checks) = serde_json::from_str(stdout.trim()) {
+            return Ok(checks);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no checks reported") {
+            return Ok(vec![]);
+        }
+        Err(AppError(format!("O gh não informou os checks: {}", stderr.trim())))
+    }
+
+    fn pr_open(&self, root: &str, url: &str) -> bool {
+        let mut cmd = Command::new("gh");
+        cmd.current_dir(root).args(["pr", "view", url, "--json", "state", "-q", ".state"]);
+        run_or_error(with_shell_path(&mut cmd), "gh").is_ok_and(|s| s.trim() == "OPEN")
+    }
+
+    fn failed_log(&self, root: &str, job_id: &str) -> Option<String> {
+        let mut cmd = Command::new("gh");
+        cmd.current_dir(root).args(["run", "view", "--job", job_id, "--log-failed"]);
+        run_or_error(with_shell_path(&mut cmd), "gh").ok().filter(|l| !l.trim().is_empty())
+    }
+
     fn open_pr(&self, root: &str, base: &str, head: &str, title: &str, body: &str) -> AppResult<String> {
         let mut cmd = Command::new("gh");
         cmd.current_dir(root).args(["pr", "create", "--base", base, "--head", head, "--title", title, "--body", body]);

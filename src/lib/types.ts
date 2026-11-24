@@ -102,7 +102,7 @@ export interface HistoryStatus {
   desktop_sessions: number;
 }
 
-export type FlagKey = "auto_switch" | "notify_switch" | "use_history" | "switch_early" | "notify_desktop";
+export type FlagKey = "auto_switch" | "notify_switch" | "use_history" | "switch_early" | "notify_desktop" | "resume_on_reset";
 export type Flags = Record<FlagKey, boolean>;
 
 /** Passo de um subagente, como o núcleo envia e grava. */
@@ -129,11 +129,13 @@ export type ChatEvent = { conversation_id: string } & (
   | { kind: "step" }
   | { kind: "injected"; id: string }
   | { kind: "permission"; request_id: string; tool: string; input: string; description: string }
+  | { kind: "permission_cancelled"; request_id: string }
   | { kind: "reset" }
   | { kind: "notice"; text: string }
   | { kind: "done"; text: string }
   | { kind: "cancelled" }
-  | { kind: "exhausted"; resets_at: number | null }
+  | { kind: "exhausted"; resets_at: number | null; resumes: boolean }
+  | { kind: "resumed" }
   | { kind: "error"; message: string }
 );
 
@@ -184,7 +186,69 @@ export const MODES: { id: string; label: string; description: string; isDefault?
 ];
 
 /** Telas principais do aplicativo. */
-export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts" | "tasks" | "pipelines" | "settings";
+export type View = "chat" | "project" | "skills" | "connectors" | "history" | "accounts" | "tasks" | "pipelines" | "settings" | "usage";
+
+/** CI do pull request da execução: esperando, passou, corrigindo, falhou, sem checks ou parado. */
+export interface CiWatch {
+  pr_url: string;
+  status: "watching" | "passed" | "fixing" | "failed" | "no_checks" | "stopped";
+  since: number;
+  checked_at: number;
+  /** Correções automáticas já feitas. */
+  fixes: number;
+  /** Checks que falharam na última consulta. */
+  failed: string[];
+  note: string | null;
+  branch: string;
+}
+
+/** Conversa encontrada pela busca nas mensagens, com o trecho em volta do termo. */
+export interface MessageHit {
+  conversation_id: string;
+  title: string;
+  snippet: string;
+  created_at: number;
+}
+
+/** Métricas das execuções da esteira de um projeto. */
+export interface PipelineMetrics {
+  runs: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+  needs_info: number;
+  /** Concluídas sem nenhuma devolução do Revisor nem do Testador. */
+  first_pass: number;
+  reviewer_returns: number;
+  tester_returns: number;
+  /** Reabertas por você com um ajuste depois de concluídas. */
+  reopened: number;
+  /** Correções automáticas do CI do pull request. */
+  ci_fixes: number;
+  roles: { role: PipelineRole; passes: number; avg_seconds: number }[];
+  /** Achados do code review por gravidade ("" sem gravidade). */
+  findings: Record<string, number>;
+  usage: TokenUsage;
+}
+
+/** Gasto de um grupo do painel de uso: id do projeto ou da conta, ou a origem; vazio = sem projeto / conta desconhecida. */
+export interface UsageGroup {
+  key: string;
+  usage: TokenUsage;
+}
+
+/** Painel de uso: gasto do período e quando cada conta esgota no ritmo atual. */
+export interface UsageReport {
+  since: number;
+  total: TokenUsage;
+  /** Todos os dias do período (início do dia local, em segundos), do mais antigo ao mais novo. */
+  days: { start: number; usage: TokenUsage }[];
+  by_source: UsageGroup[];
+  by_project: UsageGroup[];
+  by_account: UsageGroup[];
+  switches: number;
+  paces: { id: string; session_out_at: number | null; week_out_at: number | null }[];
+}
 
 export type Repeat =
   | { kind: "every_minutes"; minutes: number }
@@ -587,6 +651,12 @@ export interface PipelineDetail extends PipelineRun {
   stage_usage: Record<string, TokenUsage>;
   /** Tokens de todas as etapas somados. */
   usage: TokenUsage;
+  /** Acompanhamento do CI do pull request, se a entrega abriu um. */
+  ci: CiWatch | null;
+  /** Parada no limite de todas as contas, esperando uma voltar para retomar sozinha. */
+  waiting_account: boolean;
+  /** Quando a primeira conta deve voltar (segundos), se o provedor informou. */
+  resume_at: number | null;
 }
 
 /** Nível de modelo de um papel da esteira. */

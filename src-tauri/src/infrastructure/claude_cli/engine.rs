@@ -278,6 +278,9 @@ impl ChatEngine for ClaudeCliEngine {
                             TurnEvent::Permission { request_id, input, .. } => {
                                 pending.insert(request_id.clone(), input.clone());
                             }
+                            TurnEvent::PermissionCancelled(request_id) => {
+                                pending.remove(request_id);
+                            }
                             // Só interessa o eco das mensagens mandadas no meio do turno.
                             TurnEvent::UserRead(id) if !unread.remove(id) => continue,
                             TurnEvent::Subagent { parent, step: SubagentStep::Started { background: true, .. } } => {

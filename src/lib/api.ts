@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CodeScope } from "./state/logins.svelte";
 import type {
   Account, AccountConnector, Agent, ConnectorsElsewhere, JiraBoards, JiraIssueList, JiraTaskBrief, SubagentStep, AgentDraft, ChatEvent, Connector, Conversation, FileEntry, FileView, FlagKey, Flags, HistSession, HistoryStatus,
-  Delivery, GitInfo, MemoryFile, Message, PipelineConfig, PipelineDetail, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, BotLook, OfficeLooks, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, WorkspaceStatus,
+  Delivery, GitInfo, MemoryFile, Message, MessageHit, PipelineConfig, PipelineDetail, PipelineMetrics, PipelineRun, PipelineStatus, ReviewPick, TierModels, PastedImage, BotLook, OfficeLooks, PluginListing, Project, ProjectFile, Provider, ProviderInfo, Task, TaskForm, ServerListing, ServerPage, Skill, Switch, UsageLimit, UsageReport, WorkspaceStatus,
 } from "./types";
 
 /** Os comandos devolvem o erro como texto pronto para exibir. */
@@ -28,6 +28,7 @@ export const api = {
   /** Entrega ao login em andamento o código de autenticação mostrado no navegador. */
   submitLoginCode: (scope: CodeScope, code: string) => invoke<void>("submit_login_code", { scope, code }),
   listSwitches: () => invoke<Switch[]>("list_switches"),
+  usageReport: (days: number) => invoke<UsageReport>("usage_report", { days, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
   refreshUsage: () => invoke<number>("refresh_usage"),
   accountLimits: (id: string) => invoke<UsageLimit[]>("account_limits", { id }),
 
@@ -37,6 +38,7 @@ export const api = {
   branchConversation: (id: string, beforeMessage: number) =>
     invoke<Conversation>("branch_conversation", { id, beforeMessage }),
   listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
+  searchMessages: (query: string) => invoke<MessageHit[]>("search_messages", { query }),
   listSubagentSteps: (conversationId: string) =>
     invoke<{ parent: string; step: SubagentStep }[]>("list_subagent_steps", { conversationId }),
   setConversationModel: (id: string, model: string) => invoke<void>("set_conversation_model", { id, model }),
@@ -50,6 +52,9 @@ export const api = {
   injectMessage: (conversationId: string, id: string, text: string, attachments: string[], images: PastedImage[]) =>
     invoke<boolean>("inject_message", { conversationId, id, text, attachments, images }),
   cancelMessage: (conversationId: string) => invoke<void>("cancel_message", { conversationId }),
+  /** Conversas paradas no limite de todas as contas, esperando uma voltar: id → quando a primeira volta. */
+  listParked: () => invoke<Record<string, number | null>>("list_parked"),
+  forgetParked: (conversationId: string) => invoke<void>("forget_parked", { conversationId }),
   backgroundTool: (conversationId: string, toolId: string) => invoke<boolean>("background_tool", { conversationId, toolId }),
   startFolderSession: (folder: string, model: string) => invoke<Conversation>("start_folder_session", { folder, model }),
   startIsolatedSession: (projectId: string, model: string) =>
@@ -122,6 +127,12 @@ export const api = {
   reopenPipeline: (id: string, feedback: string, images: PastedImage[] = []) => invoke<void>("reopen_pipeline", { id, feedback, images }),
   cancelPipeline: (id: string) => invoke<void>("cancel_pipeline", { id }),
   retryPipeline: (id: string) => invoke<void>("retry_pipeline", { id }),
+  stopPipelineWaiting: (id: string) => invoke<void>("stop_pipeline_waiting", { id }),
+  stopPipelineCi: (id: string) => invoke<void>("stop_pipeline_ci", { id }),
+  pipelineMetrics: (projectId: string) => invoke<PipelineMetrics>("pipeline_metrics", { projectId }),
+  pipelineLessons: (projectId: string) => invoke<string | null>("pipeline_lessons", { projectId }),
+  draftPipelineLessons: (projectId: string) => invoke<string>("draft_pipeline_lessons", { projectId }),
+  savePipelineLessons: (projectId: string, text: string) => invoke<void>("save_pipeline_lessons", { projectId, text }),
   deliverPipeline: (id: string, kind: Delivery, message: string, push: boolean) =>
     invoke<PipelineRun>("deliver_pipeline", { id, kind, message, push }),
   deletePipeline: (id: string) => invoke<void>("delete_pipeline", { id }),

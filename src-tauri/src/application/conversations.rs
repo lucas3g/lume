@@ -22,6 +22,25 @@ impl ManageConversations {
         self.conversations.list()
     }
 
+    /// Conversas cujas mensagens têm o termo: a mais recente de cada uma, com o trecho em volta.
+    pub fn search(&self, query: &str) -> AppResult<Vec<crate::domain::search::MessageHit>> {
+        use crate::domain::search::{snippet, MessageHit};
+        let query = query.trim();
+        if query.chars().count() < 2 {
+            return Ok(vec![]);
+        }
+        let mut hits: Vec<MessageHit> = vec![];
+        for (conversation_id, title, content, created_at) in self.conversations.search_messages(query, 200)? {
+            if hits.len() >= 12 {
+                break;
+            }
+            if !hits.iter().any(|h| h.conversation_id == conversation_id) {
+                hits.push(MessageHit { snippet: snippet(&content, query), conversation_id, title, created_at });
+            }
+        }
+        Ok(hits)
+    }
+
     pub fn create(&self, model: &str) -> AppResult<Conversation> {
         let id = self.ids.new_id();
         self.conversations.insert(&id, NEW_CONVERSATION_TITLE, model, &self.chat_dir, KIND_CHAT, None)?;
@@ -110,6 +129,22 @@ mod tests {
         assert!(uc.set_permission_mode(&session.id, "qualquer").is_err());
         let saved = world.conversation(&session.id);
         assert_eq!((saved.effort.as_str(), saved.permission_mode.as_str()), ("max", "plan"));
+    }
+
+    #[test]
+    fn search_finds_one_hit_per_conversation_and_treats_wildcards_as_text() {
+        let world = World::with_accounts(vec![]);
+        let uc = ManageConversations { conversations: world.store.clone(), ids: Arc::new(SequentialIds::default()), chat_dir: "/tmp".into() };
+        world.store.add_message("c1", "user", "como exportar em CSV?", None, None).unwrap();
+        world.store.add_message("c1", "assistant", "Para exportar, use o botão.", None, None).unwrap();
+        world.store.add_message("c1", "tool", "exportar (ferramenta)", None, None).unwrap();
+        world.store.add_message("c1", "user", "100% pronto", None, None).unwrap();
+        let hits = uc.search("EXPORTAR").unwrap();
+        assert_eq!(hits.len(), 1, "uma por conversa");
+        assert_eq!((hits[0].title.as_str(), hits[0].snippet.as_str()), ("Nova conversa", "Para exportar, use o botão."));
+        assert_eq!(uc.search("0%").unwrap().len(), 1);
+        assert!(uc.search("x%y").unwrap().is_empty(), "o % é texto, não curinga");
+        assert!(uc.search("e").unwrap().is_empty(), "termo curto demais");
     }
 
     #[test]

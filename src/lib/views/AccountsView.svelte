@@ -430,6 +430,7 @@
         <h2 class="section-title">Troca automática</h2>
         <SettingRow flag="auto_switch" title="Trocar de conta ao atingir o limite" description="Passa para a próxima conta disponível e reenvia a última mensagem." />
         <SettingRow flag="switch_early" title="Poupar a conta quase no limite" description="Acima de 95% da janela de 5 h, usa outra conta livre antes de o limite estourar." />
+        <SettingRow flag="resume_on_reset" title="Continuar quando uma conta voltar" description="Com todas as contas no limite, a conversa e a esteira esperam e continuam sozinhas assim que o limite de uma renovar." />
         <SettingRow flag="notify_switch" title="Avisar na conversa" description="Mostra uma linha discreta indicando a conta que assumiu." />
       </section>
 

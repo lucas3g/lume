@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS tasks(
 CREATE TABLE IF NOT EXISTS hist_sessions(
   id TEXT PRIMARY KEY, source TEXT NOT NULL, cwd TEXT, title TEXT, path TEXT NOT NULL,
   mtime INTEGER NOT NULL, msg_count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS usage_log(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, conversation_id TEXT NOT NULL, account_id TEXT,
+  project_id TEXT, source TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL,
+  cache_write INTEGER NOT NULL, cost_usd REAL, unpriced INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_usage_log_at ON usage_log(at);
 CREATE VIRTUAL TABLE IF NOT EXISTS hist_fts USING fts5(
   session_id UNINDEXED, role UNINDEXED, body, tokenize='unicode61 remove_diacritics 2');
 ";
@@ -143,6 +148,7 @@ impl SqliteStore {
         for migration in MIGRATIONS {
             let _ = conn.execute(migration, []);
         }
+        backfill_usage_log(&conn)?;
         Ok(SqliteStore { conn: Mutex::new(conn), clock })
     }
 
@@ -372,12 +378,21 @@ impl ConversationRepository for SqliteStore {
         Ok(())
     }
 
-    fn add_usage(&self, id: &str, usage: &TokenUsage) -> AppResult<()> {
+    fn add_usage(&self, id: &str, account_id: Option<&str>, usage: &TokenUsage) -> AppResult<()> {
         // A conexão fica presa até o fim: ler e gravar não se misturam com outra soma.
         let conn = self.conn();
         let mut total = conversation_usage(&conn, id)?;
         total.add(usage);
         conn.execute("UPDATE conversations SET usage=? WHERE id=?", params![usage_json(&total)?, id])?;
+        // Projeto e origem ficam no registro: apagar a conversa depois não tira o gasto do painel.
+        conn.execute(
+            &format!("INSERT INTO usage_log(at,conversation_id,account_id,project_id,source,input,output,cache_read,cache_write,cost_usd,unpriced)
+             SELECT ?2,?1,?3,(SELECT project_id FROM conversations WHERE id=?1),{SOURCE_SQL},?4,?5,?6,?7,?8,?9"),
+            params![
+                id, self.clock.now(), account_id, usage.input as i64, usage.output as i64, usage.cache_read as i64,
+                usage.cache_write as i64, usage.cost_usd, usage.unpriced as i64
+            ],
+        )?;
         Ok(())
     }
 
@@ -447,6 +462,18 @@ impl ConversationRepository for SqliteStore {
             params![conversation_id, role, content, account_id, meta, self.clock.now()],
         )?;
         Ok(())
+    }
+
+    fn search_messages(&self, query: &str, limit: usize) -> AppResult<Vec<(String, String, String, i64)>> {
+        let pattern = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let c = self.conn();
+        let mut st = c.prepare(
+            "SELECT m.conversation_id, c.title, m.content, m.created_at FROM messages m JOIN conversations c ON c.id=m.conversation_id
+             WHERE m.id IN (SELECT MAX(id) FROM messages WHERE role IN ('user','assistant') AND content LIKE ? ESCAPE '\\' GROUP BY conversation_id)
+             ORDER BY m.id DESC LIMIT ?",
+        )?;
+        let rows = st.query_map(params![pattern, limit as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     fn message_count(&self, conversation_id: &str) -> AppResult<i64> {
@@ -725,6 +752,33 @@ fn run_row(r: &Row<'_>) -> rusqlite::Result<PipelineRun> {
     })
 }
 
+/// Origem do gasto de uma conversa (`?1` é o id dela): etapa da esteira, rodada de tarefa agendada ou chat.
+const SOURCE_SQL: &str = "CASE WHEN EXISTS(SELECT 1 FROM pipeline_stages WHERE conversation_id=?1) THEN 'pipeline' \
+    WHEN (SELECT title FROM conversations WHERE id=?1) LIKE '⏱%' THEN 'task' ELSE 'chat' END";
+
+/// Na primeira abertura com o registro por turno: o gasto que já existia (só o total de cada conversa)
+/// entra como um registro só, na última atividade da conversa e sem conta.
+fn backfill_usage_log(conn: &Connection) -> AppResult<()> {
+    let empty: bool = conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM usage_log)", [], |r| r.get(0))?;
+    if !empty {
+        return Ok(());
+    }
+    let mut st = conn.prepare("SELECT id,updated_at,usage FROM conversations WHERE usage IS NOT NULL")?;
+    let rows: Vec<(String, i64, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+    for (id, at, text) in rows {
+        let Ok(u) = parse_usage(&text) else { continue };
+        if u.total() == 0 {
+            continue;
+        }
+        conn.execute(
+            &format!("INSERT INTO usage_log(at,conversation_id,account_id,project_id,source,input,output,cache_read,cache_write,cost_usd,unpriced)
+             SELECT ?2,?1,NULL,(SELECT project_id FROM conversations WHERE id=?1),{SOURCE_SQL},?3,?4,?5,?6,?7,?8"),
+            params![id, at, u.input as i64, u.output as i64, u.cache_read as i64, u.cache_write as i64, u.cost_usd, u.unpriced as i64],
+        )?;
+    }
+    Ok(())
+}
+
 /// Gasto gravado em JSON. Um registro ilegível é erro: somar por cima dele apagaria o acumulado.
 fn parse_usage(text: &str) -> AppResult<TokenUsage> {
     serde_json::from_str(text).map_err(|e| AppError(format!("Uso de tokens gravado ilegível: {e}")))
@@ -850,6 +904,37 @@ impl PipelineRepository for SqliteStore {
     }
 }
 
+impl crate::application::ports::UsageLog for SqliteStore {
+    fn usage_since(&self, since: i64) -> AppResult<Vec<crate::domain::usage::UsageEntry>> {
+        use crate::domain::usage::{Source, UsageEntry};
+        let c = self.conn();
+        let mut st = c.prepare(
+            "SELECT at,account_id,project_id,source,input,output,cache_read,cache_write,cost_usd,unpriced FROM usage_log WHERE at>=? ORDER BY at",
+        )?;
+        let rows = st.query_map([since], |r| {
+            Ok(UsageEntry {
+                at: r.get(0)?,
+                account_id: r.get(1)?,
+                project_id: r.get(2)?,
+                source: Source::parse(&r.get::<_, String>(3)?),
+                usage: TokenUsage {
+                    input: r.get::<_, i64>(4)? as u64,
+                    output: r.get::<_, i64>(5)? as u64,
+                    cache_read: r.get::<_, i64>(6)? as u64,
+                    cache_write: r.get::<_, i64>(7)? as u64,
+                    cost_usd: r.get(8)?,
+                    unpriced: r.get::<_, i64>(9)? != 0,
+                },
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn switches_since(&self, since: i64) -> AppResult<i64> {
+        Ok(self.conn().query_row("SELECT COUNT(*) FROM switches WHERE at>=?", [since], |r| r.get(0))?)
+    }
+}
+
 impl SwitchLog for SqliteStore {
     fn record(&self, from_name: &str, to_name: &str, conversation_title: &str) -> AppResult<()> {
         self.conn().execute(
@@ -917,6 +1002,44 @@ impl Settings for SqliteStore {
 mod tests {
     use super::*;
     use crate::domain::chat::{tool_message, KIND_CHAT};
+
+    #[test]
+    fn usage_is_logged_with_account_project_and_source() {
+        use crate::application::ports::UsageLog;
+        use crate::domain::usage::Source;
+        let store = SqliteStore::memory();
+        ConversationRepository::insert(&store, "c1", "Conversa", "opus", "/tmp", KIND_CHAT, None).unwrap();
+        ConversationRepository::insert(&store, "t1", "⏱ Resumo diário", "opus", "/tmp", KIND_CHAT, None).unwrap();
+        store.set_project("c1", Some("p1")).unwrap();
+        let u = TokenUsage { input: 7, cost_usd: Some(0.5), ..Default::default() };
+        store.add_usage("c1", Some("a1"), &u).unwrap();
+        store.add_usage("t1", None, &u).unwrap();
+        let log = store.usage_since(0).unwrap();
+        assert_eq!(log.len(), 2);
+        assert_eq!((log[0].at, log[0].account_id.as_deref(), log[0].project_id.as_deref(), log[0].source), (1000, Some("a1"), Some("p1"), Source::Chat));
+        assert_eq!((log[0].usage.input, log[0].usage.cost_usd), (7, Some(0.5)));
+        assert_eq!(log[1].source, Source::Task);
+        assert_eq!(ConversationRepository::usage(&store, "c1").unwrap().input, 7, "o total da conversa continua");
+        assert!(store.usage_since(1001).unwrap().is_empty());
+    }
+
+    #[test]
+    fn existing_totals_are_backfilled_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        for migration in MIGRATIONS {
+            let _ = conn.execute(migration, []);
+        }
+        conn.execute(
+            "INSERT INTO conversations(id,title,model,cwd,created_at,updated_at,usage) VALUES('c1','x','opus','/tmp',1,500,?)",
+            [r#"{"input":3,"output":4,"cache_read":0,"cache_write":0,"cost_usd":0.2}"#],
+        )
+        .unwrap();
+        backfill_usage_log(&conn).unwrap();
+        backfill_usage_log(&conn).unwrap();
+        let rows: Vec<(i64, i64)> = conn.prepare("SELECT at,input+output FROM usage_log").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [(500, 7)]);
+    }
 
     #[test]
     fn branch_keeps_only_subagents_of_copied_calls() {

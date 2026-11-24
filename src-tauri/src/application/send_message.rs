@@ -4,6 +4,7 @@
 use super::{
     conversations::NEW_CONVERSATION_TITLE,
     flags,
+    parked::{Parked, ParkedTurns},
     projects::NEW_SESSION_TITLE,
     ports::{
         AccountRepository, ChatEngine, Clock, ConnectorRepository, ConversationRepository, EventSink, FileLoader,
@@ -46,7 +47,12 @@ pub struct SendMessage {
     pub files: Arc<dyn FileLoader>,
     pub events: Arc<dyn EventSink>,
     pub clock: Arc<dyn Clock>,
+    /// Turnos parados no limite de todas as contas, para continuar quando uma voltar.
+    pub parked: Arc<ParkedTurns>,
 }
+
+/// Aviso gravado na conversa quando o app retoma sozinho um turno que parou no limite.
+const RESUMED_NOTICE: &str = "Uma conta voltou: o Lume continuou o pedido que tinha parado no limite.";
 
 /// O que o turno produziu e ainda não foi gravado na conversa.
 #[derive(Default)]
@@ -111,15 +117,47 @@ impl SendMessage {
         pasted: Vec<Attachment>,
         control: TurnControl,
     ) -> AppResult<()> {
-        self.execute_turn(conversation_id, text, attachment_paths, pasted, control, true).await
+        // Escrever de novo é assumir a conversa: o turno parado no limite não volta sozinho depois.
+        self.parked.take(conversation_id)?;
+        self.execute_turn(conversation_id, text, attachment_paths, pasted, control, true, None).await
+    }
+
+    /// Continua o turno que parou com todas as contas no limite, sem gravar a pergunta de novo.
+    /// Sem turno parado na conversa, não faz nada.
+    pub async fn resume(&self, conversation_id: &str, control: TurnControl) -> AppResult<()> {
+        let Some(parked) = self.parked.take(conversation_id)? else { return Ok(()) };
+        let messages = self.conversations.messages(conversation_id)?;
+        // A pergunta que começou o turno; as mandadas no meio dele (também do usuário) vêm depois.
+        let asked = match parked.message_id {
+            Some(id) => messages.iter().find(|m| m.id == id),
+            None => messages.iter().rev().find(|m| m.role == ROLE_USER),
+        };
+        let Some(asked) = asked else { return Ok(()) };
+        // Os anexos guardados com a pergunta; um arquivo que sumiu desde então fica de fora.
+        let mut attachments = vec![];
+        if let Some(meta) = asked.meta.as_deref().and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok()) {
+            for path in meta["paths"].as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
+                attachments.extend(self.files.load(path).ok());
+            }
+            for image in meta["images"].as_array().into_iter().flatten() {
+                let field = |k: &str| image[k].as_str().unwrap_or_default().to_owned();
+                attachments.push(Attachment { name: field("name"), kind: crate::domain::chat::AttachmentKind::Image, media_type: field("media_type"), data: field("data") });
+            }
+        }
+        self.emit(conversation_id, ChatEvent::Resumed);
+        self.conversations.add_message(conversation_id, ROLE_NOTICE, RESUMED_NOTICE, None, None)?;
+        self.emit(conversation_id, ChatEvent::Notice { text: RESUMED_NOTICE.into() });
+        let text = asked.content.clone();
+        self.execute_turn(conversation_id, &text, &[], attachments, control, true, Some((parked.continuing, Some(asked.id)))).await
     }
 
     /// Turno de uma etapa da esteira: as imagens do pedido já ficam guardadas com a execução,
     /// então a mensagem registra só os nomes delas, sem copiar o conteúdo a cada etapa.
     pub async fn execute_stage(&self, conversation_id: &str, text: &str, images: Vec<Attachment>, control: TurnControl) -> AppResult<()> {
-        self.execute_turn(conversation_id, text, &[], images, control, false).await
+        self.execute_turn(conversation_id, text, &[], images, control, false, None).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_turn(
         &self,
         conversation_id: &str,
@@ -128,6 +166,9 @@ impl SendMessage {
         pasted: Vec<Attachment>,
         mut control: TurnControl,
         keep_image_data: bool,
+        // Retomada de um turno parado no limite (a pergunta já está gravada): se uma conta já tinha
+        // trabalhado nele e qual mensagem o começou.
+        resuming: Option<(bool, Option<i64>)>,
     ) -> AppResult<()> {
         let conversation = self
             .conversations
@@ -136,18 +177,21 @@ impl SendMessage {
         let mut attachments = attachment_paths.iter().map(|p| self.files.load(p)).collect::<AppResult<Vec<_>>>()?;
         let meta = user_meta(&attachments, attachment_paths, &pasted, keep_image_data);
         attachments.extend(pasted);
-        let title = self.store_user_message(&conversation, text, meta.as_deref())?;
+        let title = match resuming {
+            Some(_) => conversation.title.clone(),
+            None => self.store_user_message(&conversation, text, meta.as_deref())?,
+        };
         let setup = self.prepare.prepare(&conversation, text)?;
         let provider_models = conversation.provider_models.clone();
         let context_meta = self.announce_context(conversation_id, &setup.context_titles);
+        let messages = self.conversations.messages(conversation_id)?;
         // Quem respondeu por último nesta conversa: poupar uma conta só é novidade se a conta mudou.
-        let last_account = self
-            .conversations
-            .messages(conversation_id)?
-            .iter()
-            .rev()
-            .find(|m| m.role == ROLE_ASSISTANT)
-            .and_then(|m| m.account_id.clone());
+        let last_account = messages.iter().rev().find(|m| m.role == ROLE_ASSISTANT).and_then(|m| m.account_id.clone());
+        // A pergunta deste turno (na retomada, a que ficou guardada; senão, a que acabou de ser gravada).
+        let asked_id = match resuming {
+            Some((_, id)) => id,
+            None => messages.iter().rev().find(|m| m.role == ROLE_USER).map(|m| m.id),
+        };
 
         let mut tried: Vec<String> = vec![];
         let mut previous: Option<(Account, Handoff)> = None;
@@ -155,7 +199,7 @@ impl SendMessage {
         // serviço) continua a sessão dela em vez de refazer o pedido: as transcrições são compartilhadas.
         let mut session = conversation.cli_session_id.clone();
         let mut session_provider = conversation.session_provider;
-        let mut continuing = false;
+        let mut continuing = resuming.is_some_and(|(c, _)| c);
         // O vigia interrompeu a última tentativa: o que travou, para avisar o agente ao continuar.
         let mut stall_note: Option<String> = None;
         let mut stalls = 0usize;
@@ -185,7 +229,18 @@ impl SendMessage {
                     let all = self.accounts.all()?;
                     let spare = self.settings.flag(flags::SWITCH_EARLY, true);
                     let Some(account) = pick_next(&all, now, &tried, spare).cloned() else {
-                        self.emit(conversation_id, ChatEvent::Exhausted { resets_at: earliest_reset(&all, now) });
+                        let resets_at = earliest_reset(&all, now);
+                        let resumes = self.settings.flag(flags::RESUME_ON_RESET, true);
+                        if resumes {
+                            // O trabalho já feito fica na sessão da conversa: a retomada continua dela.
+                            if continuing && let Some(id) = &session {
+                                self.conversations.update(conversation_id, None, Some(id), None)?;
+                                self.conversations.set_session_provider(conversation_id, session_provider)?;
+                            }
+                            // Só o turno de uma etapa da esteira não guarda o conteúdo das imagens.
+                            self.parked.park(conversation_id, Parked { resets_at, continuing, stage: !keep_image_data, message_id: asked_id })?;
+                        }
+                        self.emit(conversation_id, ChatEvent::Exhausted { resets_at, resumes });
                         return Ok(());
                     };
                     if let Some((from, reason)) = previous.take() {
@@ -304,7 +359,7 @@ impl SendMessage {
             control.decisions = yours;
             // O processo acabou sem informar o gasto das últimas chamadas: grava o que elas somaram, sem preço.
             if journal.uncounted.total() > 0 {
-                let _ = self.conversations.add_usage(conversation_id, &journal.uncounted);
+                let _ = self.conversations.add_usage(conversation_id, Some(&account.id), &journal.uncounted);
             }
 
             // Interrompido pelo vigia: grava o que veio, avisa e continua a mesma sessão na mesma conta.
@@ -533,6 +588,9 @@ impl SendMessage {
                 };
                 self.emit(conversation_id, event);
             }
+            TurnEvent::PermissionCancelled(request_id) => {
+                self.emit(conversation_id, ChatEvent::PermissionCancelled { request_id: request_id.clone() })
+            }
             TurnEvent::Thinking(text) => self.emit(conversation_id, ChatEvent::Thinking { text: text.clone() }),
             TurnEvent::SubagentDelta(text) => self.emit(conversation_id, ChatEvent::Subagent { text: text.clone() }),
             TurnEvent::Subagent { parent, step } => {
@@ -576,7 +634,7 @@ impl SendMessage {
             }
             // O acumulado do processo cresce a cada resposta dele: grava só a diferença.
             TurnEvent::Spent(total) => {
-                if self.conversations.add_usage(conversation_id, &total.since(&journal.counted)).is_ok() {
+                if self.conversations.add_usage(conversation_id, Some(account_id), &total.since(&journal.counted)).is_ok() {
                     journal.counted = *total;
                     journal.uncounted = TokenUsage::default();
                 }
@@ -727,6 +785,7 @@ mod tests {
             events: world.events.clone(),
             files: Arc::new(FakeFiles(vec![Attachment::text("nota.md", "conteúdo")])),
             clock: Arc::new(FixedClock(1000)),
+            parked: Arc::new(ParkedTurns::new(world.store.clone())),
         }
     }
 
@@ -928,7 +987,90 @@ mod tests {
         let world = World::with_accounts(vec![sample("a", 1), sample("b", 2)]);
         let engine = ScriptedEngine::new(|_, n| (vec![], TurnEnd::Limited { resets_at: Some(2000 + n as i64) }));
         use_case(&world, engine).execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
-        assert_eq!(world.events.chat_events().last(), Some(&ChatEvent::Exhausted { resets_at: Some(2001) }));
+        assert_eq!(world.events.chat_events().last(), Some(&ChatEvent::Exhausted { resets_at: Some(2001), resumes: true }));
+    }
+
+    #[tokio::test]
+    async fn turn_stopped_at_the_limit_resumes_without_asking_again() {
+        let world = World::with_accounts(vec![sample("a", 1), sample("b", 2)]);
+        let engine = ScriptedEngine::new(|req, n| match n {
+            1 | 2 => (vec![], TurnEnd::Limited { resets_at: Some(2000) }),
+            _ => {
+                assert_eq!((req.resume.as_deref(), req.prompt.as_str()), (None, "olá"), "nada foi feito: o pedido vai de novo");
+                (vec![], TurnEnd::Done { session_id: Some("s1".into()), text: "pronto".into() })
+            }
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
+        assert_eq!(uc.parked.get("c1"), Some(Parked { resets_at: Some(2000), continuing: false, stage: false, message_id: Some(1) }));
+        world.store.set_limited("a", None).unwrap();
+        uc.resume("c1", TurnControl::new().0).await.unwrap();
+        let roles: Vec<String> = world.store.messages("c1").unwrap().into_iter().map(|m| m.role).collect();
+        // A troca de "a" para "b" e a retomada ficam avisadas; a pergunta não é gravada de novo.
+        assert_eq!(roles, ["user", "notice", "notice", "assistant"]);
+        assert!(uc.parked.all().is_empty());
+        assert!(world.events.chat_events().contains(&ChatEvent::Resumed));
+    }
+
+    #[tokio::test]
+    async fn resume_sends_the_request_that_started_the_turn_not_a_message_sent_mid_turn() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let engine = ScriptedEngine::new(|req, n| match n {
+            1 => (vec![], TurnEnd::Limited { resets_at: Some(2000) }),
+            _ => {
+                assert_eq!(req.prompt, "faça X", "o pedido original, não o complemento");
+                (vec![], TurnEnd::Done { session_id: None, text: "pronto".into() })
+            }
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "faça X", &[], vec![], TurnControl::new().0).await.unwrap();
+        // Mandada no meio do turno: fica gravada depois da pergunta.
+        world.store.add_message("c1", ROLE_USER, "também Y", None, None).unwrap();
+        world.store.set_limited("a", None).unwrap();
+        uc.resume("c1", TurnControl::new().0).await.unwrap();
+        assert_eq!(world.store.messages("c1").unwrap().last().unwrap().content, "pronto");
+    }
+
+    #[tokio::test]
+    async fn resumed_turn_continues_the_session_the_last_account_worked_in() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let engine = ScriptedEngine::new(|req, n| match n {
+            1 => (
+                vec![
+                    TurnEvent::Session("s1".into()),
+                    TurnEvent::ToolCall { id: "t1".into(), name: "Edit".into(), input: "{}".into() },
+                    TurnEvent::ToolResult { id: "t1".into(), output: "ok".into(), is_error: false },
+                ],
+                TurnEnd::Limited { resets_at: Some(2000) },
+            ),
+            _ => {
+                assert_eq!((req.resume.as_deref(), req.prompt.as_str()), (Some("s1"), CONTINUE_PROMPT));
+                (vec![], TurnEnd::Done { session_id: Some("s1".into()), text: "pronto".into() })
+            }
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
+        world.store.set_limited("a", None).unwrap();
+        uc.resume("c1", TurnControl::new().0).await.unwrap();
+        assert_eq!(world.store.messages("c1").unwrap().last().unwrap().content, "pronto");
+    }
+
+    #[tokio::test]
+    async fn writing_again_or_turning_the_option_off_leaves_nothing_parked() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let engine = ScriptedEngine::new(|_, _| (vec![], TurnEnd::Limited { resets_at: None }));
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "olá", &[], vec![], TurnControl::new().0).await.unwrap();
+        assert!(uc.parked.get("c1").is_some());
+        world.store.set_limited("a", None).unwrap();
+        uc.execute("c1", "outra coisa", &[], vec![], TurnControl::new().0).await.unwrap();
+        // Parou de novo no limite, pela mensagem nova; com a opção desligada, não fica à espera.
+        uc.parked.take("c1").unwrap();
+        world.store.set_limited("a", None).unwrap();
+        world.store.set_flag(flags::RESUME_ON_RESET, false).unwrap();
+        uc.execute("c1", "mais uma", &[], vec![], TurnControl::new().0).await.unwrap();
+        assert!(uc.parked.all().is_empty());
+        assert_eq!(world.events.chat_events().last(), Some(&ChatEvent::Exhausted { resets_at: Some(1000 + DEFAULT_LIMIT_SECONDS), resumes: false }));
     }
 
     #[tokio::test]

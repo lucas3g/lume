@@ -47,7 +47,8 @@ pub trait ConversationRepository: Send + Sync {
     fn set_project(&self, id: &str, project_id: Option<&str>) -> AppResult<()>;
     fn set_context_percent(&self, id: &str, percent: i64) -> AppResult<()>;
     /// Soma os tokens de um turno aos que a conversa já gastou.
-    fn add_usage(&self, id: &str, usage: &TokenUsage) -> AppResult<()>;
+    /// Soma o gasto ao total da conversa e o registra com a hora e a conta, para o painel de uso.
+    fn add_usage(&self, id: &str, account_id: Option<&str>, usage: &TokenUsage) -> AppResult<()>;
     /// Tokens que a conversa gastou até agora (vazio se ainda nenhum turno informou).
     fn usage(&self, id: &str) -> AppResult<TokenUsage>;
     fn set_effort(&self, id: &str, effort: &str) -> AppResult<()>;
@@ -65,6 +66,9 @@ pub trait ConversationRepository: Send + Sync {
         meta: Option<&str>,
     ) -> AppResult<()>;
     fn message_count(&self, conversation_id: &str) -> AppResult<i64>;
+    /// A mensagem mais nova do usuário ou do assistente que contém o termo, uma por conversa, das
+    /// mais novas para as mais antigas: (conversa, título dela, texto, quando).
+    fn search_messages(&self, query: &str, limit: usize) -> AppResult<Vec<(String, String, String, i64)>>;
     /// Metadados guardados com a mensagem (`None` se ela não existe ou não tem).
     fn message_meta(&self, message_id: i64) -> AppResult<Option<String>>;
     /// Grava um passo (JSON) do subagente criado pela chamada `parent`.
@@ -201,6 +205,12 @@ pub trait VersionControl: Send + Sync {
     fn gh_ready(&self) -> bool;
     /// Abre o pull request de `head` para `base` com o `gh` e devolve o link dele.
     fn open_pr(&self, root: &str, base: &str, head: &str, title: &str, body: &str) -> AppResult<String>;
+    /// Checks do pull request; vazio enquanto o GitHub não informa nenhum.
+    fn pr_checks(&self, root: &str, url: &str) -> AppResult<Vec<crate::domain::ci::Check>>;
+    /// O pull request ainda está aberto (nem juntado nem fechado).
+    fn pr_open(&self, root: &str, url: &str) -> bool;
+    /// Log das etapas que falharam num job do GitHub Actions.
+    fn failed_log(&self, root: &str, job_id: &str) -> Option<String>;
 }
 
 /// Lê um arquivo escolhido pelo usuário para uso como anexo.
@@ -290,6 +300,13 @@ pub trait ConnectorSource: Send + Sync {
     fn servers(&self) -> Vec<(String, String)>;
 }
 
+/// Gasto de cada turno ao longo do tempo.
+pub trait UsageLog: Send + Sync {
+    fn usage_since(&self, since: i64) -> AppResult<Vec<crate::domain::usage::UsageEntry>>;
+    /// Trocas de conta a partir de `since`.
+    fn switches_since(&self, since: i64) -> AppResult<i64>;
+}
+
 pub trait SwitchLog: Send + Sync {
     fn record(&self, from_name: &str, to_name: &str, conversation_title: &str) -> AppResult<()>;
     fn recent(&self) -> AppResult<Vec<Switch>>;
@@ -371,6 +388,8 @@ pub trait EventSink: Send + Sync {
     fn terminal_output(&self, terminal_id: &str, data: &[u8]);
     /// Uma execução da esteira (ou uma etapa dela) mudou.
     fn pipeline_changed(&self, run: &PipelineRun);
+    /// Aviso do sistema avulso (com a janela em segundo plano); `key` agrupa os avisos repetidos.
+    fn notify(&self, _key: &str, _title: &str, _body: &str) {}
 }
 
 /// Recebe os bytes que um terminal produz.

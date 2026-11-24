@@ -7,6 +7,8 @@ pub mod draft_look;
 pub mod extensions;
 pub mod history;
 pub mod jira_issues;
+pub mod parked;
+pub mod pipeline_insights;
 pub mod pipeline;
 pub mod ports;
 pub mod projects;
@@ -16,6 +18,7 @@ pub mod store;
 pub mod tasks;
 pub mod terminal;
 pub mod turn_setup;
+pub mod usage;
 pub mod workspace;
 
 #[cfg(test)]
@@ -51,7 +54,9 @@ pub mod flags {
     pub const SWITCH_EARLY: &str = "switch_early";
     /// Avisos do sistema quando o app está em segundo plano.
     pub const NOTIFY_DESKTOP: &str = "notify_desktop";
-    pub const ALL: [&str; 5] = [AUTO_SWITCH, NOTIFY_SWITCH, USE_HISTORY, SWITCH_EARLY, NOTIFY_DESKTOP];
+    /// Com todas as contas no limite, continuar sozinho (conversa e esteira) quando uma voltar.
+    pub const RESUME_ON_RESET: &str = "resume_on_reset";
+    pub const ALL: [&str; 6] = [AUTO_SWITCH, NOTIFY_SWITCH, USE_HISTORY, SWITCH_EARLY, NOTIFY_DESKTOP, RESUME_ON_RESET];
 }
 
 /// Preferências de interface guardadas como texto.
@@ -93,12 +98,17 @@ pub enum ChatEvent {
     /// Uma mensagem enviada durante o turno foi lida pelo agente e gravada na conversa.
     Injected { id: String },
     Permission { request_id: String, tool: String, input: String, description: String },
+    /// O agente desistiu do pedido de autorização: ele sai da tela.
+    PermissionCancelled { request_id: String },
     /// Descarta o texto parcial: o turno será refeito em outra conta.
     Reset,
     Notice { text: String },
     Done { text: String },
     Cancelled,
-    Exhausted { resets_at: Option<i64> },
+    /// Todas as contas atingiram o limite; com `resumes`, o app continua sozinho quando uma voltar.
+    Exhausted { resets_at: Option<i64>, resumes: bool },
+    /// Uma conta voltou e o app retomou o turno que tinha parado no limite.
+    Resumed,
     Error { message: String },
 }
 

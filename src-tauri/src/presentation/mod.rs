@@ -13,6 +13,8 @@ use crate::application::{
     jira_issues::JiraIssues,
     extensions::{ManageAgents, ManageConnectors, ManageSkills},
     history::ManageHistory,
+    parked::ParkedTurns,
+    pipeline_insights::PipelineInsights,
     pipeline::{final_answer, ManagePipelines},
     ports::{
         AccountGateway, ChatEngine, Clock, EventSink, FileLoader, FileSaver, IdGenerator, Settings,
@@ -24,6 +26,7 @@ use crate::application::{
     tasks::ManageTasks,
     terminal::ManageTerminals,
     turn_setup::PrepareTurn,
+    usage::ManageUsage,
     workspace::ManageWorkspace,
     AppError, AppResult, RunningTurns,
 };
@@ -73,6 +76,9 @@ pub struct Container {
     pub pipelines: ManagePipelines,
     pub terminals: ManageTerminals,
     pub send_message: SendMessage,
+    pub parked: Arc<ParkedTurns>,
+    pub usage: ManageUsage,
+    pub insights: PipelineInsights,
     pub switches: Arc<dyn SwitchLog>,
     pub settings: Arc<dyn Settings>,
     pub events: Arc<dyn EventSink>,
@@ -106,6 +112,7 @@ impl Container {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidGenerator);
         let store = Arc::new(SqliteStore::open(&data_dir.join("lume.db"), clock.clone())?);
+        let parked = Arc::new(ParkedTurns::new(store.clone()));
         let notifier = Arc::new(TauriEvents::new(app.clone(), store.clone()));
         let vcs: Arc<dyn VersionControl> = Arc::new(GitCli);
         let events: Arc<dyn EventSink> = notifier.clone();
@@ -169,6 +176,13 @@ impl Container {
                 clock: clock.clone(),
                 chat_dir: chat_dir.to_string_lossy().into_owned(),
             },
+            insights: PipelineInsights {
+                pipelines: store.clone(),
+                engine: engine.clone(),
+                accounts: store.clone(),
+                clock: clock.clone(),
+                chat_dir: chat_dir.to_string_lossy().into_owned(),
+            },
             draft_look: DraftLook {
                 engine: engine.clone(),
                 accounts: store.clone(),
@@ -226,6 +240,7 @@ impl Container {
                 active: Default::default(),
                 cancelled: Default::default(),
                 reserving: Default::default(),
+                parked: parked.clone(),
             },
             terminals: ManageTerminals {
                 conversations: store.clone(),
@@ -253,7 +268,10 @@ impl Container {
                 files,
                 events: events.clone(),
                 clock,
+                parked: parked.clone(),
             },
+            parked,
+            usage: ManageUsage { log: store.clone(), accounts: store.clone(), clock: Arc::new(SystemClock) },
             switches: store.clone(),
             settings: store,
             events,
@@ -316,6 +334,51 @@ impl StageRunner for Bots {
 }
 
 impl Container {
+    /// Com todas as contas no limite, a conversa e a execução da esteira ficam à espera; assim que uma
+    /// conta volta (o limite renovou ou você entrou de novo), continuam sozinhas.
+    pub fn resume_waiting(self: &Arc<Self>) {
+        if !self.settings.flag(crate::application::flags::RESUME_ON_RESET, true) {
+            // Desligada a opção, nada fica esperando: a tela não promete uma retomada que não vem.
+            for (id, parked) in self.parked.all() {
+                if !parked.stage {
+                    let _ = self.parked.take(&id);
+                }
+            }
+            for id in self.pipelines.waiting_for_account().unwrap_or_default() {
+                let _ = self.pipelines.stop_waiting(&id);
+            }
+            return;
+        }
+        let parked: Vec<String> = self.parked.all().into_iter().filter(|(_, p)| !p.stage).map(|(id, _)| id).collect();
+        let runs = self.pipelines.waiting_for_account().unwrap_or_default();
+        if parked.is_empty() && runs.is_empty() {
+            return;
+        }
+        let accounts = self.send_message.accounts.all().unwrap_or_default();
+        if crate::domain::account::pick_next(&accounts, self.send_message.clock.now(), &[], false).is_none() {
+            return;
+        }
+        for id in parked {
+            let Some(control) = self.running.start(&id) else { continue };
+            let container = Arc::clone(self);
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = container.send_message.resume(&id, control).await {
+                    container.events.chat(&id, crate::application::ChatEvent::Error { message: e.0 });
+                }
+                container.running.finish(&id);
+            });
+        }
+        for id in runs {
+            match self.pipelines.retry(&id) {
+                Ok(()) => self.spawn_pipeline(id),
+                // Não dá para seguir (ex.: a sequência já acabou): não tenta de novo a cada volta do relógio.
+                Err(_) => {
+                    let _ = self.pipelines.stop_waiting(&id);
+                }
+            }
+        }
+    }
+
     /// Conduz a execução da esteira em segundo plano até a próxima parada.
     pub fn spawn_pipeline(self: &Arc<Self>, run_id: String) {
         let container = Arc::clone(self);
@@ -329,6 +392,7 @@ impl Container {
 /// Tarefas de inicialização que não devem atrasar a abertura da janela.
 pub fn start_background_work(container: Arc<Container>) {
     let _ = container.pipelines.recover();
+    let _ = container.parked.clear_stages();
     // Os conectores do Lume chegam ao Gemini pelo arquivo dele: confere ao abrir o app (o
     // Antigravity pode ter sido instalado ou o arquivo mudado por fora).
     let c = container.clone();
@@ -348,6 +412,14 @@ pub fn start_background_work(container: Arc<Container>) {
             tokio::time::sleep(SCHEDULER_TICK).await;
             for task in c.tasks.due().unwrap_or_default() {
                 let _ = c.run_task(&task.id);
+            }
+            c.resume_waiting();
+            // O gh leva alguns segundos por pull request: fora da thread do tokio.
+            let cc = c.clone();
+            if let Ok(Ok(reopened)) = tauri::async_runtime::spawn_blocking(move || cc.pipelines.check_ci()).await {
+                for id in reopened {
+                    c.spawn_pipeline(id);
+                }
             }
         }
     });

@@ -5,6 +5,7 @@
   import PipelineRunView from "../components/pipeline/PipelineRunView.svelte";
   import PipelineModelsCard from "../components/pipeline/PipelineModelsCard.svelte";
   import OfficeLooksCard from "../components/pipeline/OfficeLooksCard.svelte";
+  import PipelineInsightsCard from "../components/pipeline/PipelineInsightsCard.svelte";
   import JiraTaskPicker, { ago, typeTone, type PickedTask } from "../components/pipeline/JiraTaskPicker.svelte";
   import { jira } from "../state/jira.svelte";
   import { activeAccount } from "../state/accounts.svelte";
@@ -34,6 +35,9 @@
   /** Task do Jira escolhida; sem ela a esteira segue só com a descrição e não consulta o Jira. */
   let task = $state<PickedTask | null>(null);
   let picking = $state(false);
+  /** Quantas execuções a lista mostra antes do "Ver todas" (vêm da mais nova para a mais antiga). */
+  const RECENT_RUNS = 5;
+  let allRuns = $state(false);
   /** Dados da task escolhida: os da escolha ou, para uma chave digitada, os da lista se ela aparecer depois. */
   const taskIssue = $derived(task ? (task.issue ?? jira.issues.find((i) => i.key === task!.key) ?? null) : null);
 
@@ -337,13 +341,17 @@
         onconnectors={() => { picking = false; onnavigate("connectors"); }}
       />
 
+      {#if project}
+        <PipelineInsightsCard projectId={project.id} projectName={project.name} />
+      {/if}
+
       <PipelineModelsCard />
 
       <OfficeLooksCard />
 
       <section class="card" aria-label="Execuções">
         <div class="head"><h2 class="section-title">Execuções</h2></div>
-        {#each pipelines.list as run (run.id)}
+        {#each allRuns ? pipelines.list : pipelines.list.slice(0, RECENT_RUNS) as run (run.id)}
           {@const s = RUN_STATUS[run.status]}
           <button type="button" class="run" onclick={() => openPipeline(run.id)}>
             <span class="text">
@@ -358,6 +366,11 @@
         {:else}
           <div class="empty muted">Nenhuma execução ainda.</div>
         {/each}
+        {#if pipelines.list.length > RECENT_RUNS}
+          <button type="button" class="more" aria-expanded={allRuns} onclick={() => (allRuns = !allRuns)}>
+            {allRuns ? "Mostrar só as recentes" : `Ver todas (${pipelines.list.length})`}
+          </button>
+        {/if}
       </section>
     </div>
   </div>
@@ -418,5 +431,7 @@
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb button { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 13px; line-height: 1; }
   .empty { padding: 14px 20px; border-top: 1px solid var(--hairline); }
+  .more { display: block; width: 100%; padding: 10px 20px; border: 0; border-top: 1px solid var(--hairline); background: none; font-size: 12.5px; color: var(--accent-text); text-align: left; cursor: pointer; }
+  .more:hover { color: var(--text); }
   .warn-text { color: var(--warn-text); }
 </style>

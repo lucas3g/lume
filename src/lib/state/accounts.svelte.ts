@@ -9,7 +9,7 @@ export type AccountState = "login" | "disabled" | "limited" | "active" | "availa
 export const accounts = $state({
   list: [] as Account[],
   switches: [] as Switch[],
-  flags: { auto_switch: true, notify_switch: true, use_history: true, switch_early: true, notify_desktop: true } as Flags,
+  flags: { auto_switch: true, notify_switch: true, use_history: true, switch_early: true, notify_desktop: true, resume_on_reset: true } as Flags,
 });
 
 export function isUsable(a: Account, now = nowSeconds()): boolean {

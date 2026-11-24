@@ -89,6 +89,12 @@ pub async fn account_limits(app: App<'_>, id: String) -> AppResult<Vec<UsageLimi
     app.accounts.limits(&id).await
 }
 
+/// Gasto de tokens dos últimos `days` dias, no fuso de quem vê, e o ritmo de cada conta.
+#[tauri::command]
+pub fn usage_report(app: App<'_>, days: i64, tz_offset_minutes: i64) -> AppResult<crate::application::usage::UsageReport> {
+    app.usage.report(days, tz_offset_minutes)
+}
+
 #[tauri::command]
 pub fn list_switches(app: App<'_>) -> AppResult<Vec<Switch>> {
     app.switches.recent()
@@ -99,6 +105,12 @@ pub fn list_switches(app: App<'_>) -> AppResult<Vec<Switch>> {
 #[tauri::command]
 pub fn list_conversations(app: App<'_>) -> AppResult<Vec<Conversation>> {
     app.conversations.list()
+}
+
+/// Conversas cujas mensagens têm o termo, com o trecho em volta (para a busca global).
+#[tauri::command]
+pub fn search_messages(app: App<'_>, query: String) -> AppResult<Vec<crate::domain::search::MessageHit>> {
+    app.conversations.search(&query)
 }
 
 #[tauri::command]
@@ -318,6 +330,18 @@ pub fn decide_permission(
 pub async fn background_tool(app: App<'_>, conversation_id: String, tool_id: String) -> AppResult<bool> {
     let Some(sent) = app.running.background(&conversation_id, &tool_id) else { return Ok(false) };
     Ok(sent.await.unwrap_or(false))
+}
+
+/// Conversas paradas no limite de todas as contas, esperando uma voltar: id → quando a primeira volta.
+#[tauri::command]
+pub fn list_parked(app: App<'_>) -> HashMap<String, Option<i64>> {
+    app.parked.all().into_iter().filter(|(_, p)| !p.stage).map(|(id, p)| (id, p.resets_at)).collect()
+}
+
+/// A conversa parada no limite deixa de esperar: não continua sozinha quando uma conta voltar.
+#[tauri::command]
+pub fn forget_parked(app: App<'_>, conversation_id: String) -> AppResult<()> {
+    app.parked.take(&conversation_id).map(|_| ())
 }
 
 #[tauri::command]
@@ -861,6 +885,43 @@ pub fn reopen_pipeline(app: App<'_>, id: String, feedback: String, images: Optio
 #[tauri::command]
 pub fn cancel_pipeline(app: App<'_>, id: String) -> AppResult<()> {
     app.pipelines.cancel(&id, &Bots(Arc::clone(&app)))
+}
+
+/// Métricas das execuções da esteira do projeto.
+#[tauri::command]
+pub fn pipeline_metrics(app: App<'_>, project_id: String) -> AppResult<crate::domain::pipeline_metrics::PipelineMetrics> {
+    app.insights.metrics(&project_id)
+}
+
+/// Lições da esteira gravadas no conhecimento do projeto, se houver.
+#[tauri::command]
+pub fn pipeline_lessons(app: App<'_>, project_id: String) -> AppResult<Option<String>> {
+    app.projects.file_content(&project_id, crate::application::pipeline_insights::LESSONS_FILE)
+}
+
+/// Sugere lições a partir do que os bots erraram, juntando as que já estão gravadas. Não grava nada.
+#[tauri::command]
+pub async fn draft_pipeline_lessons(app: App<'_>, project_id: String) -> AppResult<String> {
+    let current = app.projects.file_content(&project_id, crate::application::pipeline_insights::LESSONS_FILE)?;
+    app.insights.draft_lessons(&project_id, current.as_deref()).await
+}
+
+/// Grava as lições no conhecimento do projeto (vazio apaga o arquivo).
+#[tauri::command]
+pub fn save_pipeline_lessons(app: App<'_>, project_id: String, text: String) -> AppResult<()> {
+    app.projects.put_file(&project_id, crate::application::pipeline_insights::LESSONS_FILE, &text)
+}
+
+/// Para de acompanhar o CI do pull request da execução.
+#[tauri::command]
+pub fn stop_pipeline_ci(app: App<'_>, id: String) -> AppResult<()> {
+    app.pipelines.stop_ci(&id)
+}
+
+/// A execução parada no limite de todas as contas deixa de esperar: só volta se você retomar.
+#[tauri::command]
+pub fn stop_pipeline_waiting(app: App<'_>, id: String) -> AppResult<()> {
+    app.pipelines.stop_waiting(&id)
 }
 
 #[tauri::command]

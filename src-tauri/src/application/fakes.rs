@@ -375,6 +375,10 @@ pub struct FakeVcs {
     pub push_fails: Mutex<bool>,
     /// O merge do pull request é recusado (ex.: o ramo exige revisão).
     pub pr_merge_refused: bool,
+    /// Checks que o GitHub informa para o pull request.
+    pub checks: Mutex<Vec<crate::domain::ci::Check>>,
+    /// O pull request já foi juntado ou fechado no GitHub.
+    pub pr_closed: Mutex<bool>,
 }
 
 impl VersionControl for FakeVcs {
@@ -489,6 +493,15 @@ impl VersionControl for FakeVcs {
         self.commits.lock().unwrap().push((root.to_owned(), format!("pr {base} <- {head}: {title}")));
         self.pr_bodies.lock().unwrap().push(body.to_owned());
         Ok("https://github.com/loja/loja/pull/12".into())
+    }
+    fn pr_checks(&self, _root: &str, _url: &str) -> AppResult<Vec<crate::domain::ci::Check>> {
+        Ok(self.checks.lock().unwrap().clone())
+    }
+    fn pr_open(&self, _root: &str, _url: &str) -> bool {
+        !*self.pr_closed.lock().unwrap()
+    }
+    fn failed_log(&self, _root: &str, job_id: &str) -> Option<String> {
+        Some(format!("log do job {job_id}: assert falhou"))
     }
 }
 

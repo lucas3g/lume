@@ -22,6 +22,7 @@ pub fn parse_line(line: &str) -> Vec<TurnEvent> {
         "user" if v["isReplay"] == true => v["uuid"].as_str().map(|id| TurnEvent::UserRead(id.into())).into_iter().collect(),
         "user" => parse_tool_results(&v["message"]["content"]),
         "control_request" => single(parse_permission(&v)),
+        "control_cancel_request" => v["request_id"].as_str().map(|id| TurnEvent::PermissionCancelled(id.into())).into_iter().collect(),
         "result" => parse_context(&v)
             .into_iter()
             .chain(parse_spent(&v))
@@ -530,6 +531,7 @@ mod tests {
             }]
         );
         assert!(parse_line(r#"{"type":"control_request","request_id":"r2","request":{"subtype":"outro"}}"#).is_empty());
+        assert_eq!(parse_line(r#"{"type":"control_cancel_request","request_id":"r1"}"#), [TurnEvent::PermissionCancelled("r1".into())]);
     }
 
     #[test]

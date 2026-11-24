@@ -72,7 +72,10 @@ fn notice_for(event: &ChatEvent) -> Option<(&'static str, String)> {
             Some(("Plano pronto para aprovação", short(description)))
         }
         ChatEvent::Permission { tool, description, .. } => Some(("O agente pede sua aprovação", format!("{tool} · {}", short(description)))),
-        ChatEvent::Exhausted { .. } => Some(("Todas as contas atingiram o limite", String::new())),
+        ChatEvent::Exhausted { resumes, .. } => {
+            Some(("Todas as contas atingiram o limite", if *resumes { "O Lume continua sozinho quando uma conta voltar.".into() } else { String::new() }))
+        }
+        ChatEvent::Resumed => Some(("Uma conta voltou", "O Lume continuou o pedido que tinha parado no limite.".into())),
         ChatEvent::Error { message } => Some(("Não foi possível responder", short(message))),
         _ => None,
     }
@@ -151,6 +154,10 @@ impl EventSink for TauriEvents {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.encode(data);
         let _ = self.app.emit(TERMINAL_OUTPUT, TerminalPayload { id: terminal_id.to_owned(), data });
+    }
+
+    fn notify(&self, key: &str, title: &str, body: &str) {
+        self.show_notice(key, title, body.to_owned());
     }
 
     fn pipeline_changed(&self, run: &PipelineRun) {

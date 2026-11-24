@@ -20,10 +20,10 @@
   import ToolGroup from "../components/ToolGroup.svelte";
   import ToolRow from "../components/ToolRow.svelte";
   import { describeFile, folderName, formatTime, formatWhen, fullDate, isoDate, renderMarkdown } from "../format";
-  import { activeAccount } from "../state/accounts.svelte";
+  import { accounts, activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
   import { api } from "../api";
-  import { activeConversation, backgroundTool, branchAt, cancel, cancelEdit, chat, decide, enqueue, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
+  import { activeConversation, backgroundTool, branchAt, cancel, cancelEdit, chat, decide, enqueue, forgetParked, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
   import { NEW_CONVERSATION, readDraft, saveDraft } from "../state/drafts";
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
@@ -630,15 +630,25 @@
         {:else if permission}
           <PermissionCard request={permission} ondecide={decide} />
         {/if}
+        {#if permission && chat.permissionQueue[chat.activeId ?? ""]?.length}
+          {@const waiting = chat.permissionQueue[chat.activeId ?? ""].length}
+          <p class="muted small" role="status">{waiting === 1 ? "Mais 1 pedido de autorização espera depois deste." : `Mais ${waiting} pedidos de autorização esperam depois deste.`}</p>
+        {/if}
 
         {#if outcome?.kind === "exhausted"}
           <div class="card alert" role="alert">
             <strong>Todas as contas atingiram o limite.</strong>
             <span class="muted">
               {outcome.resetsAt ? `A primeira volta às ${formatTime(outcome.resetsAt)}.` : "Nenhuma conta está disponível."}
-              Envie a mensagem de novo quando houver uma conta livre.
+              {outcome.resumes && accounts.flags.resume_on_reset ? "O Lume continua este pedido sozinho quando uma conta voltar." : "Envie a mensagem de novo quando houver uma conta livre."}
             </span>
-            <button type="button" class="btn small" onclick={() => onnavigate("accounts")}>Ver contas</button>
+            <div class="row-w">
+              <button type="button" class="btn small" onclick={() => onnavigate("accounts")}>Ver contas</button>
+              {#if outcome.resumes && accounts.flags.resume_on_reset && chat.activeId}
+                {@const id = chat.activeId}
+                <button type="button" class="btn small" onclick={() => void forgetParked(id)}>Não continuar sozinho</button>
+              {/if}
+            </div>
           </div>
         {:else if outcome?.kind === "error"}
           <div class="card alert" role="alert">
@@ -836,6 +846,7 @@
   .notice { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
   .notice span { flex: 1; height: 1px; background: var(--border); }
   .alert { padding: 14px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; border-color: var(--border-strong); }
+  .alert .row-w { display: flex; flex-wrap: wrap; gap: 8px; }
   .agents { display: flex; flex-direction: column; gap: 6px; }
   .agent-chip { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); text-align: left; color: var(--text); }
   .agent-chip:hover, .agent-chip.on { background: var(--hover); border-color: var(--border-strong); }

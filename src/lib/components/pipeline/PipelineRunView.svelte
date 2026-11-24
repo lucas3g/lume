@@ -17,7 +17,7 @@
     choiceFindings, clock, designSpec, designUrl, duration, findingsMarkdown, icon, inputSummary, isActive, isMarker, jiraOutcome, isUserStep, isWaitingYou, outputSummary, passesByRole, passLabel, RUN_STATUS,
     stageAccountId, stageLog, stageModelText, stageVisual, STATION, switchedAccount, costText, tokenCount, totalTokens, toolLogLine, triageQuestions, triageSummary, usageHint, usageText, VISUAL, opensPr,
   } from "../../pipeline";
-  import { EFFORTS, type Delivery, type GitInfo, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
+  import { EFFORTS, type CiWatch, type Delivery, type GitInfo, type PastedImage, type PipelineDetail, type PipelineRole, type ReviewPick, type StageRun, type View } from "../../types";
   import PipelineTrack from "./PipelineTrack.svelte";
   import PipelineOffice from "./PipelineOffice.svelte";
   import ReviewChoiceCard from "./ReviewChoiceCard.svelte";
@@ -320,6 +320,20 @@
     reopening = false;
     follow = true;
   });
+  const stopCi = () => act(async () => {
+    await api.stopPipelineCi(detail.id);
+  });
+  const CI_TEXT: Record<CiWatch["status"], { text: string; tone: string }> = {
+    watching: { text: "esperando os checks; se falharem, a esteira corrige com o log e manda ao mesmo pull request", tone: "" },
+    passed: { text: "todos os checks passaram", tone: "ok" },
+    fixing: { text: "falhou e a esteira está corrigindo; no fim, o app faz o commit e o push no ramo do pull request", tone: "warn" },
+    failed: { text: "falhou", tone: "bad" },
+    no_checks: { text: "o repositório não rodou checks neste pull request", tone: "" },
+    stopped: { text: "não acompanhado", tone: "" },
+  };
+  const stopWaiting = () => act(async () => {
+    await api.stopPipelineWaiting(detail.id);
+  });
   const retry = () => act(async () => {
     await api.retryPipeline(detail.id);
     follow = true;
@@ -554,6 +568,15 @@
                   {#if (d.kind === "branch" || d.kind === "pull_request") && detail.mode === "in_place"}A pasta do projeto ficou no ramo <code>{d.branch}</code>.{/if}
                 </span>
                 {#if d.pr_url}<button type="button" class="lnk inline" onclick={() => openUrl(d.pr_url!)}>{d.pr_url} ↗</button>{/if}
+                {#if detail.ci}
+                  {@const ci = detail.ci}
+                  <span class="ci {CI_TEXT[ci.status].tone}" role="status">
+                    <b>CI:</b> {CI_TEXT[ci.status].text}{ci.failed.length && ci.status !== "passed" ? ` (falhou: ${ci.failed.join(", ")})` : ""}.
+                    {#if ci.fixes}A esteira já corrigiu {ci.fixes} {ci.fixes === 1 ? "vez" : "vezes"}.{/if}
+                    {#if ci.note}{ci.note}{/if}
+                    {#if ci.status === "watching"}<button type="button" class="lnk inline" disabled={busy} onclick={stopCi}>Parar de acompanhar</button>{/if}
+                  </span>
+                {/if}
               </div>
             {:else if detail.mode !== "direct"}
               <div class="commit" role="group" aria-label="Entrega do resultado">
@@ -626,8 +649,16 @@
           {:else}
             <div class="o-top"><span class="pill {status.tone}">{status.label}</span><h2>{detail.status === "cancelled" ? "Execução cancelada por você" : "A esteira parou"}</h2></div>
             {#if detail.note}<p class="o-body">{detail.note}</p>{/if}
+            {#if detail.waiting_account && accounts.flags.resume_on_reset}
+              <p class="o-body">{detail.resume_at ? `A primeira conta volta às ${formatTime(detail.resume_at)}; a esteira retoma sozinha logo depois.` : "A esteira retoma sozinha assim que uma conta voltar."}</p>
+            {/if}
             <p class="o-body muted">{detail.mode === "worktree" ? `O que já foi alterado continua na worktree ${detail.branch}.` : "O que já foi alterado continua na pasta de desenvolvimento."} {detail.round_limit ? "Ao retomar, a contagem de voltas recomeça e o Implementador corrige o que foi apontado por último." : "Ao retomar, a etapa que parou roda de novo."}</p>
-            <div class="row-w acts"><button type="button" class="btn primary" disabled={busy} onclick={retry}>Retomar execução</button></div>
+            <div class="row-w acts">
+              <button type="button" class="btn primary" disabled={busy} onclick={retry}>Retomar execução</button>
+              {#if detail.waiting_account && accounts.flags.resume_on_reset}
+                <button type="button" class="btn" disabled={busy} onclick={stopWaiting}>Não retomar sozinha</button>
+              {/if}
+            </div>
           {/if}
         </section>
       {/if}
@@ -871,6 +902,10 @@
   ul.o-body { padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
   .commit { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
   .commit.delivered { align-items: flex-start; gap: 2px; font-size: 13px; }
+  .ci { font-size: 12.5px; color: var(--text-2); }
+  .ci.ok b { color: var(--ok-text); }
+  .ci.warn b { color: var(--warn-text); }
+  .ci.bad b { color: var(--danger-text); }
   .deliveries { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px; margin-bottom: 4px; }
   .delivery { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer; font-size: 13px; }
   .delivery > span { display: flex; flex-direction: column; gap: 2px; }
@@ -909,8 +944,8 @@
   .p-meta { margin-top: 6px; font-size: 12px; color: var(--muted); }
   .p-meta b { font-weight: 500; color: var(--text-2); }
   .p-bar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 9px; }
-  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-  .seg button { border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--muted); min-height: 24px; padding: 0 8px; font-size: 12px; }
+  .seg { display: inline-flex; max-width: 100%; border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+  .seg button { flex: none; white-space: nowrap; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--muted); min-height: 24px; padding: 0 8px; font-size: 12px; }
   .seg button:first-child { border-left: 0; }
   .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
   .p-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 12px 14px 16px; font-size: 13px; color: var(--text-body); }

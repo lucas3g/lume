@@ -23,7 +23,8 @@ export interface Turn {
 /** Como terminou o último turno, quando não foi com uma resposta. */
 export type Outcome =
   | { kind: "error"; message: string }
-  | { kind: "exhausted"; resetsAt: number | null }
+  /** `resumes`: o Lume continua sozinho quando uma conta voltar. */
+  | { kind: "exhausted"; resetsAt: number | null; resumes: boolean }
   | null;
 
 /** Mensagem mandada enquanto o agente trabalha: espera o fim do turno, ou vai já com "Enviar agora". */
@@ -57,7 +58,11 @@ export const chat = $state({
   messages: [] as Message[],
   turns: {} as Record<string, Turn>,
   outcomes: {} as Record<string, Outcome>,
+  /** Pedido de autorização mostrado agora em cada conversa. */
   permissions: {} as Record<string, PermissionRequest>,
+  /** Pedidos que chegaram enquanto outro esperava (ex.: um subagente lendo dois arquivos ao mesmo tempo):
+   *  aparecem um depois do outro, para nenhum ficar sem resposta. */
+  permissionQueue: {} as Record<string, PermissionRequest[]>,
   /** Mensagens na fila de cada conversa, na ordem em que foram escritas. */
   queued: {} as Record<string, QueuedMessage[]>,
   /** Mensagem do usuário sendo editada: o envio ramifica a conversa antes dela. */
@@ -78,6 +83,20 @@ export async function loadConversations(): Promise<void> {
   chat.conversations = await api.listConversations();
 }
 
+/** Ao abrir o app: as conversas que pararam no limite de todas as contas e esperam uma voltar. */
+export async function loadParked(): Promise<void> {
+  for (const [id, resetsAt] of Object.entries(await api.listParked())) {
+    chat.outcomes[id] ??= { kind: "exhausted", resetsAt, resumes: true };
+  }
+}
+
+/** A conversa parada no limite não continua mais sozinha. */
+export async function forgetParked(id: string): Promise<void> {
+  await api.forgetParked(id);
+  const outcome = chat.outcomes[id];
+  if (outcome?.kind === "exhausted") chat.outcomes[id] = { ...outcome, resumes: false };
+}
+
 export async function openConversation(id: string | null): Promise<void> {
   chat.activeId = id;
   chat.editing = null;
@@ -96,6 +115,7 @@ export async function removeConversation(id: string): Promise<void> {
   delete chat.turns[id];
   delete chat.outcomes[id];
   delete chat.permissions[id];
+  delete chat.permissionQueue[id];
   delete chat.queued[id];
   forgetSubagents(id);
   if (chat.activeId === id) await openConversation(null);
@@ -286,6 +306,14 @@ export async function startIsolatedSession(projectId: string, model = DEFAULT_MO
   chat.messages = [];
 }
 
+/** Tira o pedido da tela e mostra o próximo da fila, se houver. */
+function showNextPermission(id: string): void {
+  const next = chat.permissionQueue[id]?.shift();
+  if (next) chat.permissions[id] = next;
+  else delete chat.permissions[id];
+  if (!chat.permissionQueue[id]?.length) delete chat.permissionQueue[id];
+}
+
 /** Responde ao pedido de autorização da conversa aberta. */
 export function decide(allow: boolean, always: boolean, extras: DecisionExtras = {}): Promise<void> {
   return chat.activeId ? decideFor(chat.activeId, allow, always, extras) : Promise.resolve();
@@ -295,23 +323,37 @@ export function decide(allow: boolean, always: boolean, extras: DecisionExtras =
 export async function decideFor(id: string, allow: boolean, always: boolean, extras: DecisionExtras = {}): Promise<void> {
   const request = chat.permissions[id];
   if (!request) return;
-  delete chat.permissions[id];
+  showNextPermission(id);
   const turn = chat.turns[id];
   const status = turn?.status ?? null;
-  if (turn) turn.status = null;
+  // Com outro pedido na fila, o turno segue esperando você.
+  if (turn && !chat.permissions[id]) turn.status = null;
   const conversation = chat.conversations.find((c) => c.id === id);
   const mode = conversation?.permission_mode;
   if (allow && extras.nextMode && conversation) conversation.permission_mode = extras.nextMode;
   try {
     await api.decidePermission({ conversationId: id, requestId: request.requestId, tool: request.tool, allow, always, ...extras });
   } catch (e) {
-    // A resposta não chegou: o agente continua esperando, então o pedido volta para a tela.
-    if (chat.turns[id] && !chat.permissions[id]) {
+    // A resposta não chegou: o agente continua esperando, então o pedido volta para a tela (na frente da fila).
+    if (chat.turns[id]) {
+      const shown = chat.permissions[id];
+      if (shown) chat.permissionQueue[id] = [shown, ...(chat.permissionQueue[id] ?? [])];
       chat.permissions[id] = request;
       chat.turns[id].status = status;
       if (conversation && mode !== undefined) conversation.permission_mode = mode;
     }
     throw e;
+  }
+  // "Permitir sempre": os pedidos da mesma ferramenta que já esperavam na fila saem liberados também.
+  if (allow && always) {
+    while (chat.permissions[id]?.tool === request.tool) await decideFor(id, true, false);
+    const same = (chat.permissionQueue[id] ?? []).filter((p) => p.tool === request.tool);
+    // Cada um sai da fila só depois de liberado: se a resposta falhar, os que restam seguem esperando você.
+    for (const p of same) {
+      await api.decidePermission({ conversationId: id, requestId: p.requestId, tool: p.tool, allow: true, always: false });
+      chat.permissionQueue[id] = (chat.permissionQueue[id] ?? []).filter((q) => q.requestId !== p.requestId);
+      if (!chat.permissionQueue[id].length) delete chat.permissionQueue[id];
+    }
   }
 }
 
@@ -334,6 +376,7 @@ export function cancel(): void {
 async function finish(id: string, outcome: Outcome = null, continueQueue = true): Promise<void> {
   delete chat.turns[id];
   delete chat.permissions[id];
+  delete chat.permissionQueue[id];
   chat.outcomes[id] = outcome;
   settleSubagents(id);
   // Entregues e não lidas (o turno acabou antes): voltam a esperar a vez.
@@ -354,7 +397,7 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 /** Eventos que indicam um turno em andamento, mesmo que iniciado por outra janela. */
-const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["account", "context", "delta", "thinking", "subagent", "agent_step", "tool", "tool_start", "tool_task", "step", "permission", "waiting"]);
+const TURN_ACTIVITY = new Set<ChatEvent["kind"]>(["resumed", "account", "context", "delta", "thinking", "subagent", "agent_step", "tool", "tool_start", "tool_task", "step", "permission", "waiting"]);
 
 /** Eventos do agente principal: um deles depois da espera significa que ele voltou a trabalhar. */
 const MAIN_ACTIVITY = new Set<ChatEvent["kind"]>(["delta", "thinking", "tool", "tool_start", "permission", "injected"]);
@@ -454,12 +497,31 @@ export function handleChatEvent(event: ChatEvent): void {
       chat.queued[id] = (chat.queued[id] ?? []).filter((m) => m.id !== event.id);
       takeRecorded(id);
       break;
-    case "permission":
-      chat.permissions[id] = { requestId: event.request_id, tool: event.tool, input: event.input };
+    case "permission": {
+      const request = { requestId: event.request_id, tool: event.tool, input: event.input };
+      // Já há um pedido na tela: este espera a vez, em vez de tomar o lugar dele.
+      if (chat.permissions[id] && chat.permissions[id].requestId !== request.requestId) {
+        chat.permissionQueue[id] = [...(chat.permissionQueue[id] ?? []), request];
+      } else {
+        chat.permissions[id] = request;
+      }
       if (turn) turn.status = event.tool === "AskUserQuestion" ? "Aguardando sua resposta" : "Aguardando sua aprovação";
       break;
+    }
+    case "permission_cancelled":
+      // O agente desistiu do pedido (ex.: a chamada foi interrompida): sai da tela ou da fila.
+      if (chat.permissions[id]?.requestId === event.request_id) {
+        showNextPermission(id);
+        if (turn && !chat.permissions[id]) turn.status = null;
+      } else if (chat.permissionQueue[id]) {
+        chat.permissionQueue[id] = chat.permissionQueue[id].filter((p) => p.requestId !== event.request_id);
+      }
+      break;
     case "reset":
-      // A tentativa foi descartada: as ferramentas dela não vão devolver resultado.
+      // A tentativa foi descartada: as ferramentas dela não vão devolver resultado, e os pedidos de
+      // autorização dela não valem mais (o processo que esperava a resposta acabou).
+      delete chat.permissions[id];
+      delete chat.permissionQueue[id];
       if (turn) {
         turn.text = "";
         turn.status = null;
@@ -478,7 +540,11 @@ export function handleChatEvent(event: ChatEvent): void {
       void finish(id, null, false);
       break;
     case "exhausted":
-      void finish(id, { kind: "exhausted", resetsAt: event.resets_at });
+      void finish(id, { kind: "exhausted", resetsAt: event.resets_at, resumes: event.resumes });
+      break;
+    case "resumed":
+      // Uma conta voltou e o núcleo retomou o turno parado no limite.
+      chat.outcomes[id] = null;
       break;
     case "error":
       void finish(id, { kind: "error", message: event.message });

@@ -4,11 +4,12 @@
   import { api } from "$lib/api";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import UpdateBanner from "$lib/components/UpdateBanner.svelte";
+  import CommandPalette from "$lib/components/CommandPalette.svelte";
   import { activeAccount, loadAccounts, loadFlags } from "$lib/state/accounts.svelte";
   import { connectors } from "$lib/state/connectors.svelte";
   import { loadAgents } from "$lib/state/agents.svelte";
   import { loadProjects } from "$lib/state/projects.svelte";
-  import { handleChatEvent, loadConversations, openConversation } from "$lib/state/chat.svelte";
+  import { handleChatEvent, loadConversations, loadParked, openConversation } from "$lib/state/chat.svelte";
   import type { View } from "$lib/types";
   import AccountsView from "$lib/views/AccountsView.svelte";
   import ChatView from "$lib/views/ChatView.svelte";
@@ -19,6 +20,7 @@
   import TasksView from "$lib/views/TasksView.svelte";
   import PipelinesView from "$lib/views/PipelinesView.svelte";
   import SettingsView from "$lib/views/SettingsView.svelte";
+  import UsageView from "$lib/views/UsageView.svelte";
   import { loadUiPrefs } from "$lib/state/ui.svelte";
   import { handlePipelineChanged, isStageConversation, loadPipelines, loadStageMessages } from "$lib/state/pipelines.svelte";
   import type { ChatEvent } from "$lib/types";
@@ -39,6 +41,7 @@
       view = "chat";
     };
     void loadPipelines();
+    void loadParked();
     void loadUiPrefs();
     // O que as etapas da esteira gravam aparece no log da tela de acompanhamento.
     const STAGE_REFRESH = new Set<ChatEvent["kind"]>(["step", "done", "waiting", "notice", "error", "exhausted", "cancelled"]);
@@ -58,6 +61,8 @@
     };
   });
 </script>
+
+<CommandPalette onnavigate={(v) => (view = v)} />
 
 <div class="app">
   <Sidebar {view} onnavigate={(v) => (view = v)} />
@@ -84,6 +89,8 @@
       <TasksView onnavigate={(v) => (view = v)} />
     {:else if view === "settings"}
       <SettingsView />
+    {:else if view === "usage"}
+      <UsageView />
     {:else}
       <AccountsView />
     {/if}
