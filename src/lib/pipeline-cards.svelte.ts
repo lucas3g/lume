@@ -4,9 +4,10 @@ import { chat } from "./state/chat.svelte";
 import { liveActivity } from "./state/subagents.svelte";
 import { pipelines, stageMessages } from "./state/pipelines.svelte";
 import {
-  duration, isActive, isUserStep, passesByRole, stationPasses, stationRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, VISUAL,
-  type Station, type Visual,
+  duration, gerund, isActive, isUserStep, passesByRole, stationPasses, stationRole, plannedModelText, stageAccountId, stageModelText, stageVisual, STATIONS, toolLogLine, VISUAL,
+  type LogLine, type Station, type Visual,
 } from "./pipeline";
+import { isAgentTool } from "./tools";
 import { EFFORTS, type PipelineDetail, type PipelineRole, type Provider, type StageRun, type TierModels } from "./types";
 
 /** Estado de uma estação na execução aberta, lido igual pela trilha e pelo escritório. */
@@ -98,4 +99,16 @@ export function stationCards(
 export function stationTime(list: StageRun[], now: number): string {
   if (!list.length) return "";
   return duration(list.reduce((sum, s) => sum + ((s.finished_at ?? now) - s.started_at), 0));
+}
+
+/** A ação em andamento na conversa da etapa, para a linha ao vivo: a ferramenta rodando agora (com o verbo
+ *  no gerúndio e o alvo curto) ou, sem ela, o andamento do turno ou do subagente ("Pensando"). */
+export function liveTick(conversationId: string): LogLine {
+  const turn = chat.turns[conversationId];
+  const tool = turn?.running.findLast((t) => !isAgentTool(t.name));
+  if (tool) {
+    const line = toolLogLine(tool.name, tool.input, false, 0);
+    return { ...line, verb: gerund(line.verb) };
+  }
+  return { at: 0, glyph: "write", verb: liveActivity(conversationId, turn) ?? "Pensando", target: "", tone: "" };
 }

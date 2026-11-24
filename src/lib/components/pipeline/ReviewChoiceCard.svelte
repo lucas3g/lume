@@ -1,41 +1,34 @@
 <script lang="ts">
   import { renderMarkdown } from "../../format";
-  import { choiceFindings, reviewSummary } from "../../pipeline";
+  import { choiceFindings, reviewPicks, reviewSummary } from "../../pipeline";
   import { isRecommended, optionText } from "../../tools";
   import type { ReviewPick, StageRun } from "../../types";
 
   /** Parada da sua escolha sobre o code review: o que corrigir e, nos achados com mais de um
-   *  caminho, qual seguir. Sem nada marcado, a esteira segue para o Relator. */
+   *  caminho, qual seguir. Sem nada marcado, a esteira segue para o Relator. As marcas ficam com
+   *  quem abre o cartão, para o cartão Agora decidir com elas também. */
   interface Props {
     /** A parada em andamento (a entrada traz os achados). */
     stage: StageRun;
     /** A passagem do Code review que a abriu (o texto completo, para o resumo). */
     review: StageRun | null;
     busy: boolean;
+    /** Achados marcados e o caminho escolhido em cada um (índice da opção). */
+    marked: Record<string, boolean>;
+    chosen: Record<string, number>;
+    note: string;
     ondecide: (picks: ReviewPick[], note: string | null) => void;
   }
-  let { stage, review, busy, ondecide }: Props = $props();
+  let { stage, review, busy, marked = $bindable(), chosen = $bindable(), note = $bindable(), ondecide }: Props = $props();
 
   const findings = $derived(choiceFindings(stage));
   const summary = $derived(reviewSummary(review?.output ?? ""));
-
-  /** Achados marcados e o caminho escolhido em cada um (índice da opção). */
-  let marked = $state<Record<string, boolean>>({});
-  let chosen = $state<Record<string, number>>({});
-  let note = $state("");
   let summaryOpen = $state(false);
 
-  // Outra parada (ex.: um novo ciclo): começa sem nada marcado.
-  $effect(() => {
-    void stage.id;
-    marked = {};
-    chosen = {};
-    note = "";
-  });
-
-  const picks = $derived(findings.filter((f) => marked[f.id]).map((f) => ({ id: f.id, option: f.options.length ? (chosen[f.id] ?? null) : null })));
+  const decision = $derived(reviewPicks(findings, marked, chosen));
+  const picks = $derived(decision.picks);
   /** Achados marcados que ainda esperam você escolher o caminho. */
-  const undecided = $derived(findings.filter((f) => marked[f.id] && f.options.length && chosen[f.id] === undefined));
+  const undecided = $derived(decision.undecided);
   const decisions = $derived(findings.filter((f) => f.options.length).length);
   const allMarked = $derived(findings.length > 0 && findings.every((f) => marked[f.id]));
 
@@ -52,26 +45,19 @@
 
   const severityTone = (s: string | null) => {
     const v = (s ?? "").toLowerCase();
-    return v.startsWith("alt") || v.startsWith("high") ? "bad" : v.startsWith("m") ? "warn" : "";
+    return v.startsWith("alt") || v.startsWith("high") ? "alta" : v.startsWith("m") ? "media" : "baixa";
   };
 </script>
 
-<section class="card choice" aria-label="Achados do code review para a sua escolha">
-  <div class="c-top">
-    <div class="c-title">
-      <div class="row-w">
-        <span class="pill warn"><span class="dot warn pulse"></span>Aguardando sua escolha</span>
-        <h2>
-          {#if findings.length === 0}O Code review terminou sem a lista de achados
-          {:else}O Code review encontrou {findings.length} {findings.length === 1 ? "achado" : "achados"}{decisions ? `, ${decisions} com decisão sua` : ""}{/if}
-        </h2>
-      </div>
-      <p class="note">
-        Marque o que corrigir e, nos achados com mais de um caminho, escolha qual seguir. O Implementador corrige só isso, e o
-        Revisor e o Testador conferem. A espera não conta no orçamento.
-      </p>
-    </div>
-  </div>
+<section class="choice" aria-label="Achados do code review para a sua escolha">
+  <h3 class="sec-h">
+    {#if findings.length === 0}O Code review terminou sem a lista de achados
+    {:else}Achados do code review<span class="n">{picks.length} de {findings.length} {findings.length === 1 ? "marcado" : "marcados"}{decisions ? ` · ${decisions} com decisão sua` : ""}</span>{/if}
+  </h3>
+  <p class="note">
+    Marque o que corrigir e, nos achados com mais de um caminho, escolha qual seguir. O Implementador corrige só isso, e o
+    Revisor e o Testador conferem.
+  </p>
 
   {#if summary}
     <details class="summary" bind:open={summaryOpen}>
@@ -82,31 +68,32 @@
 
   {#if findings.length}
     <div class="list-head">
-      <span class="muted small">{picks.length} de {findings.length} {findings.length === 1 ? "marcado" : "marcados"}</span>
       <button type="button" class="lnk" onclick={toggleAll}>{allMarked ? "Desmarcar todos" : "Marcar todos"}</button>
     </div>
-    <ul class="findings">
+    <ul class="finds">
       {#each findings as f (f.id)}
-        <li class="finding" class:on={marked[f.id]}>
-          <label class="f-head">
+        <li class="find" class:on={marked[f.id]}>
+          <label class="f-row">
             <input type="checkbox" bind:checked={marked[f.id]} />
-            <span class="f-id mono">{f.id}</span>
-            <span class="f-title">{f.title}</span>
-            {#if f.severity}<span class="pill sev {severityTone(f.severity)}">{f.severity}</span>{/if}
-            {#if f.options.length}<span class="pill decide">decisão sua</span>{/if}
+            <span>
+              <span class="f-top">
+                {#if f.severity}<span class="sev {severityTone(f.severity)}">{f.severity}</span>{/if}
+                <span class="f-title">{f.id} · {f.title}</span>
+                {#if f.options.length}<span class="decide">decisão sua</span>{/if}
+              </span>
+              {#if f.file}<span class="f-file">{f.file}{f.line ? `:${f.line}` : ""}</span>{/if}
+            </span>
           </label>
-          {#if f.file}<code class="f-place">{f.file}{f.line ? `:${f.line}` : ""}</code>{/if}
           {#if f.detail}<p class="f-detail">{f.detail}</p>{/if}
           {#if f.options.length}
-            <fieldset class="options">
-              <legend class="label">Qual caminho seguir</legend>
+            <div class="opts" role="radiogroup" aria-label="Qual caminho seguir">
               {#each f.options as option, i (i)}
-                <label class="option">
+                <label class="opt">
                   <input type="radio" name={`opt-${stage.id}-${f.id}`} checked={chosen[f.id] === i} onchange={() => choose(f.id, i)} />
-                  <span>{optionText(option)}{#if isRecommended(option)}<span class="tag rec">Recomendado</span>{/if}</span>
+                  <span>{optionText(option)}</span>{#if isRecommended(option)}<span class="rec">Recomendado</span>{/if}
                 </label>
               {/each}
-            </fieldset>
+            </div>
           {/if}
         </li>
       {/each}
@@ -121,47 +108,51 @@
       placeholder={findings.length ? "Ex.: no A2, mantenha a assinatura da função pública." : "Descreva o que o Implementador deve corrigir, a partir do texto acima."}></textarea>
   </div>
 
-  <div class="row-w acts">
+  <div class="acts">
     {#if undecided.length}<span class="warn-text small">Escolha o caminho de {undecided.map((f) => f.id).join(", ")}.</span>{/if}
     <span class="grow"></span>
     <button type="button" class="btn" disabled={busy} onclick={skip} title="Nada é corrigido: a esteira segue para o Relator">Seguir sem corrigir</button>
-    <button type="button" class="btn primary" disabled={busy || undecided.length > 0 || (picks.length === 0 && !note.trim())} onclick={fix}>
+    <button type="button" class="btn warnp" disabled={busy || undecided.length > 0 || (picks.length === 0 && !note.trim())} onclick={fix}>
       {picks.length ? `Corrigir ${picks.length === 1 ? "o escolhido" : `os ${picks.length} escolhidos`}` : "Enviar ao Implementador"}
     </button>
   </div>
 </section>
 
 <style>
-  .choice { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px 16px; border-color: rgba(217, 164, 65, 0.45); }
-  .c-title h2 { font-family: var(--display); font-size: 16px; font-weight: 600; }
-  .note { margin-top: 6px; color: var(--text-2); font-size: 13px; }
-  .row-w { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .choice { display: flex; flex-direction: column; gap: 10px; }
+  .sec-h { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+  .sec-h .n { font: 500 10.5px var(--mono); letter-spacing: 0; text-transform: none; color: var(--faint); }
+  .note { font-size: 12.5px; color: var(--text-2); }
   .grow { flex: 1; }
-  .summary { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; background: var(--surface-2); }
+  .summary { padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
   .summary summary { cursor: pointer; }
   .summary .md { margin-top: 8px; }
-  .list-head { display: flex; align-items: center; justify-content: space-between; }
-  .findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  .finding { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); }
-  .finding.on { border-color: var(--accent); background: rgba(91, 106, 217, 0.06); }
-  .f-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; cursor: pointer; }
-  .f-head input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
-  .f-id { font-size: 12px; color: var(--muted); }
-  .f-title { font-weight: 600; flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
-  .pill.sev, .pill.decide { font-size: 11px; }
-  .pill.bad { color: var(--danger-text); background: var(--danger-bg); }
-  .pill.decide { color: var(--accent-text); background: rgba(91, 106, 217, 0.14); }
-  .f-place { align-self: flex-start; padding: 0 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); font-family: var(--mono); font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
-  .f-detail { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
-  .options { border: 0; margin: 2px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--surface-2); display: flex; flex-direction: column; gap: 6px; }
-  .options legend { float: left; margin-bottom: 4px; }
-  .option { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 13px; }
-  .option input { accent-color: var(--accent); margin: 3px 0 0; }
-  .tag.rec { margin-left: 8px; padding: 0 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 11px; color: var(--accent-text); white-space: nowrap; }
+  .list-head { display: flex; justify-content: flex-end; margin-bottom: -4px; }
+  .finds { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .find { padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); transition: border-color 0.25s, background-color 0.25s; }
+  .find.on { border-color: var(--acc-line); background: var(--acc-bg); }
+  .f-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; cursor: pointer; }
+  .f-row input, .opt input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent); }
+  .f-top { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 7px; }
+  .f-title { font-size: 12.5px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+  .f-file { display: block; margin-top: 2px; font: 400 10.5px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+  .f-detail { margin: 6px 0 0 26px; font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
+  .sev { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 10.5px; font-weight: 700; }
+  .sev.alta { background: var(--danger-bg); color: var(--danger-text); }
+  .sev.media { background: var(--warn-bg); color: var(--warn-text); }
+  .sev.baixa { background: var(--surface-3); color: var(--text-2); }
+  .decide { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; background: var(--acc-bg); color: var(--accent-text); font-size: 10.5px; font-weight: 600; }
+  .opts { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 0 26px; }
+  .opt { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+  .rec { display: inline-flex; align-items: center; height: 17px; padding: 0 6px; border-radius: 5px; background: var(--ok-bg); color: var(--ok-text); font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
   .raw { max-height: 360px; overflow: auto; }
   .extra { display: flex; flex-direction: column; gap: 6px; }
-  .acts { justify-content: flex-end; }
+  .area { width: 100%; min-height: 60px; padding: 9px 11px; resize: vertical; line-height: 1.5; }
+  .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .warn-text { color: var(--warn-text); }
-  .lnk { background: none; border: 0; padding: 0; color: var(--accent-text); font: inherit; font-size: 12.5px; cursor: pointer; }
-  .lnk:hover { text-decoration: underline; }
+  .btn.warnp { border-color: transparent; background: var(--warn); color: #1b1406; font-weight: 600; }
+  .btn.warnp:hover:not(:disabled) { background: var(--warn-btn-hover); }
+  .lnk { padding: 0; border: 0; background: none; color: var(--accent-text); font: inherit; font-size: 12px; text-decoration: underline; text-decoration-color: var(--acc-line); text-underline-offset: 3px; cursor: pointer; }
+  .md :global(:first-child) { margin-top: 0; }
+  .md :global(p), .md :global(ul), .md :global(ol) { margin: 0 0 8px; }
 </style>

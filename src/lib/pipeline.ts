@@ -2,7 +2,7 @@
 
 import { isRecommended, optionText, parseToolUse, summarize } from "./tools";
 import { modelLabel, type Delivery } from "./types";
-import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, Question, ReviewFinding, StageRun, TokenUsage } from "./types";
+import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, Question, ReviewFinding, ReviewPick, StageRun, TokenUsage } from "./types";
 
 export interface Station {
   role: PipelineRole;
@@ -293,6 +293,28 @@ export function icon(name: Glyph, size = 14, stroke = 2): string {
   return `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round">${GLYPHS[name]}</svg>`;
 }
 
+/** Ícone de cada papel: o bot (ou a sua parada) que trabalha na estação. */
+const ROLE_PATH: Record<PipelineRole, string> = {
+  triage: "M4 5h16l-6 7.5V19l-4 1.5v-8z",
+  designer: "M12 19l7-7 3 3-7 7zM18 13l-1.5-7.5L2 2l3.5 14.5L13 18zM2 2l7.6 7.6M9 11a2 2 0 1 0 4 0a2 2 0 1 0-4 0",
+  planner: "M9 4L3 6.5V20l6-2.5 6 2.5 6-2.5V4l-6 2.5zM9 4v13.5M15 6.5V20",
+  approval: "M8 8a4 4 0 1 0 8 0a4 4 0 1 0-8 0M4.5 20.5a7.5 7.5 0 0 1 15 0",
+  design_approval: "M8 8a4 4 0 1 0 8 0a4 4 0 1 0-8 0M4.5 20.5a7.5 7.5 0 0 1 15 0",
+  implementer: "M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 4.5l-3 15",
+  reviewer: "M2.5 12c2.2-4.3 5.6-6.5 9.5-6.5s7.3 2.2 9.5 6.5c-2.2 4.3-5.6 6.5-9.5 6.5S4.7 16.3 2.5 12zM9.2 12a2.8 2.8 0 1 0 5.6 0a2.8 2.8 0 1 0-5.6 0",
+  tester: "M9 3h6M10 3v6.2L4.8 18.4A1.8 1.8 0 0 0 6.4 21h11.2a1.8 1.8 0 0 0 1.6-2.6L14 9.2V3M7.4 15h9.2",
+  code_review: "M12 3l7.5 3v5.5c0 4.6-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.9-7.5-9.5V6zM8.8 12.2l2.2 2.2 4.4-4.6",
+  review_choice: "M8 8a4 4 0 1 0 8 0a4 4 0 1 0-8 0M4.5 20.5a7.5 7.5 0 0 1 15 0",
+  reporter: "M21 3L10 14M21 3l-6.5 18-4.5-7-7-4.5z",
+  feedback: "M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+  resume: "M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11",
+};
+
+/** SVG do ícone do papel, para usar com {@html}. */
+export function roleIcon(role: PipelineRole, size = 14, stroke = 2): string {
+  return `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round"><path d="${ROLE_PATH[role]}"/></svg>`;
+}
+
 /** Situação da execução: tom da pílula e rótulo. */
 export const RUN_STATUS: Record<PipelineStatus, { tone: "acc" | "warn" | "ok" | "bad" | ""; label: string }> = {
   running: { tone: "acc", label: "Em execução" },
@@ -442,12 +464,72 @@ function firstLine(text: string): string {
   return line.length > 90 ? `${line.slice(0, 89)}…` : line;
 }
 
+/** O que o bot faz agora, em linguagem de gente (sem o nome dele): "está escrevendo o plano". */
+const DOING: Partial<Record<PipelineRole, string>> = {
+  triage: "está lendo a task e apontando o que está vago",
+  designer: "está desenhando a solução no Claude Design",
+  planner: "está estudando o código e escrevendo o plano",
+  implementer: "está executando o plano aprovado",
+  reviewer: "está conferindo as alterações do Implementador",
+  tester: "está rodando as verificações do projeto",
+  code_review: "está rodando a skill code-review nos arquivos alterados",
+};
+
+export function doingPhrase(stage: StageRun, detail: PipelineDetail): string {
+  const input = stage.input;
+  if (stage.role === "implementer") {
+    if (input.includes(FIX_MARK)) return "está aplicando as correções que você escolheu";
+    if (input.includes("<problemas>")) {
+      const by = detail.stages.slice(0, detail.stages.indexOf(stage)).findLast((s) => (s.role === "reviewer" || s.role === "tester") && s.status === "returned");
+      return `está corrigindo o que o ${by?.role === "tester" ? "Testador" : "Revisor"} apontou`;
+    }
+    if (input.includes("<ajuste_do_usuario>")) return "está corrigindo o que você pediu";
+  }
+  if (stage.role === "planner" && input.includes("<ajustes>")) return "está refazendo o plano com os seus ajustes";
+  if (stage.role === "designer" && input.includes("<ajustes>")) return "está refazendo o design com os seus ajustes";
+  if (stage.role === "reporter") return detail.jira_key ? `está escrevendo a Solução na task ${detail.jira_key}` : "está escrevendo o relatório";
+  return DOING[stage.role] ?? "está trabalhando";
+}
+
+/** O que vem depois da etapa, conforme o resultado: "Se aprovar → Testador". */
+export function nextSteps(role: PipelineRole, detail: PipelineDetail): { when: string; to: string; tone: "ok" | "bad" | "you" }[] {
+  const END = "fim da esteira · você confere e entrega";
+  const after = (r: PipelineRole) => STATIONS.slice(STATIONS.findIndex((s) => s.role === r) + 1).find((s) => !detail.skipped.includes(s.role))?.name ?? END;
+  const back = detail.rounds < detail.max_rounds ? `Implementador · volta ${detail.rounds + 1}/${detail.max_rounds}` : "a esteira para no limite de voltas";
+  switch (role) {
+    case "triage": return [{ when: "Se estiver clara", to: detail.design ? "Designer" : after("triage"), tone: "ok" }, { when: "Se estiver vaga", to: "a esteira para e pede informação", tone: "bad" }];
+    case "designer": return [{ when: "Depois", to: "Aprovação do design · a esteira para", tone: "you" }];
+    case "planner": return [{ when: "Depois", to: "Sua aprovação · a esteira para", tone: "you" }];
+    case "implementer": return [{ when: "Depois", to: "Revisor", tone: "ok" }];
+    case "reviewer": return [{ when: "Se aprovar", to: after("reviewer"), tone: "ok" }, { when: "Se devolver", to: back, tone: "bad" }];
+    case "tester": return [{ when: "Se aprovar", to: after("tester"), tone: "ok" }, { when: "Se reprovar", to: back, tone: "bad" }];
+    case "code_review": return [{ when: "Com achados", to: "Sua escolha · a esteira para", tone: "you" }, { when: "Sem achados", to: after("code_review"), tone: "ok" }];
+    case "reporter": return [{ when: "Depois", to: END, tone: "ok" }];
+    default: return [];
+  }
+}
+
+/** O que a sua escolha manda corrigir e os achados marcados que ainda esperam o caminho. */
+export function reviewPicks(findings: ReviewFinding[], marked: Record<string, boolean>, chosen: Record<string, number>): { picks: ReviewPick[]; undecided: ReviewFinding[] } {
+  return {
+    picks: findings.filter((f) => marked[f.id]).map((f) => ({ id: f.id, option: f.options.length ? (chosen[f.id] ?? null) : null })),
+    undecided: findings.filter((f) => marked[f.id] && f.options.length && chosen[f.id] === undefined),
+  };
+}
+
+/** Seta de devolução que leva o trabalho de volta a partir da etapa que devolveu. */
+export function returnArc(role: PipelineRole): "plan" | "review" | "test" | "fix" {
+  return role === "approval" || role === "design_approval" ? "plan" : role === "tester" ? "test" : role === "review_choice" ? "fix" : "review";
+}
+
 /** Linha do log de uma etapa. */
 export interface LogLine {
   at: number;
   glyph: Glyph;
   verb: string;
   target: string;
+  /** Alvo completo (caminho do arquivo, comando inteiro), quando a linha mostra só uma parte dele. */
+  title?: string;
   tone: "" | "warn" | "error" | "swap";
 }
 
@@ -456,12 +538,26 @@ const VERB_GLYPH: Record<string, Glyph> = {
   "Listar arquivos": "search", "Buscar na web": "search", "Ler página": "link",
 };
 
-/** Linha do registro para um uso de ferramenta (do bot ou de um subagente dele). */
+/** Ferramentas cujo alvo é um arquivo: o registro mostra só o nome dele. */
+const FILE_TOOLS = new Set(["Read", "Edit", "MultiEdit", "Write", "NotebookEdit"]);
+/** O `cd pasta &&` que os bots põem antes dos comandos: no registro, só o comando. */
+const CD_PREFIX = /^\s*cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*/;
+
+/** Linha do registro para um uso de ferramenta (do bot ou de um subagente dele). O alvo fica curto
+ *  (nome do arquivo, comando sem o `cd`); o completo vai em `title`. */
 export function toolLogLine(name: string, input: Record<string, unknown>, isError: boolean, at: number): LogLine {
-  const { label, target } = summarize(name, input);
+  const { label, target: full } = summarize(name, input);
   const glyph = name.startsWith("mcp__") ? "link" : (VERB_GLYPH[label] ?? "run");
-  return { at, glyph: isError ? "x" : glyph, verb: label, target, tone: isError ? "error" : "" };
+  const target = FILE_TOOLS.has(name) ? (full.split(/[\\/]/).filter(Boolean).at(-1) ?? full) : name === "Bash" ? full.replace(CD_PREFIX, "") : full;
+  return { at, glyph: isError ? "x" : glyph, verb: label, target, title: target !== full ? full : undefined, tone: isError ? "error" : "" };
 }
+
+/** O verbo da ação em andamento: "Lendo", "Editando"… (a descrição do comando fica como veio). */
+const GERUND: Record<string, string> = {
+  Ler: "Lendo", Editar: "Editando", "Criar arquivo": "Criando", Executar: "Executando", Buscar: "Buscando",
+  "Listar arquivos": "Listando", "Buscar na web": "Buscando na web", "Ler página": "Lendo a página",
+};
+export const gerund = (verb: string) => GERUND[verb] ?? verb;
 
 /** O que o bot fez, a partir das mensagens gravadas na conversa da etapa. */
 export function stageLog(messages: Message[]): LogLine[] {
