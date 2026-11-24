@@ -1,6 +1,6 @@
 // Como apresentar a esteira de bots: estações, estados, rótulos e o log de cada etapa.
 
-import { parseToolUse, summarize } from "./tools";
+import { isRecommended, optionText, parseToolUse, summarize } from "./tools";
 import { modelLabel, type Delivery } from "./types";
 import type { Message, PipelineDetail, Provider, Tier, TierModels, PipelineRole, PipelineStatus, Question, ReviewFinding, StageRun, TokenUsage } from "./types";
 
@@ -235,7 +235,7 @@ export function findingsMarkdown(findings: ReviewFinding[]): string {
   return findings
     .map((f) => {
       const place = f.file ? ` · \`${f.file}${f.line ? `:${f.line}` : ""}\`` : "";
-      const options = f.options.map((o, i) => `\n   ${i + 1}. ${o}`).join("");
+      const options = f.options.map((o, i) => `\n   ${i + 1}. ${optionText(o)}${isRecommended(o) ? " _(recomendado)_" : ""}`).join("");
       return `- **${f.id} · ${f.title}**${f.severity ? ` (${f.severity})` : ""}${place}${f.detail ? `\n  ${f.detail}` : ""}${options}`;
     })
     .join("\n");

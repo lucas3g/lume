@@ -1,6 +1,7 @@
 <script lang="ts">
   import { renderMarkdown } from "../../format";
   import { choiceFindings, reviewSummary } from "../../pipeline";
+  import { isRecommended, optionText } from "../../tools";
   import type { ReviewPick, StageRun } from "../../types";
 
   /** Parada da sua escolha sobre o code review: o que corrigir e, nos achados com mais de um
@@ -102,7 +103,7 @@
               {#each f.options as option, i (i)}
                 <label class="option">
                   <input type="radio" name={`opt-${stage.id}-${f.id}`} checked={chosen[f.id] === i} onchange={() => choose(f.id, i)} />
-                  <span>{option}</span>
+                  <span>{optionText(option)}{#if isRecommended(option)}<span class="tag rec">Recomendado</span>{/if}</span>
                 </label>
               {/each}
             </fieldset>
@@ -156,6 +157,7 @@
   .options legend { float: left; margin-bottom: 4px; }
   .option { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 13px; }
   .option input { accent-color: var(--accent); margin: 3px 0 0; }
+  .tag.rec { margin-left: 8px; padding: 0 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 11px; color: var(--accent-text); white-space: nowrap; }
   .raw { max-height: 360px; overflow: auto; }
   .extra { display: flex; flex-direction: column; gap: 6px; }
   .acts { justify-content: flex-end; }

@@ -83,6 +83,9 @@ export const isRecommended = (label: string) => new RegExp(RECOMMENDED_SUFFIX.so
 /** Texto sem o sufixo "(Recomendado)" (de um rótulo ou de várias respostas separadas por vírgula). */
 export const withoutRecommended = (text: string) => text.replace(RECOMMENDED_SUFFIX, "");
 
+/** Caminho de um achado do code review sem o "(Recomendado)"; só com o marcador, fica como veio. */
+export const optionText = (option: string) => withoutRecommended(option).trim() || option.trim();
+
 /** Perguntas de um pedido do AskUserQuestion (vazio se o pedido não traz nenhuma). */
 export function questionsOf(request: { input: string }): Question[] {
   const list = parseInput(request.input).questions;

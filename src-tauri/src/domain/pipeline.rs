@@ -910,8 +910,8 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                  [{{\"id\": \"A1\", \"title\": \"o problema em uma frase\", \"file\": \"src/arquivo.ts\", \"line\": 42, \
                  \"severity\": \"alta\", \"detail\": \"o cenário em que falha e a correção\", \"options\": []}}]\n\
                  `severity` é \"alta\", \"média\" ou \"baixa\". Use `options` só quando a correção depende de uma decisão do \
-                 usuário, porque há mais de um caminho razoável: descreva cada caminho em uma frase, com a consequência. Para \
-                 uma correção direta, deixe `\"options\": []`. Sem achados, o bloco é `[]`.",
+                 usuário, porque há mais de um caminho razoável: descreva cada caminho em uma frase, com a consequência, e ponha \
+                 ` (Recomendado)` no fim do caminho que você recomenda (um só). Para uma correção direta, deixe `\"options\": []`. Sem achados, o bloco é `[]`.",
                 run.title,
                 adjustment(ctx),
                 ctx.implementation.as_deref().unwrap_or(""),
@@ -1389,6 +1389,32 @@ pub fn parse_findings(text: &str) -> Option<Vec<Finding>> {
     Some(findings)
 }
 
+/// Caminho sem o " (Recomendado)" que marca o sugerido pelo code review, com a mesma regra do
+/// `withoutRecommended` da tela: sem diferenciar maiúsculas, no fim do texto ou antes de uma vírgula.
+/// Se só houver o marcador, fica o texto como veio (a decisão nunca vai vazia).
+fn without_recommended(option: &str) -> String {
+    const TAGS: [&str; 3] = ["(recomendado)", "(recomendada)", "(recommended)"];
+    let mut out = String::new();
+    let mut rest = option;
+    while let Some(open) = rest.find('(') {
+        let tag = TAGS.iter().find(|t| rest.get(open..open + t.len()).is_some_and(|x| x.eq_ignore_ascii_case(t)));
+        let after = tag.map(|t| &rest[open + t.len()..]);
+        match after {
+            Some(after) if after.starts_with(',') || after.trim().is_empty() => {
+                out.push_str(rest[..open].trim_end());
+                rest = after;
+            }
+            _ => {
+                out.push_str(&rest[..=open]);
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    let out = out.trim();
+    if out.is_empty() { option.trim().to_owned() } else { out.to_owned() }
+}
+
 /// Um achado que o usuário quer corrigir e, quando ele tem caminhos, o escolhido.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ReviewPick {
@@ -1421,7 +1447,8 @@ pub fn fix_request(findings: &[Finding], picks: &[ReviewPick], note: Option<&str
                 .option
                 .and_then(|i| finding.options.get(i))
                 .ok_or_else(|| format!("Escolha o caminho para \"{}\".", finding.title))?;
-            item.push_str(&format!("\n   Decisão do usuário: {chosen}"));
+            // O "(Recomendado)" é só etiqueta da tela; não vai para o pedido.
+            item.push_str(&format!("\n   Decisão do usuário: {}", without_recommended(chosen)));
         }
         items.push(item);
     }
@@ -1682,13 +1709,13 @@ mod tests {
     #[test]
     fn findings_are_read_from_the_last_json_block_and_turned_into_a_fix_request() {
         let text = "Resumo.\n```json\n[{\"id\": \"A1\", \"title\": \"Divisão por zero\", \"file\": \"src/a.ts\", \"line\": \"12\", \
-                    \"severity\": \"alta\", \"detail\": \"total vazio\", \"options\": [\"retornar 0\", \" lançar erro \"]},\
+                    \"severity\": \"alta\", \"detail\": \"total vazio\", \"options\": [\"retornar 0\", \" lançar erro (Recomendado) \"]},\
                     {\"id\": \"A1\", \"title\": \"Sem log\"}, {\"detail\": \"sem título\"}]\n```";
         let findings = parse_findings(text).unwrap();
         assert_eq!(findings.len(), 3);
         assert_eq!(findings[2].title, "sem título", "sem título, vale o detalhe");
         assert_eq!(parse_findings("```json\n[{\"id\": \"A1\"}]\n```"), Some(vec![]), "item vazio não é achado");
-        assert_eq!((findings[0].line, findings[0].options.clone()), (Some(12), vec!["retornar 0".to_owned(), "lançar erro".to_owned()]));
+        assert_eq!((findings[0].line, findings[0].options.clone()), (Some(12), vec!["retornar 0".to_owned(), "lançar erro (Recomendado)".to_owned()]));
         assert_eq!(findings[1].id, "A2", "id repetido ganha um próprio");
         assert_eq!(parse_findings("sem bloco"), None);
         let clash = parse_findings("```json\n[{\"id\": \"A2\", \"title\": \"a\"}, {\"id\": \"A2\", \"title\": \"b\"}]\n```").unwrap();
@@ -1700,7 +1727,11 @@ mod tests {
         assert!(fix_request(&findings, &[pick("X9", None)], None).is_err());
         let request = fix_request(&findings, &[pick("A1", Some(1)), pick("A2", None)], Some("sem mudar a API")).unwrap().unwrap();
         assert!(request.contains("[A1] Divisão por zero (src/a.ts:12)"));
-        assert!(request.contains("Decisão do usuário: lançar erro"));
+        assert!(request.contains("Decisão do usuário: lançar erro\n"), "o \"(Recomendado)\" não vai para o pedido");
+        assert_eq!(without_recommended("vírgula (recomendado)"), "vírgula");
+        assert_eq!(without_recommended("usar cache (Recomendado), com TTL curto"), "usar cache, com TTL curto");
+        assert_eq!(without_recommended("cache (recomendado no guia)"), "cache (recomendado no guia)", "só o marcador sozinho sai");
+        assert_eq!(without_recommended(" (Recomendado) "), "(Recomendado)", "só o marcador: fica como veio");
         assert!(request.contains("2. [A2] Sem log"));
         assert!(request.contains("Observação do usuário: sem mudar a API"));
         assert!(fix_request(&findings, &[], Some("renomeie a função")).unwrap().is_some());
