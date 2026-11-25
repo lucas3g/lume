@@ -45,9 +45,12 @@ const DESIGN_GUIDE: &str = "Quando o usuário pedir uma página, interface, tela
 design, crie-o no Claude Design: chame a ferramenta Artifact com action \"quickstart\" e a intent adequada e siga o que \
 ela indicar (crie a partir do `type_url` que ela der, com um título curto). Para ajustar um artifact já criado nesta \
 conversa, atualize esse mesmo artifact (publique com o `url` dele, lendo-o antes). Não escreva o HTML na resposta nem em \
-arquivos: o aplicativo abre o artifact pelo link. Termine a resposta com a linha `DESIGN: <link do artifact>`. Se a ferramenta Artifact não estiver disponível, entregue \
-um único bloco de código ```html completo e autossuficiente (CSS e JavaScript embutidos); o aplicativo mostra esse bloco \
-como prévia ao lado da conversa.";
+arquivos: o aplicativo abre o artifact pelo link. Termine a resposta com a linha `DESIGN: <link do artifact>`. Isso vale \
+mesmo que conversas anteriores ou trechos de contexto tragam mockups em HTML. Se a ferramenta Artifact não estiver \
+disponível e o usuário pediu o Claude Design, não faça mockup em HTML no lugar: diga que o Claude Design não está \
+disponível nesta versão do Claude Code e pergunte se ele quer o mockup em HTML. Sem o pedido explícito do Claude Design, \
+entregue um único bloco de código ```html completo e autossuficiente (CSS e JavaScript embutidos); o aplicativo mostra \
+esse bloco como prévia ao lado da conversa.";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TurnSetup {
