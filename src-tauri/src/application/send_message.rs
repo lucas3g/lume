@@ -205,6 +205,9 @@ impl SendMessage {
         let mut stalls = 0usize;
         // Depois de uma interrupção pelo vigia, a mesma conta continua a sessão (sem escolher de novo).
         let mut retry: Option<Account> = None;
+        // A conta da vez não achou a sessão (ex.: um perfil que guarda as próprias sessões): o turno
+        // recomeça numa sessão nova, com o diálogo já gravado como contexto.
+        let mut session_lost = false;
         // Instruções e conhecimento que a sessão já recebeu: cada parte só é reenviada quando muda.
         let standing = [(RULES_PREFIX, setup.rules.as_deref()), (KNOWLEDGE_PREFIX, setup.knowledge_key.as_deref())]
             .map(|(prefix, text)| {
@@ -260,7 +263,11 @@ impl SendMessage {
 
             // A sessão só existe no serviço que a criou: uma conta de outro tipo começa
             // uma sessão nova e recebe o diálogo já gravado como contexto.
-            let foreign_session = session.is_some() && session_provider != account.provider;
+            // Uma sessão nova já começou depois da perdida: daqui em diante ela é retomada normalmente.
+            if session.is_some() {
+                session_lost = false;
+            }
+            let foreign_session = session_lost || (session.is_some() && session_provider != account.provider);
             let extra_system = if foreign_session {
                 let sections = [setup.extra_system.clone(), self.prepare.dialogue(&conversation)?];
                 Some(sections.into_iter().flatten().collect::<Vec<_>>().join("\n\n")).filter(|s| !s.is_empty())
@@ -448,6 +455,13 @@ impl SendMessage {
                     self.emit(conversation_id, ChatEvent::Reset);
                     keep_session(&journal, &account, &mut session, &mut session_provider, &mut continuing);
                     previous = Some((account, Handoff::Auth));
+                }
+                TurnEnd::Failed(message) if request.resume.is_some() && is_missing_session(&message) => {
+                    session = None;
+                    session_lost = true;
+                    continuing = false;
+                    self.emit(conversation_id, ChatEvent::Reset);
+                    retry = Some(account);
                 }
                 TurnEnd::Failed(message) => {
                     self.emit(conversation_id, ChatEvent::Error { message });
@@ -740,6 +754,11 @@ pub fn make_title(text: &str) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// O CLI não achou a sessão a retomar (ela ficou em outro perfil ou foi apagada).
+fn is_missing_session(message: &str) -> bool {
+    message.contains("No conversation found with session ID")
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -962,6 +981,43 @@ mod tests {
         assert_eq!(conversation.session_provider, Provider::ChatGpt, "a próxima mensagem retoma a sessão do Codex");
         let usage = ConversationRepository::usage(&*world.store, "c1").unwrap();
         assert_eq!((usage.input, usage.cost_usd), (111, Some(0.75)), "os turnos e as tentativas que pararam no limite somam");
+    }
+
+    #[tokio::test]
+    async fn a_session_the_account_cannot_find_restarts_with_the_dialogue() {
+        let world = World::with_accounts(vec![sample("a", 1)]);
+        let engine = ScriptedEngine::new(move |req, call| match call {
+            1 => (vec![], TurnEnd::Done { session_id: Some("s1".into()), text: "o número é 417".into() }),
+            2 => {
+                assert_eq!(req.resume.as_deref(), Some("s1"));
+                (vec![], TurnEnd::Failed("No conversation found with session ID: s1".into()))
+            }
+            _ => {
+                assert_eq!(req.resume, None, "a sessão perdida não é retomada de novo");
+                assert!(req.extra_system.as_deref().unwrap().contains("417"), "o diálogo anterior vai como contexto");
+                (vec![], TurnEnd::Done { session_id: Some("s2".into()), text: "417".into() })
+            }
+        });
+        let uc = use_case(&world, engine);
+        uc.execute("c1", "guarde 417", &[], vec![], TurnControl::new().0).await.unwrap();
+        uc.execute("c1", "qual era?", &[], vec![], TurnControl::new().0).await.unwrap();
+        assert_eq!(world.conversation("c1").cli_session_id.as_deref(), Some("s2"), "a próxima mensagem retoma a sessão nova");
+    }
+
+    #[test]
+    fn a_profile_folder_the_cli_created_is_merged_and_linked() {
+        use crate::infrastructure::claude_cli::accounts::link_dir;
+        let root = std::env::temp_dir().join(format!("lume-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (shared, profile) = (root.join("main/projects"), root.join("perfil/projects"));
+        std::fs::create_dir_all(shared.join("p1")).unwrap();
+        std::fs::write(shared.join("p1/antiga.jsonl"), "a").unwrap();
+        std::fs::create_dir_all(profile.join("p1")).unwrap();
+        std::fs::write(profile.join("p1/nova.jsonl"), "b").unwrap();
+        link_dir(&shared, &profile);
+        assert!(profile.read_link().is_ok(), "a pasta do perfil virou link");
+        assert!(shared.join("p1/nova.jsonl").exists() && shared.join("p1/antiga.jsonl").exists(), "nada se perdeu");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

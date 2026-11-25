@@ -29,14 +29,47 @@ impl ClaudeCliAccounts {
     }
 }
 
+/// Liga a pasta do perfil à compartilhada. Se o CLI já criou ali uma pasta comum (o link tinha
+/// falhado), o conteúdo dela vai para a compartilhada antes de virar link; o que não puder ser
+/// movido fica onde está, e a pasta não vira link.
 pub(crate) fn link_dir(target: &Path, link: &Path) {
-    if link.exists() || !target.exists() {
+    if !target.exists() || link.read_link().is_ok() {
+        return;
+    }
+    if link.is_dir() {
+        merge_into(link, target);
+        if std::fs::remove_dir(link).is_err() {
+            return;
+        }
+    } else if link.exists() {
         return;
     }
     #[cfg(unix)]
     let _ = std::os::unix::fs::symlink(target, link);
+    // O symlink no Windows exige administrador ou o modo de desenvolvedor; a junção, não.
     #[cfg(windows)]
-    let _ = std::os::windows::fs::symlink_dir(target, link);
+    {
+        if std::os::windows::fs::symlink_dir(target, link).is_err() {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.arg("/C").arg("mklink").arg("/J").arg(link).arg(target);
+            crate::infrastructure::hide_console(&mut cmd);
+            let _ = cmd.output();
+        }
+    }
+}
+
+/// Move para `to` o que há em `from`, sem sobrescrever: pastas com o mesmo nome são mescladas.
+fn merge_into(from: &Path, to: &Path) {
+    let Ok(entries) = std::fs::read_dir(from) else { return };
+    for entry in entries.flatten() {
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        if !dst.exists() {
+            let _ = std::fs::rename(&src, &dst);
+        } else if src.is_dir() && dst.is_dir() {
+            merge_into(&src, &dst);
+            let _ = std::fs::remove_dir(&src);
+        }
+    }
 }
 
 /// Instante Unix de uma data ISO 8601 em UTC ("2026-12-12T03:41:12.461Z" ou "...+00:00").

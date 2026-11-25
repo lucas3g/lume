@@ -134,9 +134,19 @@ impl Container {
         // Cada tipo de conta é atendido pelo CLI do seu serviço.
         let gateway: Arc<dyn AccountGateway> = Arc::new(ByProvider::<dyn AccountGateway> {
             claude: Arc::new(ClaudeCliAccounts::new(cli.clone(), profiles_dir.clone(), main_config.clone())),
-            chatgpt: Arc::new(CodexAccounts::new(profiles_dir)),
+            chatgpt: Arc::new(CodexAccounts::new(profiles_dir.clone())),
             gemini: Arc::new(AntigravityAccounts),
         });
+        // Refaz os links dos perfis das contas do Claude: no Windows eles podiam ter falhado, e aí cada
+        // conta guardava as próprias sessões e a troca de conta não achava a conversa.
+        if let Ok(accounts) = crate::application::ports::AccountRepository::all(&*store) {
+            for account in accounts.iter().filter(|a| a.provider == crate::domain::account::Provider::Claude) {
+                let own = profiles_dir.join(&account.id);
+                if account.config_dir.as_deref().is_some_and(|d| std::path::Path::new(d) == own) {
+                    let _ = gateway.prepare_profile(account.provider, &account.id);
+                }
+            }
+        }
         let usage: Arc<dyn UsageProbe> = Arc::new(ByProvider::<dyn UsageProbe> {
             claude: Arc::new(OauthUsage::new(cli.clone(), main_config.clone())),
             chatgpt: Arc::new(CodexUsage),
