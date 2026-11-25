@@ -814,6 +814,17 @@ pub async fn brief_jira_task(app: App<'_>, key: String, site: Option<String>) ->
     app.jira_issues.brief(&key, site.as_deref()).await
 }
 
+/// Reescreve o título e o que fazer digitados (sem task do Jira) num pedido mais claro para a Triagem (não salva).
+#[tauri::command]
+pub async fn draft_pipeline_request(app: App<'_>, title: String, request: String, images: Option<Vec<PastedImage>>) -> AppResult<JiraTaskBrief> {
+    let images = images
+        .unwrap_or_default()
+        .into_iter()
+        .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
+        .collect();
+    app.draft_request.draft(&title, &request, images).await
+}
+
 /// Quadros do Jira e as colunas de cada um, para listar as tasks de uma coluna.
 #[tauri::command]
 pub async fn list_jira_boards(app: App<'_>) -> AppResult<JiraBoards> {

@@ -10,6 +10,7 @@ use crate::application::{
     conversations::ManageConversations,
     draft_agent::DraftAgent,
     draft_look::DraftLook,
+    draft_request::DraftRequest,
     jira_issues::JiraIssues,
     extensions::{ManageAgents, ManageConnectors, ManageSkills},
     history::ManageHistory,
@@ -67,6 +68,7 @@ pub struct Container {
     pub agents: ManageAgents,
     pub draft_agent: DraftAgent,
     pub draft_look: DraftLook,
+    pub draft_request: DraftRequest,
     pub jira_issues: JiraIssues,
     pub connectors: Arc<ManageConnectors>,
     pub store: BrowseStore,
@@ -194,6 +196,12 @@ impl Container {
                 chat_dir: chat_dir.to_string_lossy().into_owned(),
             },
             draft_look: DraftLook {
+                engine: engine.clone(),
+                accounts: store.clone(),
+                clock: clock.clone(),
+                chat_dir: chat_dir.to_string_lossy().into_owned(),
+            },
+            draft_request: DraftRequest {
                 engine: engine.clone(),
                 accounts: store.clone(),
                 clock: clock.clone(),

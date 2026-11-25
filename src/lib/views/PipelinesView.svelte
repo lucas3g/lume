@@ -44,6 +44,9 @@
   /** Último título posto pela task: trocar ou tirar a task troca ou limpa só esse, não um digitado. */
   let autoTitle = "";
   function pick(picked: PickedTask) {
+    // Uma geração sem task em andamento deixa de valer: a resposta não cai no formulário da task.
+    draftRun++;
+    drafting = false;
     task = picked;
     picking = false;
     briefError = null;
@@ -79,6 +82,26 @@
       if (task?.key === key) briefError = errorMessage(e);
     } finally {
       if (briefingKey === key) briefingKey = null;
+    }
+  }
+  /** Sem task: o modelo reescreve o título e o que fazer digitados num pedido mais claro para a Triagem. */
+  let drafting = $state(false);
+  /** Geração em andamento: escolher uma task invalida a resposta que ainda vai chegar. */
+  let draftRun = 0;
+  async function draftRequest() {
+    if (task || drafting || (!title.trim() && !request.trim())) return;
+    const run = ++draftRun;
+    drafting = true;
+    briefError = null;
+    try {
+      const result = await api.draftPipelineRequest(title, request, images.map(({ name, media_type, data }) => ({ name, media_type, data })));
+      if (run !== draftRun) return;
+      request = result.request;
+      if (result.title && !title.trim()) title = result.title;
+    } catch (e) {
+      if (run === draftRun) briefError = errorMessage(e);
+    } finally {
+      if (run === draftRun) drafting = false;
     }
   }
   let error = $state<string | null>(null);
@@ -254,9 +277,14 @@
                   title={`Lê a ${task.key} no Jira (descrição, critérios de aceite, comentários e anexos) e escreve o que fazer`}>
                   {#if briefing}<span class="spinner" aria-hidden="true"></span>Lendo a {task.key}…{:else}Gerar a partir da task{/if}
                 </button>
+              {:else if title.trim() || request.trim()}
+                <button type="button" class="btn small gen" onclick={draftRequest} disabled={drafting}
+                  title="Reescreve o que fazer num pedido mais claro para a Triagem (problema, comportamento esperado e critérios de aceite); sem título, sugere um">
+                  {#if drafting}<span class="spinner" aria-hidden="true"></span>Gerando…{:else}Gerar com IA{/if}
+                </button>
               {/if}
             </div>
-            <textarea id="pipeline-request" class="input" rows={request.length > 300 ? 10 : 4} bind:value={request} onpaste={onPaste} disabled={briefing}
+            <textarea id="pipeline-request" class="input" rows={request.length > 300 ? 10 : 4} bind:value={request} onpaste={onPaste} disabled={briefing || drafting}
               placeholder={task
                 ? "Use \"Gerar a partir da task\" para escrever o pedido com o que está na task, ou escreva algo além dela: restrições, por onde começar, o que não mexer. Cole imagens aqui."
                 : "Descreva o problema ou a funcionalidade, com o que conta como pronto. Cole imagens aqui (prints de tela, layouts)."}></textarea>
@@ -327,7 +355,7 @@
           </div>
           <p class="muted small">O texto da task é tratado como dado, não como instrução. Nenhum bot faz commit nem push: o commit fica com você no fim.</p>
           <div class="row">
-            <button type="submit" class="btn primary" disabled={busy || !projectId || (!task && !request.trim())}>Iniciar a esteira</button>
+            <button type="submit" class="btn primary" disabled={busy || drafting || !projectId || (!task && !request.trim())}>Iniciar a esteira</button>
           </div>
         {/if}
       </form>

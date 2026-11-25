@@ -119,6 +119,7 @@ export const api = {
   listJiraIssues: (query: string | null = null, statuses: string[] | null = null) => invoke<JiraIssueList>("list_jira_issues", { query, statuses }),
   listJiraBoards: () => invoke<JiraBoards>("list_jira_boards"),
   briefJiraTask: (key: string, site: string | null) => invoke<JiraTaskBrief>("brief_jira_task", { key, site }),
+  draftPipelineRequest: (title: string, request: string, images: PastedImage[]) => invoke<JiraTaskBrief>("draft_pipeline_request", { title, request, images }),
   startPipeline: (input: { projectId: string; jiraKey: string | null; jiraSite: string | null; title: string; request: string; budgetMinutes: number | null; images: PastedImage[]; design: boolean; createJira: boolean }) =>
     invoke<PipelineRun>("start_pipeline", input),
   pipelineImages: (id: string) => invoke<PastedImage[]>("pipeline_images", { id }),

@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod conversations;
 pub mod draft_agent;
 pub mod draft_look;
+pub mod draft_request;
 pub mod extensions;
 pub mod history;
 pub mod jira_issues;
