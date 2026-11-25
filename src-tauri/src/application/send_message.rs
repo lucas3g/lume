@@ -294,6 +294,7 @@ impl SendMessage {
                 permission_mode: setup.permission_mode.clone(),
                 interactive: setup.interactive,
                 artifacts: setup.artifacts,
+                design: setup.design,
                 account_connectors: setup.account_connectors,
                 denied_skills: setup.denied_skills.clone(),
                 denied_tools: setup.denied_tools.clone(),

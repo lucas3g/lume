@@ -191,6 +191,7 @@ export const api = {
 
   quickEntrySent: (conversationId: string) => invoke<void>("quick_entry_sent", { conversationId }),
   hideQuickEntry: () => invoke<void>("hide_quick_entry"),
+  openDesign: (url: string) => invoke<void>("open_design", { url }),
   saveTextFile: (path: string, content: string) => invoke<void>("save_text_file", { path, content }),
   onOpenConversation: (handler: (conversationId: string) => void): Promise<UnlistenFn> =>
     listen<string>("open-conversation", (e) => handler(e.payload)),

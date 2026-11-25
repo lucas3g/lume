@@ -98,6 +98,7 @@ pub(super) async fn one_shot(
         read_dirs: vec![],
         mcp_servers: vec![],
         artifacts: false,
+        design: false,
         account_connectors,
     };
     let (mut control, _handle) = TurnControl::new();

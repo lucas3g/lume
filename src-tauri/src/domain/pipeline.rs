@@ -633,6 +633,19 @@ fn adjustment(ctx: &StageContext) -> String {
     ctx.user_feedback.as_deref().map(|f| format!("Ajuste pedido pelo usuário depois de testar: {f}\n")).unwrap_or_default()
 }
 
+/// O ajuste que o usuário pediu ao reabrir, como a tarefa da passagem do Implementador.
+fn adjust_block(feedback: &str) -> String {
+    format!(
+        "O plano já foi executado e entregue e não deve ser refeito. Depois, o usuário testou manualmente e pediu o ajuste \
+         abaixo; ele é a sua tarefa nesta passagem:\n<ajuste_do_usuario>\n{feedback}\n</ajuste_do_usuario>\n\
+         Regras do ajuste:\n\
+         - Faça exatamente o que o usuário descreveu, na leitura mais literal do pedido.\n\
+         - Não mude nada que ele não pediu: nem melhorias, nem limpezas, nem remoções extras, nem partes do plano. Se achar \
+         que algo mais deveria mudar, só sugira no resumo, sem aplicar.\n\
+         - Antes de terminar, confira no código que o problema descrito deixou de acontecer.\n"
+    )
+}
+
 /// Link do artifact publicado pelo Designer: o da linha `DESIGN:` ou, sem ela, o último link de
 /// artifact do claude.ai na resposta.
 pub fn parse_design_url(text: &str) -> Option<String> {
@@ -690,14 +703,7 @@ pub fn starts_task(role: Role, run: &PipelineRun, ctx: &StageContext) -> bool {
 fn resumed_prompt(role: Role, ctx: &StageContext) -> Option<String> {
     let text = match role {
         Role::Implementer => {
-            let adjust = ctx
-                .user_feedback
-                .as_deref()
-                .map(|f| format!(
-                    "O plano já foi executado e entregue. Depois, o usuário testou manualmente e pediu este ajuste; ele é a \
-                     prioridade agora. Mude só o necessário para atendê-lo, sem refazer o que já funciona:\n<ajuste_do_usuario>\n{f}\n</ajuste_do_usuario>\n"
-                ))
-                .unwrap_or_default();
+            let adjust = ctx.user_feedback.as_deref().map(adjust_block).unwrap_or_default();
             let returned = ctx
                 .returned
                 .as_deref()
@@ -821,20 +827,21 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                 .as_deref()
                 .map(|r| format!("\nO trabalho foi devolvido. Corrija estes problemas, sem refazer o que já está certo:\n<problemas>\n{r}\n</problemas>\n"))
                 .unwrap_or_default();
-            let adjust = ctx
-                .user_feedback
-                .as_deref()
-                .map(|f| format!(
-                    "\nO plano já foi executado e entregue. Depois, o usuário testou manualmente e pediu este ajuste; ele é a \
-                     prioridade agora. Mude só o necessário para atendê-lo, sem refazer o que já funciona:\n<ajuste_do_usuario>\n{f}\n</ajuste_do_usuario>\n"
-                ))
-                .unwrap_or_default();
-            format!(
-                "{task}\n<plano_aprovado>\n{}\n</plano_aprovado>\n{}{adjust}{returned}\nExecute o plano aprovado. Siga o estilo do código existente. \
-                 Termine com um resumo do que mudou, arquivo por arquivo.",
-                ctx.plan.as_deref().unwrap_or(""),
-                design_block(ctx),
-            )
+            let plan = ctx.plan.as_deref().unwrap_or("");
+            match ctx.user_feedback.as_deref() {
+                // Reaberta com um ajuste: o ajuste é a tarefa; o plano é só o contexto do que já foi feito.
+                Some(f) => format!(
+                    "{task}\n{}{returned}\n<plano_ja_executado>\n{plan}\n</plano_ja_executado>\n{}\nAtenda o ajuste do usuário, seguindo \
+                     as regras acima e o estilo do código existente. Termine com um resumo do que mudou, arquivo por arquivo.",
+                    adjust_block(f),
+                    design_block(ctx),
+                ),
+                None => format!(
+                    "{task}\n<plano_aprovado>\n{plan}\n</plano_aprovado>\n{}{returned}\nExecute o plano aprovado. Siga o estilo do código existente. \
+                     Termine com um resumo do que mudou, arquivo por arquivo.",
+                    design_block(ctx),
+                ),
+            }
         }
         Role::Reviewer => {
             let fixed = ctx
@@ -865,8 +872,16 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                     ctx.implementation.as_deref().unwrap_or("")
                 ),
             };
+            // Reaberta: o que importa é o ajuste estar feito à risca, não o resto da task (já aprovado).
+            let focus = if ctx.user_feedback.is_some() {
+                "Esta é uma reabertura com um ajuste do usuário. Confira primeiro se o ajuste foi atendido exatamente como ele \
+                 descreveu; devolva se não foi, ou se a correção mudou o que o ajuste não pediu. Só aponte problemas no que esta \
+                 correção mexeu ou que ela quebrou: o resto da task já foi aprovado.\n"
+            } else {
+                ""
+            };
             format!(
-                "Objetivo da task: {}\n{}\n{diff}\n\nRevise a alteração sem ver o raciocínio de quem a fez. Procure bugs, casos não \
+                "Objetivo da task: {}\n{}\n{diff}\n\n{focus}Revise a alteração sem ver o raciocínio de quem a fez. Procure bugs, casos não \
                  tratados, segurança e desvios do estilo do projeto. Não altere nada.\n\
                  Liste os problemas que precisam de correção (ignore gosto pessoal). Termine com `VEREDITO: APROVADO` \
                  ou `VEREDITO: DEVOLVIDO`.",
@@ -886,14 +901,27 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
             let level = run.efforts.get(&Role::CodeReview).map(|e| format!("{e} ")).unwrap_or_default();
             // A skill revisa o diff; sem git não há diff, então ela recebe os arquivos alterados como alvo.
             let diff = "Sem alvo, ela revisa as alterações ainda não commitadas da pasta de trabalho, que são o que deve ser revisado.";
+            let reopened = ctx.user_feedback.is_some();
             let (args, target) = match run.mode {
                 WorkMode::Worktree | WorkMode::InPlace if level.is_empty() => ("sem `args`".to_owned(), diff),
                 WorkMode::Worktree | WorkMode::InPlace => (format!("`args: \"{}\"`", level.trim_end()), diff),
+                // Na reabertura, só os arquivos da correção do ajuste: o resto da task já foi revisado.
+                WorkMode::Direct if reopened => (
+                    format!("`args: \"{level}<caminhos dos arquivos alterados>\"`"),
+                    "A pasta não tem git, então não há diff: passe como alvo, depois do nível, os caminhos dos arquivos que o \
+                     Implementador alterou nesta passagem (a do ajuste), tirados do resumo abaixo.",
+                ),
                 WorkMode::Direct => (
                     format!("`args: \"{level}<caminhos dos arquivos alterados>\"`"),
                     "A pasta não tem git, então não há diff: passe como alvo, depois do nível, os caminhos dos arquivos que o \
                      Implementador alterou, tirados do resumo abaixo.",
                 ),
+            };
+            let scope = if reopened {
+                "Esta é uma reabertura com um ajuste do usuário: o resto da task já foi revisado. No bloco json, mantenha só os \
+                 achados no código que a correção do ajuste alterou e descarte os demais.\n"
+            } else {
+                ""
             };
             format!(
                 "Objetivo da task: {}\n{}<resumo_da_implementacao>\n{}\n</resumo_da_implementacao>\n\n\
@@ -905,7 +933,7 @@ pub fn stage_prompt(role: Role, run: &PipelineRun, ctx: &StageContext) -> String
                  ferramenta ReportFindings, sem descartar nenhum e sem inventar outros.\n\
                  3. Só se a ferramenta Skill não tiver a skill `code-review`, diga isso na primeira linha da resposta e revise você \
                  mesmo as alterações, procurando bugs de correção, casos não tratados e problemas de segurança.\n\
-                 Responda com um resumo curto do que a skill encontrou e termine com um bloco ```json com a lista dos achados, do \
+                 {scope}Responda com um resumo curto do que a skill encontrou e termine com um bloco ```json com a lista dos achados, do \
                  mais grave ao menos grave:\n\
                  [{{\"id\": \"A1\", \"title\": \"o problema em uma frase\", \"file\": \"src/arquivo.ts\", \"line\": 42, \
                  \"severity\": \"alta\", \"detail\": \"o cenário em que falha e a correção\", \"options\": []}}]\n\
@@ -1621,6 +1649,27 @@ mod tests {
         assert!(isolated.contains("ramo lume/esteira-loja-1") && isolated.contains("bug X") && isolated.contains("PLANO"));
         let reporter = stage_prompt(Role::Reporter, &run(WorkMode::Worktree, None), &StageContext::default());
         assert!(reporter.contains("Não há task do Jira"));
+    }
+
+    #[test]
+    fn a_reopened_run_keeps_every_role_on_the_user_adjustment() {
+        let r = run(WorkMode::Worktree, Some("LOJA-7"));
+        let ctx = StageContext { plan: Some("PLANO".into()), user_feedback: Some("o botão some".into()), ..Default::default() };
+        let fresh = stage_prompt(Role::Implementer, &r, &ctx);
+        assert!(fresh.contains("<ajuste_do_usuario>\no botão some") && fresh.contains("<plano_ja_executado>\nPLANO"));
+        assert!(!fresh.contains("Execute o plano aprovado"), "a sessão nova não refaz o plano");
+        assert!(fresh.find("<ajuste_do_usuario>") < fresh.find("<plano_ja_executado>"), "o ajuste vem antes do plano");
+        let resumed = stage_prompt(Role::Implementer, &r, &StageContext { resumed: true, ..ctx.clone() });
+        assert!(resumed.contains("não deve ser refeito") && resumed.contains("Não mude nada que ele não pediu"));
+        assert!(stage_prompt(Role::Reviewer, &r, &ctx).contains("Confira primeiro se o ajuste foi atendido"));
+        assert!(stage_prompt(Role::CodeReview, &r, &ctx).contains("só os achados no código que a correção do ajuste alterou"));
+        let direct = stage_prompt(Role::CodeReview, &run(WorkMode::Direct, None), &ctx);
+        assert!(direct.contains("alterou nesta passagem (a do ajuste)"));
+
+        let first = StageContext { plan: Some("PLANO".into()), ..Default::default() };
+        assert!(stage_prompt(Role::Implementer, &r, &first).contains("Execute o plano aprovado"));
+        assert!(!stage_prompt(Role::Reviewer, &r, &first).contains("reabertura"));
+        assert!(!stage_prompt(Role::CodeReview, &r, &first).contains("reabertura"));
     }
 
     fn stage(role: Role, status: StageStatus, output: &str) -> StageRun {

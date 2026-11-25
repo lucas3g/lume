@@ -709,6 +709,12 @@ pub fn hide_quick_entry(app_handle: AppHandle) {
     windows::hide_quick_entry(&app_handle);
 }
 
+/// Abre um artifact do Claude Design na janela própria do Lume.
+#[tauri::command]
+pub async fn open_design(app_handle: AppHandle, url: String) -> AppResult<()> {
+    windows::open_design(&app_handle, &url).map_err(AppError)
+}
+
 /// Salva um texto (ex.: o código de um artifact) no caminho escolhido pelo usuário.
 #[tauri::command]
 pub fn save_text_file(app: App<'_>, path: String, content: String) -> AppResult<()> {

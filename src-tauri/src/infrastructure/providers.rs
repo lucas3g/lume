@@ -254,6 +254,7 @@ pub(crate) fn sample_request(provider: Provider) -> TurnRequest {
         read_dirs: vec![],
         mcp_servers: vec![],
         artifacts: false,
+        design: false,
         account_connectors: true,
     }
 }

@@ -306,6 +306,9 @@ pub struct TurnRequest {
     /// Liga a ferramenta de artifacts (Claude Design) no CLI, que sem tela não a oferece; o turno para
     /// com aviso se ela não vier.
     pub artifacts: bool,
+    /// Oferece o Claude Design (a ferramenta de artifacts) sem exigi-lo: o turno segue mesmo se o
+    /// CLI não o trouxer.
+    pub design: bool,
     /// Carrega os conectores da conta do claude.ai. Desligados, saem do contexto de toda chamada;
     /// os conectores locais e os do projeto continuam.
     pub account_connectors: bool,

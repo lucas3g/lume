@@ -4,6 +4,7 @@ import { api, errorMessage } from "../api";
 import { DEFAULT_MODEL, type ChatEvent, type Conversation, type Message, type PastedImage } from "../types";
 import { loadProjects } from "./projects.svelte";
 import { parseInput, parseToolUse, type RunningTool } from "../tools";
+import { designUrl } from "../pipeline";
 import { applySubagentStep, forgetSubagents, loadSubagents, settleSubagents } from "./subagents.svelte";
 
 /** Resposta em andamento de uma conversa. */
@@ -368,6 +369,14 @@ export function backgroundTool(toolId: string): void {
   void api.backgroundTool(id, toolId).then((sent) => sent || undo(), undo);
 }
 
+/** Abre o artifact na janela do Claude Design; se não der, avisa na conversa. */
+export function openDesign(url: string): void {
+  const id = chat.activeId;
+  api.openDesign(url).catch((e) => {
+    if (chat.activeId === id) chat.messages.push(localMessage("notice", errorMessage(e)));
+  });
+}
+
 export function cancel(): void {
   if (chat.activeId) void api.cancelMessage(chat.activeId);
 }
@@ -381,7 +390,18 @@ async function finish(id: string, outcome: Outcome = null, continueQueue = true)
   settleSubagents(id);
   // Entregues e não lidas (o turno acabou antes): voltam a esperar a vez.
   for (const item of chat.queued[id] ?? []) item.sending = false;
-  if (chat.activeId === id) chat.messages = await api.listMessages(id);
+  if (chat.activeId === id) {
+    chat.messages = await api.listMessages(id);
+    // A resposta trouxe um artifact do Claude Design: abre na janela dele, como o app do Claude faz.
+    const last = chat.messages.at(-1);
+    // Só com a linha `DESIGN:`: um link de artifact apenas citado na resposta não abre janela.
+    // Só ao fim de uma resposta completa (parar não reabre o design anterior) e só na conversa comum,
+    // a única que usa o Claude Design (a etapa do Designer da esteira não abre janela sozinha).
+    const done = continueQueue && !outcome && activeConversation()?.kind === "chat";
+    const tagged = done && last?.role === "assistant" ? last.content.split("\n").reverse().find((l) => /^\W*DESIGN:/i.test(l.trim())) : undefined;
+    const url = tagged ? designUrl(tagged) : null;
+    if (url) openDesign(url);
+  }
   await loadConversations();
   const next = continueQueue && !outcome && !chat.turns[id] ? chat.queued[id]?.[0] : undefined;
   if (next) {
@@ -394,6 +414,7 @@ const TOOL_LABELS: Record<string, string> = {
   WebSearch: "Buscando na web",
   WebFetch: "Lendo uma página",
   Skill: "Carregando uma skill",
+  Artifact: "Criando no Claude Design",
 };
 
 /** Eventos que indicam um turno em andamento, mesmo que iniciado por outra janela. */

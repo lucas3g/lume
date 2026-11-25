@@ -9,6 +9,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub const MAIN_WINDOW: &str = "main";
 pub const QUICK_WINDOW: &str = "quick";
+/// Janela que mostra os artifacts do Claude Design (o claude.ai não deixa ser embutido num iframe).
+pub const DESIGN_WINDOW: &str = "design";
 pub const QUICK_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 /// Evento que pede à janela principal para abrir uma conversa.
 pub const OPEN_CONVERSATION: &str = "open-conversation";
@@ -60,6 +62,31 @@ pub fn toggle_quick_entry(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+/// Abre o artifact do Claude Design na janela própria, reaproveitando-a se já estiver aberta.
+/// Só aceita links de artifact do claude.ai. A sessão do claude.ai fica no WebView do app:
+/// na primeira vez, o usuário entra na conta dentro da janela.
+pub fn open_design(app: &AppHandle, link: &str) -> Result<(), String> {
+    let url = crate::domain::pipeline::parse_design_url(link)
+        .and_then(|u| u.parse::<tauri::Url>().ok())
+        .ok_or_else(|| "Link de artifact do Claude Design inválido.".to_owned())?;
+    let window = match app.get_webview_window(DESIGN_WINDOW) {
+        Some(window) => {
+            window.navigate(url).map_err(|e| e.to_string())?;
+            window
+        }
+        None => WebviewWindowBuilder::new(app, DESIGN_WINDOW, WebviewUrl::External(url))
+            .title("Claude Design")
+            .inner_size(1200.0, 800.0)
+            .center()
+            .build()
+            .map_err(|e| e.to_string())?,
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
 }
 
 /// A entrada rápida enviou uma mensagem: traz a janela principal para a conversa.

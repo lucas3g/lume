@@ -11,7 +11,7 @@ use super::{
     AppResult,
 };
 use crate::domain::{
-    chat::{transcript_prompt, Conversation, ARTIFACTS_PREFIX, NO_ACCOUNT_CONNECTORS_PREFIX, PIPELINE_STAGE_PREFIX},
+    chat::{transcript_prompt, Conversation, ARTIFACTS_PREFIX, ARTIFACT_TOOL, NO_ACCOUNT_CONNECTORS_PREFIX, PIPELINE_STAGE_PREFIX},
     pipeline::Role,
     extension::{denied_server_rules, denied_skills, mcp_setup, SCOPE_ALL, SERVER_OFF_PREFIX},
     mcp::{turn_servers, McpServer},
@@ -21,8 +21,11 @@ use crate::domain::{
 use std::sync::Arc;
 
 const CONTEXT_SNIPPETS: usize = 3;
-/// Conversa comum: consulta à web e skills, tudo liberado, sem acesso a arquivos.
-const CHAT_TOOLS: [&str; 3] = ["WebSearch", "WebFetch", "Skill"];
+/// Conversa comum: consulta à web, skills e o Claude Design, sem acesso a arquivos.
+const CHAT_TOOLS: [&str; 4] = ["WebSearch", "WebFetch", "Skill", ARTIFACT_TOOL];
+/// O que a conversa comum usa sem pedir. O Artifact fica de fora: ele também apaga e republica
+/// artifacts da conta, então cada uso passa pela sua aprovação.
+const CHAT_ALLOWED: [&str; 3] = ["WebSearch", "WebFetch", "Skill"];
 /// Leitura que a conversa comum ganha quando o projeto tem arquivos de conhecimento em disco.
 /// Sem pedir autorização, ela alcança só a pasta deles e a pasta de trabalho das conversas
 /// comuns (que fica vazia); fora disso a leitura pede autorização ao usuário.
@@ -31,10 +34,20 @@ const KNOWLEDGE_TOOLS: [&str; 2] = ["Read", "Grep"];
 const AGENT_TOOLS: &str = "default";
 
 /// Orienta o modelo a entregar conteúdo visual de um jeito que o painel de artifacts exibe.
-const ARTIFACT_GUIDE: &str = "Quando o usuário pedir uma página, interface, gráfico, diagrama ou documento visual, \
+const HTML_GUIDE: &str = "Quando o usuário pedir uma página, interface, gráfico, diagrama ou documento visual, \
 entregue um único bloco de código ```html completo e autossuficiente (CSS e JavaScript embutidos, sem depender de \
 arquivos externos); o aplicativo mostra esse bloco como prévia ao lado da conversa. Para imagens vetoriais simples, \
 use um bloco ```svg.";
+
+/// Conversa comum: o conteúdo visual vai para o Claude Design, que o aplicativo abre pelo link. Sem a
+/// ferramenta (CLI antigo ou outro provedor), vale o bloco ```html.
+const DESIGN_GUIDE: &str = "Quando o usuário pedir uma página, interface, tela, gráfico, diagrama, documento visual ou \
+design, crie-o no Claude Design: chame a ferramenta Artifact com action \"quickstart\" e a intent adequada e siga o que \
+ela indicar (crie a partir do `type_url` que ela der, com um título curto). Para ajustar um artifact já criado nesta \
+conversa, atualize esse mesmo artifact (publique com o `url` dele, lendo-o antes). Não escreva o HTML na resposta nem em \
+arquivos: o aplicativo abre o artifact pelo link. Termine a resposta com a linha `DESIGN: <link do artifact>`. Se a ferramenta Artifact não estiver disponível, entregue \
+um único bloco de código ```html completo e autossuficiente (CSS e JavaScript embutidos); o aplicativo mostra esse bloco \
+como prévia ao lado da conversa.";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TurnSetup {
@@ -57,6 +70,8 @@ pub struct TurnSetup {
     pub interactive: bool,
     /// A conversa usa o Claude Design (a etapa do Designer).
     pub artifacts: bool,
+    /// Oferece o Claude Design sem exigi-lo (toda conversa fora da esteira).
+    pub design: bool,
     /// Carrega os conectores da conta do claude.ai (as etapas da esteira que não usam o Jira rodam sem).
     pub account_connectors: bool,
     /// Títulos das conversas anteriores usadas como contexto.
@@ -127,6 +142,8 @@ impl PrepareTurn {
         };
         // Etapa da esteira em andamento: só as ferramentas do papel, sem o contexto da conversa comum.
         let stage = self.settings.text(&format!("{PIPELINE_STAGE_PREFIX}{}", conversation.id)).and_then(|k| Role::parse(&k));
+        // Só a conversa comum usa o Claude Design; a sessão de agente cria as telas no código.
+        let design = !conversation.is_agent();
         let (tools, own_tools): (String, Vec<String>) = if conversation.is_agent() {
             let tools = stage.map(|role| role.tools(agent.is_some())).unwrap_or_else(|| AGENT_TOOLS.into());
             (tools, conversation.allowed_tools.clone())
@@ -135,7 +152,7 @@ impl PrepareTurn {
             if !read_dirs.is_empty() {
                 tools.extend(KNOWLEDGE_TOOLS);
             }
-            (tools.join(","), CHAT_TOOLS.iter().map(|t| (*t).to_owned()).collect())
+            (tools.join(","), CHAT_ALLOWED.iter().map(|t| (*t).to_owned()).collect())
         };
         let allowed_tools = own_tools.into_iter().chain(connector_tools).collect();
 
@@ -154,7 +171,7 @@ impl PrepareTurn {
         let earlier = self.earlier_dialogue(conversation)?;
         let rules = [project.as_ref().and_then(project_rules), instructions].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
         let rules = (!rules.is_empty()).then_some(rules);
-        let sections: Vec<String> = [stage.is_none().then(|| ARTIFACT_GUIDE.to_owned()), rules.clone(), knowledge.clone(), earlier, context_prompt(&snippets)]
+        let sections: Vec<String> = [stage.is_none().then(|| if design { DESIGN_GUIDE } else { HTML_GUIDE }.to_owned()), rules.clone(), knowledge.clone(), earlier, context_prompt(&snippets)]
             .into_iter()
             .flatten()
             .collect();
@@ -172,6 +189,7 @@ impl PrepareTurn {
             // Conectores da conta pedem aprovação em qualquer conversa; o resto já está liberado.
             interactive: true,
             artifacts: self.settings.flag(&format!("{ARTIFACTS_PREFIX}{}", conversation.id), false),
+            design,
             account_connectors: !self.settings.flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{}", conversation.id), false),
             context_titles: snippets.into_iter().map(|s| s.title).collect(),
             denied_skills: denied,
@@ -224,11 +242,12 @@ mod tests {
         let conversation = world.conversation("c1");
         let setup = prepare(&world).prepare(&conversation, "olá").unwrap();
         assert_eq!(setup.model, "opus");
-        assert_eq!((setup.tools.as_str(), setup.interactive), ("WebSearch,WebFetch,Skill", true));
+        assert_eq!((setup.tools.as_str(), setup.interactive), ("WebSearch,WebFetch,Skill,Artifact", true));
         assert!(setup.denied_tools.is_empty());
         assert_eq!(setup.allowed_tools, ["WebSearch", "WebFetch", "Skill"]);
+        assert!(setup.design && !setup.artifacts, "oferece o Claude Design sem exigi-lo");
         assert!(setup.denied_skills.is_empty() && setup.mcp_config.is_none() && setup.context_titles.is_empty());
-        assert!(setup.extra_system.unwrap().contains("```html"));
+        assert!(setup.extra_system.unwrap().contains("Claude Design"));
     }
 
     #[test]
@@ -268,6 +287,7 @@ mod tests {
         let setup = prepare(&world).prepare(&world.conversation("s1"), "corrija").unwrap();
         assert_eq!((setup.tools.as_str(), setup.interactive), ("default", true));
         assert_eq!(setup.allowed_tools, ["Edit"]);
+        assert!(!setup.design && setup.extra_system.unwrap_or_default().contains("```html"), "a sessão de agente cria as telas no código");
     }
 
     #[test]
@@ -279,7 +299,8 @@ mod tests {
         let setup = prepare(&world).prepare(&world.conversation("s1"), "Revise").unwrap();
         assert_eq!(setup.tools, "Read,Bash,Task,ToolSearch", "sem as ferramentas que o papel não usa nem as de edição");
         assert!(setup.context_titles.is_empty(), "trechos de outras etapas só confundiriam o bot");
-        assert!(!setup.extra_system.unwrap_or_default().contains("```html"));
+        assert!(!setup.extra_system.unwrap_or_default().contains("Claude Design"));
+        assert!(!setup.design, "a etapa da esteira não ganha o Claude Design da conversa comum");
 
         let agent = Agent { id: "a1".into(), name: "Revisor rigoroso".into(), instructions: "Seja rigoroso.".into(), model: None };
         AgentRepository::save(&*world.store, &agent).unwrap();
@@ -300,7 +321,7 @@ mod tests {
         world.store.set_project("c1", Some("p1")).unwrap();
         let setup = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap();
         assert!(setup.read_dirs.is_empty() && setup.knowledge.is_none());
-        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill", "sem conhecimento, a conversa segue sem ler arquivos");
+        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill,Artifact", "sem conhecimento, a conversa segue sem ler arquivos");
 
         world.store.add_file("f1", "p1", "glossario.md", "SKU é o código do produto.").unwrap();
         let setup = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap();
@@ -309,7 +330,7 @@ mod tests {
         assert!(system.contains("na pasta /dados/knowledge/p1:\n- glossario.md (26 caracteres)"));
         assert!(!system.contains("SKU"), "o conteúdo fica em disco, fora do prompt");
         assert_eq!(setup.read_dirs, ["/dados/knowledge/p1"]);
-        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill,Read,Grep");
+        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill,Artifact,Read,Grep");
         assert_eq!(setup.allowed_tools, ["WebSearch", "WebFetch", "Skill"], "a leitura não é liberada fora da pasta");
         let synced = world.knowledge.0.lock().unwrap().clone();
         assert_eq!(synced, [("p1".to_owned(), vec![("glossario.md".to_owned(), "SKU é o código do produto.".to_owned())])]);
@@ -326,6 +347,6 @@ mod tests {
         let setup = prepare(&world).prepare(&world.conversation("c1"), "olá").unwrap();
         assert!(setup.extra_system.unwrap().contains("glossario.md:\nSKU é o código do produto."), "o turno segue, com o conteúdo no prompt");
         assert!(setup.read_dirs.is_empty());
-        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill");
+        assert_eq!(setup.tools, "WebSearch,WebFetch,Skill,Artifact");
     }
 }

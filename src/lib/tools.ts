@@ -33,6 +33,7 @@ const LABELS: Record<string, string> = {
   Task: "Subagente",
   Agent: "Subagente",
   TodoWrite: "Atualizar tarefas",
+  Artifact: "Claude Design",
 };
 
 /** Ferramentas que delegam o trabalho a um subagente. */

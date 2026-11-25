@@ -1,5 +1,6 @@
 <script lang="ts">
   import { open as pickFiles, save as pickSave } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { tick, untrack } from "svelte";
   import { extractArtifacts, versionsOf, type Artifact } from "../artifacts";
   import ArtifactPanel from "../components/ArtifactPanel.svelte";
@@ -13,6 +14,7 @@
   import PermissionCard from "../components/PermissionCard.svelte";
   import PlanCard from "../components/PlanCard.svelte";
   import { questionsOf } from "../tools";
+  import { designUrl } from "../pipeline";
   import QuestionCard from "../components/QuestionCard.svelte";
   import CodeView from "../components/CodeView.svelte";
   import SubagentPanel from "../components/SubagentPanel.svelte";
@@ -23,7 +25,7 @@
   import { accounts, activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
   import { api } from "../api";
-  import { activeConversation, backgroundTool, branchAt, cancel, cancelEdit, chat, decide, enqueue, forgetParked, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
+  import { activeConversation, backgroundTool, openDesign, branchAt, cancel, cancelEdit, chat, decide, enqueue, forgetParked, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
   import { NEW_CONVERSATION, readDraft, saveDraft } from "../state/drafts";
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
@@ -136,6 +138,10 @@
   /** Todos os artifacts da conversa, em ordem, para o histórico de versões e a lista de saídas. */
   const allArtifacts = $derived(
     chat.messages.filter((m) => m.role === "assistant").flatMap((m) => extractArtifacts(m.content)),
+  );
+  /** Link do Claude Design de cada resposta, calculado uma vez por lista de mensagens. */
+  const designLinks = $derived(
+    new Map(chat.messages.filter((m) => m.role === "assistant").map((m) => [m.id, [designUrl(m.content)].filter((u) => u !== null)])),
   );
   const openVersions = $derived(openArtifact ? versionsOf(openArtifact, allArtifacts) : []);
   const openIndex = $derived(
@@ -427,10 +433,30 @@
     void refreshStatus(chat.activeId, isAgent);
   });
 
-  // Acompanha o fim da conversa enquanto a resposta chega.
+  // Acompanha o fim da conversa enquanto a resposta chega, a menos que você tenha rolado para cima.
+  // Qualquer coisa que aumente a conversa (texto, ferramentas, imagens, cartões) conta: quem observa é o tamanho.
+  let threadEl = $state<HTMLElement>();
+  let pinned = true;
+  const toBottom = () => scroller?.scrollTo({ top: scroller.scrollHeight });
+  const onScroll = () => {
+    if (scroller) pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+  };
   $effect(() => {
-    void [chat.messages.length, turn?.text, turn?.status, outcome, permission, queued.length];
-    void tick().then(() => scroller?.scrollTo({ top: scroller.scrollHeight }));
+    if (!threadEl || !scroller) return;
+    // A área também encolhe (um arquivo aberto, a janela redimensionada): seguindo o fim, ele continua à vista.
+    const observer = new ResizeObserver(() => pinned && toBottom());
+    observer.observe(threadEl);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  });
+  // Outra conversa, ou uma mensagem sua: volta a acompanhar o fim.
+  $effect(() => {
+    void chat.activeId;
+    pinned = true;
+  });
+  $effect(() => {
+    if (chat.messages.at(-1)?.role === "user") pinned = true;
+    void tick().then(() => pinned && toBottom());
   });
 </script>
 
@@ -476,8 +502,8 @@
       </section>
     {/if}
 
-    <div class="scroll" class:below={workspace.openFile !== null} bind:this={scroller}>
-      <div class="thread">
+    <div class="scroll" class:below={workspace.openFile !== null} bind:this={scroller} onscroll={onScroll}>
+      <div class="thread" bind:this={threadEl}>
         {#if chat.messages.length === 0 && !turn}
           <div class="welcome">
             <h2>{isAgent ? "O que vamos fazer nesta pasta?" : "Como posso ajudar?"}</h2>
@@ -563,6 +589,19 @@
                     <span class="muted">{artifact.kind === "html" ? "Página" : "Imagem"} · abrir prévia</span>
                   </span>
                 </button>
+              {/each}
+              {#each designLinks.get(message.id) ?? [] as url (url)}
+                <div class="design-link">
+                  <button type="button" class="artifact" onclick={() => openDesign(url)}>
+                    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-text)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18v14H3zM3 9h18M8 9v10" /></svg>
+                    <span>
+                      <strong>Claude Design</strong>
+                      <span class="muted">Artifact · abrir</span>
+                    </span>
+                  </button>
+                  <!-- A janela do Lume tem o próprio login do claude.ai; o navegador já está logado. -->
+                  <button type="button" class="lnk" title={url} onclick={() => openUrl(url)}>Abrir no navegador ↗</button>
+                </div>
               {/each}
             </div>
           {/if}
@@ -862,6 +901,9 @@
   .artifact:hover { background: var(--hover); }
   .artifact span { display: flex; flex-direction: column; }
   .artifact .muted { font-size: 12px; }
+  .design-link { display: flex; align-items: center; gap: 12px; }
+  .design-link .lnk { font-size: 12px; color: var(--muted); background: none; border: none; padding: 0; }
+  .design-link .lnk:hover { color: var(--text); text-decoration: underline; }
 
   .markdown { overflow-wrap: anywhere; user-select: text; }
   .markdown :global(p) { margin: 0 0 12px; }

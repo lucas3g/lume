@@ -47,6 +47,7 @@ pub fn run() {
             commands::store_add_server,
             commands::quick_entry_sent,
             commands::hide_quick_entry,
+            commands::open_design,
             commands::save_text_file,
             commands::list_accounts,
             commands::add_account,

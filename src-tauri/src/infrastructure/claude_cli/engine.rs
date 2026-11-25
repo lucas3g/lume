@@ -27,16 +27,16 @@ Atualize o Claude Code ou rode a execução sem o design.";
 /// Desligada (`false`), o CLI não carrega os conectores da conta do claude.ai; os locais continuam.
 const NO_ACCOUNT_CONNECTORS_ENV: &str = "ENABLE_CLAUDEAI_MCP_SERVERS";
 
-/// O turno usa a ferramenta de artifacts: ela foi liberada para ele.
+/// O turno usa a ferramenta de artifacts: a etapa do Designer a exige e a conversa comum a oferece.
 fn wants_artifacts(request: &TurnRequest) -> bool {
-    request.artifacts
+    request.artifacts || request.design
 }
 
 /// O CLI começou o turno sem a ferramenta de artifacts que o turno precisa. Um início sem a lista
 /// de ferramentas não diz nada: o turno segue.
 fn missing_artifacts(request: &TurnRequest, event: &TurnEvent) -> bool {
     matches!(event, TurnEvent::Environment { tools, .. }
-        if wants_artifacts(request) && !tools.is_empty() && !tools.iter().any(|t| t == ARTIFACT_TOOL))
+        if request.artifacts && !tools.is_empty() && !tools.iter().any(|t| t == ARTIFACT_TOOL))
 }
 
 pub struct ClaudeCliEngine {
@@ -365,6 +365,7 @@ mod tests {
             read_dirs: vec![],
             mcp_servers: vec![],
             artifacts: false,
+            design: false,
             account_connectors: true,
         }
     }
@@ -416,12 +417,15 @@ mod tests {
         assert!(!env(&req), "liberar o Artifact numa conversa qualquer não liga a variável");
         req.artifacts = true;
         assert!(env(&req), "a etapa do Designer liga a variável");
+        let offered = TurnRequest { artifacts: false, design: true, ..req.clone() };
+        assert!(env(&offered), "a conversa comum oferece o Claude Design");
 
         let init = |tools: &[&str]| TurnEvent::Environment { skills: vec![], connectors: vec![], tools: tools.iter().map(|t| (*t).to_owned()).collect() };
         assert!(missing_artifacts(&req, &init(&["Read"])), "pediu e o CLI não ofereceu: a etapa para com aviso claro");
         assert!(!missing_artifacts(&req, &init(&["Read", "Artifact"])));
         assert!(!missing_artifacts(&req, &init(&[])), "início sem a lista de ferramentas não para o turno");
         assert!(!missing_artifacts(&request("oi", None), &init(&["Read"])), "turno sem artifacts não confere nada");
+        assert!(!missing_artifacts(&offered, &init(&["Read"])), "na conversa comum, sem a ferramenta o turno segue");
     }
 
     #[test]

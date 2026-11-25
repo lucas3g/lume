@@ -188,6 +188,7 @@ impl JiraIssues {
                 read_dirs: vec![],
                 mcp_servers: vec![],
                 artifacts: false,
+                design: false,
                 account_connectors: true,
             };
             let (mut control, _handle) = TurnControl::new();
