@@ -5,7 +5,7 @@
   import { formatTime, formatWhen, fullDate, renderMarkdown } from "../../format";
   import { addPastedImages, type PreviewImage } from "../../paste";
   import { accounts } from "../../state/accounts.svelte";
-  import { chat, decideFor, openConversation, type DecisionExtras } from "../../state/chat.svelte";
+  import { chat, decideFor, openConversation, type DecisionExtras, type PermissionRequest } from "../../state/chat.svelte";
   import { liveActivity, liveSubagentProgress, liveSubagentTools, loadSubagents } from "../../state/subagents.svelte";
   import PermissionCard from "../PermissionCard.svelte";
   import PlanCard from "../PlanCard.svelte";
@@ -191,6 +191,34 @@
   const panelAsking = $derived(!!panelStage && panelStage.status === "running" && !!chat.permissions[panelStage.conversation_id]);
   const panelVisual = $derived(panelStage ? stageVisual(panelStage, panelAsking) : null);
   const panelPermission = $derived(panelAsking && panelStage ? chat.permissions[panelStage.conversation_id] : undefined);
+  /** Etapa desta execução esperando uma resposta sua: o pedido abre numa janela grande, fácil de ler. */
+  const askingStage = $derived(detail.stages.find((s) => s.status === "running" && !!chat.permissions[s.conversation_id]) ?? null);
+  /** Pedido que o usuário deixou para depois: ele segue só no painel da estação. */
+  let laterId = $state<string | null>(null);
+  const askModal = $derived.by(() => {
+    const request = askingStage ? chat.permissions[askingStage.conversation_id] : undefined;
+    return askingStage && request && request.requestId !== laterId ? { stage: askingStage, request } : null;
+  });
+  /** Janela modal: o foco entra nela ao abrir e o Tab circula só entre os controles dela. */
+  function trapFocus(node: HTMLElement) {
+    const focusables = () => [...node.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])")];
+    node.focus();
+    function onkeydown(e: KeyboardEvent) {
+      if (e.key !== "Tab") return;
+      const list = focusables();
+      if (!list.length) return e.preventDefault();
+      const [first, last] = [list[0], list[list.length - 1]];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === node)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    node.addEventListener("keydown", onkeydown);
+    return { destroy: () => node.removeEventListener("keydown", onkeydown) };
+  }
   /** Responde ao pedido da etapa direto daqui; se a resposta não chegar, o pedido volta e o erro aparece. */
   async function answerStage(id: string, allow: boolean, always: boolean, extras: DecisionExtras = {}) {
     try {
@@ -808,13 +836,7 @@
               <div class="ask-card">
                 <p class="ask">{@html icon("you", 13)}<span>A etapa pede sua autorização.</span>
                   <button type="button" class="btn small" onclick={() => openStageConversation(cid)}>Abrir conversa</button></p>
-                {#if panelPermission.tool === "AskUserQuestion"}
-                  <QuestionCard questions={questionsOf(panelPermission)} onanswer={(answers) => answerStage(cid, true, false, { answers })} oncancel={() => answerStage(cid, false, false)} />
-                {:else if panelPermission.tool === "ExitPlanMode"}
-                  <PlanCard request={panelPermission} ondecide={(mode) => (mode ? answerStage(cid, true, false, { nextMode: mode }) : answerStage(cid, false, false))} />
-                {:else}
-                  <PermissionCard request={panelPermission} ondecide={(allow, always) => answerStage(cid, allow, always)} />
-                {/if}
+                {@render askBody(cid, panelPermission)}
               </div>
             {/if}
             <section>
@@ -921,7 +943,38 @@
   </div>
 </div>
 
-<svelte:window onkeydown={(e) => zoomed && e.key === "Escape" && (zoomed = null)} />
+{#snippet askBody(cid: string, request: PermissionRequest)}
+  {#if request.tool === "AskUserQuestion"}
+    <QuestionCard questions={questionsOf(request)} onanswer={(answers) => answerStage(cid, true, false, { answers })} oncancel={() => answerStage(cid, false, false)} />
+  {:else if request.tool === "ExitPlanMode"}
+    <PlanCard {request} ondecide={(mode) => (mode ? answerStage(cid, true, false, { nextMode: mode }) : answerStage(cid, false, false))} />
+  {:else}
+    <PermissionCard {request} ondecide={(allow, always) => answerStage(cid, allow, always)} />
+  {/if}
+{/snippet}
+
+<svelte:window onkeydown={(e) => {
+  if (e.key !== "Escape") return;
+  if (zoomed) zoomed = null;
+  else if (askModal && !(e.target instanceof HTMLElement && e.target.closest("input, textarea"))) laterId = askModal.request.requestId;
+}} />
+
+{#if askModal && !zoomed}
+  {@const cid = askModal.stage.conversation_id}
+  <div class="ask-modal" role="presentation">
+    <div class="card ask-dialog" role="dialog" aria-modal="true" tabindex="-1" use:trapFocus aria-label={`${STATION[askModal.stage.role].name} pede sua resposta`}>
+      <header class="ask-head">
+        <span class="p-ava s-you" aria-hidden="true">{@html roleIcon(askModal.stage.role, 16)}</span>
+        <h2>{STATION[askModal.stage.role].name} pede sua resposta</h2>
+        <button type="button" class="btn small" onclick={() => openStageConversation(cid)}>Abrir conversa</button>
+        <button type="button" class="btn small" title="O pedido continua no painel da estação" onclick={() => askModal && (laterId = askModal.request.requestId)}>Responder depois</button>
+      </header>
+      <div class="ask-scroll">
+        {@render askBody(cid, askModal.request)}
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if zoomed}
   <button type="button" class="zoom" aria-label="Fechar a imagem" onclick={() => (zoomed = null)}>
@@ -1180,6 +1233,12 @@
   .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .thumb { padding: 0; cursor: zoom-in; width: 56px; height: 56px; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; background: var(--bg); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ask-modal { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 32px; background: rgba(0, 0, 0, 0.6); }
+  .ask-dialog { width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+  .ask-dialog:focus { outline: none; }
+  .ask-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .ask-head h2 { margin: 0 auto 0 0; font-size: 16px; }
+  .ask-scroll { overflow: auto; padding: 18px; font-size: 14px; }
   .zoom { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 32px; border: 0; background: rgba(0, 0, 0, 0.75); cursor: zoom-out; }
   .zoom img { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6); }
   .md :global(:first-child) { margin-top: 0; }
