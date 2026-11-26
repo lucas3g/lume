@@ -90,7 +90,7 @@
               {#each f.options as option, i (i)}
                 <label class="opt">
                   <input type="radio" name={`opt-${stage.id}-${f.id}`} checked={chosen[f.id] === i} onchange={() => choose(f.id, i)} />
-                  <span>{optionText(option)}</span>{#if isRecommended(option)}<span class="rec">Recomendado</span>{/if}
+                  <span>{optionText(option)}{#if isRecommended(option)} <span class="rec">Recomendado</span>{/if}</span>
                 </label>
               {/each}
             </div>
@@ -143,8 +143,8 @@
   .sev.baixa { background: var(--surface-3); color: var(--text-2); }
   .decide { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; background: var(--acc-bg); color: var(--accent-text); font-size: 10.5px; font-weight: 600; }
   .opts { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 0 26px; }
-  .opt { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 12px; color: var(--text-2); cursor: pointer; }
-  .rec { display: inline-flex; align-items: center; height: 17px; padding: 0 6px; border-radius: 5px; background: var(--ok-bg); color: var(--ok-text); font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
+  .opt { display: grid; grid-template-columns: 15px minmax(0, 1fr); align-items: start; gap: 8px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+  .rec { display: inline-flex; vertical-align: 1px; align-items: center; height: 17px; padding: 0 6px; border-radius: 5px; background: var(--ok-bg); color: var(--ok-text); font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
   .raw { max-height: 360px; overflow: auto; }
   .extra { display: flex; flex-direction: column; gap: 6px; }
   .area { width: 100%; min-height: 60px; padding: 9px 11px; resize: vertical; line-height: 1.5; }
