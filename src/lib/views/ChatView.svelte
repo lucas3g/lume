@@ -24,7 +24,7 @@
   import { describeFile, folderName, formatTime, formatWhen, fullDate, isoDate, renderMarkdown } from "../format";
   import { accounts, activeAccount } from "../state/accounts.svelte";
   import { agents } from "../state/agents.svelte";
-  import { api } from "../api";
+  import { api, errorMessage } from "../api";
   import { activeConversation, backgroundTool, openDesign, branchAt, cancel, cancelEdit, chat, decide, enqueue, forgetParked, regenerate, send, sendNow, setAgent, setEffort, setMode, setModel, startEdit, unqueue } from "../state/chat.svelte";
   import { NEW_CONVERSATION, readDraft, saveDraft } from "../state/drafts";
   import { projectName, projects } from "../state/projects.svelte";
@@ -163,6 +163,37 @@
   async function onPaste(event: ClipboardEvent) {
     for (const file of pastedImageFiles(event)) pasted = [...pasted, await readPastedImage(file)];
   }
+
+  /** "Gerar com IA": o modelo reescreve a mensagem digitada num texto mais claro, sem enviar. */
+  let rewriting = $state(false);
+  let rewriteError = $state<string | null>(null);
+  /** Geração em andamento: trocar de conversa invalida a resposta que ainda vai chegar. */
+  let rewriteRun = 0;
+  const canRewrite = $derived(draft.trim().length > 0 && !draft.trimStart().startsWith("/"));
+  async function rewriteDraft() {
+    if (!canRewrite || rewriting) return;
+    const run = ++rewriteRun;
+    const conversation = chat.activeId;
+    const original = draft;
+    rewriting = true;
+    rewriteError = null;
+    try {
+      const text = await api.draftChatMessage(original, pasted.map(({ name, media_type, data }) => ({ name, media_type, data })));
+      if (run === rewriteRun && conversation === chat.activeId && draft === original) draft = text;
+    } catch (e) {
+      if (run === rewriteRun) rewriteError = errorMessage(e);
+    } finally {
+      if (run === rewriteRun) rewriting = false;
+    }
+  }
+  $effect(() => {
+    chat.activeId;
+    untrack(() => {
+      rewriteRun++;
+      rewriting = false;
+      rewriteError = null;
+    });
+  });
 
   function removePasted(index: number) {
     pasted = pasted.filter((_, i) => i !== index);
@@ -319,7 +350,8 @@
   }
 
   async function submit() {
-    if (!canSend) return;
+    if (!canSend || rewriting) return;
+    rewriteError = null;
     const text = draft.trim();
     const files = attachments;
     const images = pasted.map(({ name, media_type, data }) => ({ name, media_type, data }));
@@ -738,11 +770,18 @@
               {/each}
             </div>
           {/if}
+          {#if rewriteError}<p class="error-text rewrite-error" role="alert">{rewriteError}</p>{/if}
           <div class="entry">
             <button type="button" class="tool" aria-label="Anexar arquivos" title="Anexar arquivos" onclick={attach}>
               <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
-            <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos · cole imagens aqui" bind:value={draft} onkeydown={onKeydown} onpaste={onPaste}></textarea>
+            <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos · cole imagens aqui" bind:value={draft} onkeydown={onKeydown} onpaste={onPaste} readonly={rewriting}></textarea>
+            {#if canRewrite || rewriting}
+              <button type="button" class="gen" onclick={rewriteDraft} disabled={rewriting}
+                title="Reescreve a mensagem digitada num texto mais claro e organizado (não envia)">
+                {#if rewriting}<span class="spinner" aria-hidden="true"></span>Gerando…{:else}Gerar com IA{/if}
+              </button>
+            {/if}
             <!-- Parar fica sempre à mão durante o trabalho; com texto digitado, Enviar aparece ao lado. -->
             {#if turn}
               <button type="button" class="send stop" aria-label="Parar a resposta" title={turn.waiting ? "Parar os agentes em segundo plano" : "Parar"} onclick={cancel}>
@@ -931,6 +970,12 @@
   .tool:hover, .pick:hover, .account:hover { background: var(--hover); color: var(--text); }
   .send { width: 30px; height: 30px; margin-bottom: 1px; flex-shrink: 0; display: grid; place-items: center; border: 0; border-radius: 9px; background: var(--accent); color: #fff; }
   .send:hover { background: var(--accent-hover); }
+  .gen { height: 30px; margin-bottom: 1px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: transparent; color: var(--text-2); font-size: 12.5px; white-space: nowrap; }
+  .gen:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+  .gen:disabled { opacity: 0.8; }
+  .spinner { width: 11px; height: 11px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: rewrite-spin 0.8s linear infinite; }
+  @keyframes rewrite-spin { to { transform: rotate(360deg); } }
+  .rewrite-error { margin: 0; padding: 2px 4px 0; }
   .send.stop { background: var(--hover); border: 1px solid var(--border-strong); color: var(--text); }
 
   .status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 0 2px; font-size: 12.5px; color: var(--muted); }

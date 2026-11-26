@@ -825,6 +825,17 @@ pub async fn draft_pipeline_request(app: App<'_>, title: String, request: String
     app.draft_request.draft(&title, &request, images).await
 }
 
+/// Reescreve a mensagem digitada no chat num texto mais claro e organizado (não envia).
+#[tauri::command]
+pub async fn draft_chat_message(app: App<'_>, text: String, images: Option<Vec<PastedImage>>) -> AppResult<String> {
+    let images = images
+        .unwrap_or_default()
+        .into_iter()
+        .map(|i| Attachment { name: i.name, kind: AttachmentKind::Image, media_type: i.media_type, data: i.data })
+        .collect();
+    app.draft_request.draft_message(&text, images).await
+}
+
 /// Quadros do Jira e as colunas de cada um, para listar as tasks de uma coluna.
 #[tauri::command]
 pub async fn list_jira_boards(app: App<'_>) -> AppResult<JiraBoards> {
