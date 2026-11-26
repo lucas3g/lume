@@ -1291,6 +1291,7 @@
   .ask-dialog { width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
   .ask-dialog.wide { width: min(980px, 100%); }
   .ask-scroll .plan { max-height: none; }
+  .ask-scroll .adjust, .ask-scroll .p-acts { margin-top: 12px; }
   .ask-dialog:focus { outline: none; }
   .ask-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
   .ask-head h2 { margin: 0 auto 0 0; font-size: 16px; }
