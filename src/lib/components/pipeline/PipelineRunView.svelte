@@ -102,6 +102,10 @@
     choiceNote = "";
   });
   const choiceFound = $derived(choice ? choiceFindings(choice) : []);
+  /** Aprovação que o usuário deixou para depois: segue só no painel da estação. */
+  let approvalLaterId = $state<string | null>(null);
+  /** O plano (ou o design) para aprovar abre numa janela grande, fácil de ler. */
+  const approvalModal = $derived(!!approval && approval.id !== approvalLaterId);
   /** Escolha que o usuário deixou para depois: segue só no painel da estação. */
   let choiceLaterId = $state<string | null>(null);
   /** A escolha abre numa janela grande, fácil de ler e marcar. */
@@ -205,6 +209,7 @@
   });
   /** Com a janela aberta, o cartão sai do painel: duas cópias dividiriam ids e grupos de rádio. */
   const choiceInModal = $derived(choiceModal && !askModal);
+  const approvalInModal = $derived(approvalModal && !askModal);
   /** Janela modal: o foco entra nela ao abrir e o Tab circula só entre os controles dela. */
   function trapFocus(node: HTMLElement) {
     const focusables = () => [...node.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])")];
@@ -592,27 +597,6 @@
     </div>
   </section>
 
-  {#snippet nowActions()}
-    {#if approval}
-      {#if designLink}<button type="button" class="btn" title={designLink} onclick={() => openUrl(designLink!)}>Abrir design ↗</button>{/if}
-      <button type="button" class="btn" aria-expanded={adjusting} onclick={() => { adjusting = !adjusting; select(approval.role, approval.id); }}>Pedir ajustes</button>
-      <button type="button" class="btn warnp" disabled={busy} onclick={approve}>Aprovar e seguir</button>
-    {:else if choice}
-      {#if !choiceModal}<button type="button" class="btn" onclick={() => (choiceLaterId = null)}>Ver achados</button>{/if}
-      <button type="button" class="btn" disabled={busy} title="Nada é corrigido: a esteira segue para o Relator" onclick={() => decideReview([], null)}>Seguir sem corrigir</button>
-      <button type="button" class="btn warnp" disabled={busy || choiceDecision.undecided.length > 0 || (choiceDecision.picks.length === 0 && !choiceNote.trim())}
-        title={choiceDecision.undecided.length ? `Escolha o caminho de ${choiceDecision.undecided.map((f) => f.id).join(", ")} nos achados.` : undefined}
-        onclick={() => decideReview(choiceDecision.picks, choiceNote.trim() || null)}>
-        {choiceDecision.picks.length ? `Corrigir ${choiceDecision.picks.length === 1 ? "o escolhido" : `os ${choiceDecision.picks.length} escolhidos`}` : choiceFound.length ? "Marque um achado" : "Enviar ao Implementador"}
-      </button>
-    {:else if detail.status === "done"}
-      <button type="button" class="btn" aria-expanded={reopening} onclick={() => (reopening = !reopening)}>Reabrir com um ajuste</button>
-      <button type="button" class="btn primary" onclick={() => select("reporter")}>Ver relatório</button>
-    {:else if detail.status === "failed" || detail.status === "cancelled"}
-      <button type="button" class="btn primary" disabled={busy} onclick={retry}>Retomar execução</button>
-    {/if}
-  {/snippet}
-
   <div class="bottom">
     <div class="main">
       {#if !active}
@@ -879,24 +863,8 @@
                 </div>
               {/if}
             </section>
-            {#if approval && panelStage.id === approval.id}
-              <section>
-                <h3 class="sec-h">{designing ? "O design proposto" : "O plano proposto"}</h3>
-                <div class="plan md">{@html renderMarkdown(designing ? designSpec(approval.input) || "O Designer não escreveu a especificação; abra o design." : approval.input)}</div>
-              </section>
-              {#if adjusting}
-                <div class="adjust">
-                  <label class="label" for="pl-feedback">{designing ? "O que ajustar no design" : "O que ajustar no plano"}</label>
-                  <textarea id="pl-feedback" class="input area" rows="3" bind:value={feedback} placeholder={designing ? "Ex.: botão maior e no rodapé; tire a coluna de data." : "Ex.: não ponha o botão no cabeçalho; use o menu da conversa."}
-                    onkeydown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && requestChanges()}></textarea>
-                  <div class="row-w">
-                    <button type="button" class="btn primary small" disabled={busy || !feedback.trim()} onclick={requestChanges}>{designing ? "Enviar ao Designer" : "Enviar ao Planejador"}</button>
-                    <button type="button" class="btn small" onclick={() => (adjusting = false)}>Voltar</button>
-                    <span class="muted small">{designing ? "O design volta ao Designer com o seu texto." : "O plano volta ao Planejador com o seu texto."}</span>
-                  </div>
-                </div>
-              {/if}
-              <div class="p-acts">{@render nowActions()}</div>
+            {#if approval && panelStage.id === approval.id && !approvalInModal}
+              {@render approvalBody()}
             {:else if choice && panelStage.id === choice.id && !choiceInModal}
               <ReviewChoiceCard stage={choice} review={choiceReview} {busy} bind:marked={choiceMarked} bind:chosen={choiceChosen} bind:note={choiceNote} ondecide={decideReview} />
             {/if}
@@ -950,6 +918,50 @@
   </div>
 </div>
 
+{#snippet nowActions()}
+  {#if approval}
+    {#if !approvalModal}<button type="button" class="btn" onclick={() => (approvalLaterId = null)}>{designing ? "Ver design" : "Ver plano"}</button>{/if}
+    {#if designLink}<button type="button" class="btn" title={designLink} onclick={() => openUrl(designLink!)}>Abrir design ↗</button>{/if}
+    <button type="button" class="btn" aria-expanded={adjusting} onclick={() => { adjusting = !adjusting; select(approval.role, approval.id); }}>Pedir ajustes</button>
+    <button type="button" class="btn warnp" disabled={busy} onclick={approve}>Aprovar e seguir</button>
+  {:else if choice}
+    {#if !choiceModal}<button type="button" class="btn" onclick={() => (choiceLaterId = null)}>Ver achados</button>{/if}
+    <button type="button" class="btn" disabled={busy} title="Nada é corrigido: a esteira segue para o Relator" onclick={() => decideReview([], null)}>Seguir sem corrigir</button>
+    <button type="button" class="btn warnp" disabled={busy || choiceDecision.undecided.length > 0 || (choiceDecision.picks.length === 0 && !choiceNote.trim())}
+      title={choiceDecision.undecided.length ? `Escolha o caminho de ${choiceDecision.undecided.map((f) => f.id).join(", ")} nos achados.` : undefined}
+      onclick={() => decideReview(choiceDecision.picks, choiceNote.trim() || null)}>
+      {choiceDecision.picks.length ? `Corrigir ${choiceDecision.picks.length === 1 ? "o escolhido" : `os ${choiceDecision.picks.length} escolhidos`}` : choiceFound.length ? "Marque um achado" : "Enviar ao Implementador"}
+    </button>
+  {:else if detail.status === "done"}
+    <button type="button" class="btn" aria-expanded={reopening} onclick={() => (reopening = !reopening)}>Reabrir com um ajuste</button>
+    <button type="button" class="btn primary" onclick={() => select("reporter")}>Ver relatório</button>
+  {:else if detail.status === "failed" || detail.status === "cancelled"}
+    <button type="button" class="btn primary" disabled={busy} onclick={retry}>Retomar execução</button>
+  {/if}
+{/snippet}
+
+{#snippet approvalBody()}
+  {#if approval}
+  <section>
+    <h3 class="sec-h">{designing ? "O design proposto" : "O plano proposto"}</h3>
+    <div class="plan md">{@html renderMarkdown(designing ? designSpec(approval.input) || "O Designer não escreveu a especificação; abra o design." : approval.input)}</div>
+  </section>
+  {#if adjusting}
+    <div class="adjust">
+      <label class="label" for="pl-feedback">{designing ? "O que ajustar no design" : "O que ajustar no plano"}</label>
+      <textarea id="pl-feedback" class="input area" rows="3" bind:value={feedback} placeholder={designing ? "Ex.: botão maior e no rodapé; tire a coluna de data." : "Ex.: não ponha o botão no cabeçalho; use o menu da conversa."}
+        onkeydown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && requestChanges()}></textarea>
+      <div class="row-w">
+        <button type="button" class="btn primary small" disabled={busy || !feedback.trim()} onclick={requestChanges}>{designing ? "Enviar ao Designer" : "Enviar ao Planejador"}</button>
+        <button type="button" class="btn small" onclick={() => (adjusting = false)}>Voltar</button>
+        <span class="muted small">{designing ? "O design volta ao Designer com o seu texto." : "O plano volta ao Planejador com o seu texto."}</span>
+      </div>
+    </div>
+  {/if}
+  <div class="p-acts">{@render nowActions()}</div>
+  {/if}
+{/snippet}
+
 {#snippet askBody(cid: string, request: PermissionRequest)}
   {#if request.tool === "AskUserQuestion"}
     <QuestionCard questions={questionsOf(request)} onanswer={(answers) => answerStage(cid, true, false, { answers })} oncancel={() => answerStage(cid, false, false)} />
@@ -966,6 +978,7 @@
   else if (e.target instanceof HTMLElement && e.target.closest("input:not([type=checkbox]):not([type=radio]), textarea")) return;
   else if (askModal) laterId = askModal.request.requestId;
   else if (choice && choiceModal) choiceLaterId = choice.id;
+  else if (approval && approvalModal && !adjusting) approvalLaterId = approval.id;
 }} />
 
 {#if askModal && !zoomed}
@@ -996,6 +1009,22 @@
       <div class="ask-scroll">
         {#if error}<p class="error-text" role="alert">{error}</p>{/if}
         <ReviewChoiceCard stage={choice} review={choiceReview} {busy} bind:marked={choiceMarked} bind:chosen={choiceChosen} bind:note={choiceNote} ondecide={decideReview} />
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if approval && approvalInModal && !zoomed}
+  <div class="ask-modal" role="presentation">
+    <div class="card ask-dialog wide" role="dialog" aria-modal="true" tabindex="-1" use:trapFocus aria-label={designing ? "Aprovação do design" : "Aprovação do plano"}>
+      <header class="ask-head">
+        <span class="p-ava s-you" aria-hidden="true">{@html roleIcon(approval.role, 16)}</span>
+        <h2>{designing ? "O Designer propõe um design" : "O Planejador propõe um plano"}</h2>
+        <button type="button" class="btn small" title="A aprovação continua no painel da estação" onclick={() => approval && (approvalLaterId = approval.id)}>Decidir depois</button>
+      </header>
+      <div class="ask-scroll">
+        {#if error}<p class="error-text" role="alert">{error}</p>{/if}
+        {@render approvalBody()}
       </div>
     </div>
   </div>
@@ -1261,6 +1290,7 @@
   .ask-modal { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 32px; background: rgba(0, 0, 0, 0.6); }
   .ask-dialog { width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
   .ask-dialog.wide { width: min(980px, 100%); }
+  .ask-scroll .plan { max-height: none; }
   .ask-dialog:focus { outline: none; }
   .ask-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
   .ask-head h2 { margin: 0 auto 0 0; font-size: 16px; }
