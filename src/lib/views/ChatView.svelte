@@ -579,8 +579,7 @@
               <div class="user">
                 {#if names.length}
                   <div class="files">{#each names as n}<span class="file">{n}</span>{/each}</div>
-                {/if}
-                {message.content}
+                {/if}{message.content}
               </div>
               {/if}
               {#if message.created_at || (!turn && message.id > 0)}
@@ -677,8 +676,7 @@
                     <span class="file">{name}</span>
                   {/each}
                 </div>
-              {/if}
-              {item.text}
+              {/if}{item.text}
             </div>
             <div class="queue-actions">
               {#if item.sending}
