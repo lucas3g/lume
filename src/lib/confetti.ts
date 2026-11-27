@@ -3,7 +3,6 @@
 const COLORS = ["#58b88a", "#d9a441", "#8e99f4", "#a98bf5", "#b89dff"];
 
 export function confetti(host: HTMLElement): void {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const box = host.getBoundingClientRect();
   const dpr = devicePixelRatio || 1;
   const canvas = document.createElement("canvas");

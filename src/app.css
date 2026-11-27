@@ -182,8 +182,3 @@ select.input:disabled { cursor: default; opacity: 0.6; }
 .hljs-deletion { color: var(--code-red); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }
-
-/* Quem pede menos movimento no sistema vê as telas sem animação. */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
-}

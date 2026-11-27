@@ -185,7 +185,7 @@
     return () => clearTimeout(timer);
   });
   function rise(_node: Element, { enabled }: { enabled: boolean }) {
-    if (!enabled || matchMedia("(prefers-reduced-motion: reduce)").matches) return { duration: 0 };
+    if (!enabled) return { duration: 0 };
     return { duration: 460, easing: cubicOut, css: (t: number) => `opacity:${t};transform:translateY(${(1 - t) * 12}px);filter:blur(${(1 - t) * 5}px)` };
   }
 
