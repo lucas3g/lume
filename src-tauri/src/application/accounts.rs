@@ -32,6 +32,10 @@ impl ManageAccounts {
             }
             if let Ok(rate) = self.usage.usage(account.provider, account.config_dir.as_deref()).await {
                 self.accounts.set_usage(&account.id, &rate)?;
+                // O limite pode zerar antes da data guardada (ex.: reset manual no Claude).
+                if !rate.is_limited() && account.limited_until.is_some() {
+                    self.accounts.set_limited(&account.id, None)?;
+                }
                 updated += 1;
             }
         }
@@ -51,7 +55,13 @@ impl ManageAccounts {
             self.events.accounts_changed();
             return Err(AppError(MACHINE_LOGIN_MOVED.into()));
         }
-        self.usage.limits(account.provider, account.config_dir.as_deref()).await
+        let limits = self.usage.limits(account.provider, account.config_dir.as_deref()).await?;
+        // Com cota em todos os limites, a conta deixa de esperar a data guardada (ex.: reset manual).
+        if account.limited_until.is_some() && limits.iter().all(|l| l.used < 1.0) {
+            self.accounts.set_limited(&account.id, None)?;
+            self.events.accounts_changed();
+        }
+        Ok(limits)
     }
 
     /// Confere se o login do computador ainda é de quem o usa; avisa a tela se algo mudou.
@@ -308,6 +318,18 @@ mod tests {
         assert_eq!(limits.iter().map(|l| l.kind.as_str()).collect::<Vec<_>>(), ["session", "weekly_all"]);
         assert_eq!((limits[1].used, limits[1].resets_at), (0.2, Some(900)));
         assert!(uc.limits("b").await.is_err(), "conta sem login não é consultada");
+    }
+
+    #[tokio::test]
+    async fn usage_with_quota_releases_an_account_marked_as_limited() {
+        let world = World::with_accounts(vec![crate::domain::account::sample("a", 1)]);
+        let uc = use_case(&world, FakeGateway::logged_in(identity("a@exemplo.com")));
+        world.store.set_limited("a", Some(5000)).unwrap();
+        uc.refresh_usage().await.unwrap();
+        assert_eq!(uc.list().unwrap()[0].limited_until, None, "o limite foi zerado antes da hora (reset manual)");
+        world.store.set_limited("a", Some(5000)).unwrap();
+        uc.limits("a").await.unwrap();
+        assert_eq!(uc.list().unwrap()[0].limited_until, None, "consultar os limites também libera a conta");
     }
 
     fn identity(email: &str) -> Identity {
