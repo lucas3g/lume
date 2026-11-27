@@ -94,6 +94,8 @@ pub struct TurnSetup {
     pub design: bool,
     /// Carrega os conectores da conta do claude.ai (as etapas da esteira que não usam o Jira rodam sem).
     pub account_connectors: bool,
+    /// Agentes em segundo plano: só fora da esteira (a etapa acaba na resposta final).
+    pub background_tasks: bool,
     /// Títulos das conversas anteriores usadas como contexto.
     pub context_titles: Vec<String>,
     pub denied_skills: Vec<String>,
@@ -212,6 +214,7 @@ impl PrepareTurn {
             artifacts: self.settings.flag(&format!("{ARTIFACTS_PREFIX}{}", conversation.id), false),
             design,
             account_connectors: !self.settings.flag(&format!("{NO_ACCOUNT_CONNECTORS_PREFIX}{}", conversation.id), false),
+            background_tasks: stage.is_none(),
             context_titles: snippets.into_iter().map(|s| s.title).collect(),
             denied_skills: denied,
             denied_tools,
@@ -326,6 +329,7 @@ mod tests {
         assert!(!system.contains("Claude Design"));
         assert!(!system.contains("[!ENTREGUE]"), "a etapa da esteira não escreve para o chat");
         assert!(!setup.design, "a etapa da esteira não ganha o Claude Design da conversa comum");
+        assert!(!setup.background_tasks, "a etapa acaba na resposta final, sem esperar agentes em segundo plano");
 
         let agent = Agent { id: "a1".into(), name: "Revisor rigoroso".into(), instructions: "Seja rigoroso.".into(), model: None };
         AgentRepository::save(&*world.store, &agent).unwrap();
@@ -336,6 +340,7 @@ mod tests {
         world.store.set_text("etapa_da_esteira:s1", "").unwrap();
         let setup = prepare(&world).prepare(&world.conversation("s1"), "e agora?").unwrap();
         assert_eq!(setup.tools, "default", "terminada a etapa, conversar com o bot volta a ter tudo");
+        assert!(setup.background_tasks);
     }
 
     #[test]

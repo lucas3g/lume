@@ -256,6 +256,7 @@ pub(crate) fn sample_request(provider: Provider) -> TurnRequest {
         artifacts: false,
         design: false,
         account_connectors: true,
+        background_tasks: true,
     }
 }
 

@@ -190,6 +190,7 @@ impl JiraIssues {
                 artifacts: false,
                 design: false,
                 account_connectors: true,
+                background_tasks: false,
             };
             let (mut control, _handle) = TurnControl::new();
             let cancel = control.cancel.clone();

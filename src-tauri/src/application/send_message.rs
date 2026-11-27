@@ -303,6 +303,7 @@ impl SendMessage {
                 artifacts: setup.artifacts,
                 design: setup.design,
                 account_connectors: setup.account_connectors,
+                background_tasks: setup.background_tasks,
                 denied_skills: setup.denied_skills.clone(),
                 denied_tools: setup.denied_tools.clone(),
                 mcp_config: setup.mcp_config.clone(),

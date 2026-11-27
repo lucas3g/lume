@@ -24,6 +24,9 @@ const ARTIFACT_ENV: &str = "CLAUDE_CODE_ARTIFACT";
 pub const NO_ARTIFACT_TOOL: &str = "Esta versão do Claude Code não oferece o Claude Design (a ferramenta Artifact) na esteira. \
 Atualize o Claude Code ou rode a execução sem o design.";
 
+/// Ligada (`1`), o CLI não roda agentes nem comandos em segundo plano: o modelo espera cada um.
+const NO_BACKGROUND_TASKS_ENV: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
+
 /// Desligada (`false`), o CLI não carrega os conectores da conta do claude.ai; os locais continuam.
 const NO_ACCOUNT_CONNECTORS_ENV: &str = "ENABLE_CLAUDEAI_MCP_SERVERS";
 
@@ -74,6 +77,9 @@ impl ClaudeCliEngine {
         ]);
         if !request.account_connectors {
             cmd.env(NO_ACCOUNT_CONNECTORS_ENV, "false");
+        }
+        if !request.background_tasks {
+            cmd.env(NO_BACKGROUND_TASKS_ENV, "1");
         }
         if wants_artifacts(request) {
             // Sem tela, o CLI não oferece a ferramenta de artifacts (e o Claude Design) a não ser com esta variável.
@@ -251,7 +257,8 @@ impl ChatEngine for ClaudeCliEngine {
                 Some((tool_id, ack)) = control.backgrounds.recv() => {
                     // Como o Ctrl+B do terminal, só para esta chamada: ela devolve na hora e o
                     // turno segue; o processo fica vivo até a tarefa avisar que terminou.
-                    let open = stdin.is_some() && !finished.contains(&tool_id);
+                    // Sem segundo plano (etapa da esteira), recusa: a resposta final mataria a tarefa.
+                    let open = request.background_tasks && stdin.is_some() && !finished.contains(&tool_id);
                     if open {
                         write_line(&mut stdin, background_request(&tool_id)).await;
                         background.insert(tool_id);
@@ -305,7 +312,10 @@ impl ChatEngine for ClaudeCliEngine {
                         // Limite ou login vencido não espera os agentes em segundo plano: eles usam a
                         // mesma conta e também parariam. O turno acaba aqui e a próxima conta assume.
                         let blocked = answered && observed.hit_wall();
-                        let waiting = answered && !background.is_empty() && !blocked;
+                        // Sem segundo plano (etapa da esteira), a resposta final encerra o turno mesmo
+                        // com algum agente ainda marcado como ativo: a etapa não fica esperando por ele.
+                        let done = answered && !request.background_tasks;
+                        let waiting = answered && !background.is_empty() && !blocked && !done;
                         if answered {
                             awaiting = waiting;
                             if !waiting {
@@ -313,7 +323,7 @@ impl ChatEngine for ClaudeCliEngine {
                             }
                         }
                         on_event(&event);
-                        if blocked && !background.is_empty() {
+                        if (blocked || done) && !background.is_empty() {
                             let _ = child.kill().await;
                             stop = true;
                             break;
@@ -368,6 +378,7 @@ mod tests {
             artifacts: false,
             design: false,
             account_connectors: true,
+            background_tasks: true,
         }
     }
 

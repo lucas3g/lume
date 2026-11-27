@@ -100,6 +100,7 @@ pub(super) async fn one_shot(
         artifacts: false,
         design: false,
         account_connectors,
+        background_tasks: false,
     };
     let (mut control, _handle) = TurnControl::new();
     match ctx.engine.run_turn(&request, &mut control, &mut |_| {}).await {

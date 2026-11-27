@@ -312,6 +312,9 @@ pub struct TurnRequest {
     /// Carrega os conectores da conta do claude.ai. Desligados, saem do contexto de toda chamada;
     /// os conectores locais e os do projeto continuam.
     pub account_connectors: bool,
+    /// Deixa o CLI rodar agentes e comandos em segundo plano. Desligado (etapas da esteira), o turno
+    /// termina com a resposta final: ninguém fica esperando agente depois dela.
+    pub background_tasks: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
