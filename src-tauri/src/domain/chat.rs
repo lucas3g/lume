@@ -371,11 +371,13 @@ pub struct PermissionDecision {
     pub answers: Vec<(String, String)>,
     /// Modo de permissão que a sessão passa a usar ao aprovar um plano.
     pub next_mode: Option<String>,
+    /// Ao recusar, o que o usuário quer diferente (ex.: ajustes no plano); vai ao agente no lugar do aviso padrão.
+    pub feedback: Option<String>,
 }
 
 impl PermissionDecision {
     pub fn new(request_id: &str, allow: bool) -> PermissionDecision {
-        PermissionDecision { request_id: request_id.into(), allow, answers: vec![], next_mode: None }
+        PermissionDecision { request_id: request_id.into(), allow, answers: vec![], next_mode: None, feedback: None }
     }
 }
 

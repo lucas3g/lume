@@ -966,7 +966,7 @@
   {#if request.tool === "AskUserQuestion"}
     <QuestionCard questions={questionsOf(request)} onanswer={(answers) => answerStage(cid, true, false, { answers })} oncancel={() => answerStage(cid, false, false)} />
   {:else if request.tool === "ExitPlanMode"}
-    <PlanCard {request} ondecide={(mode) => (mode ? answerStage(cid, true, false, { nextMode: mode }) : answerStage(cid, false, false))} />
+    {#key request.requestId}<PlanCard {request} ondecide={(mode, feedback) => (mode ? answerStage(cid, true, false, { nextMode: mode }) : answerStage(cid, false, false, { feedback }))} />{/key}
   {:else}
     <PermissionCard {request} ondecide={(allow, always) => answerStage(cid, allow, always)} />
   {/if}

@@ -2,6 +2,13 @@
   import { open as pickFiles, save as pickSave } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { tick, untrack } from "svelte";
+  import { cubicOut } from "svelte/easing";
+  import { actionsIn, calloutsIn, suggestionsIn } from "../callouts";
+  import { callouts } from "../callout-actions";
+  import Minimap from "../components/Minimap.svelte";
+  import PlanRecord from "../components/PlanRecord.svelte";
+  import Recap from "../components/Recap.svelte";
+  import { isPinned, marks, taskKey, togglePin } from "../state/marks.svelte";
   import { extractArtifacts, versionsOf, type Artifact } from "../artifacts";
   import ArtifactPanel from "../components/ArtifactPanel.svelte";
   import UsageRing from "../components/composer/UsageRing.svelte";
@@ -30,7 +37,7 @@
   import { projectName, projects } from "../state/projects.svelte";
   import { refreshStatus, togglePanel, workspace, type Panel } from "../state/workspace.svelte";
   import { closeSubagent, loadSubagents, openSubagent, runOf, runsOf, statusLabel, subagents } from "../state/subagents.svelte";
-  import { groupThread, isAgentTool, parseToolUse, type ToolUse } from "../tools";
+  import { EXIT_PLAN, groupThread, isAgentTool, parseToolUse, planCount, touchedFiles, type ThreadBlock, type ToolUse } from "../tools";
   import { pastedImageFiles, readPastedImage } from "../paste";
   import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
   import { onMount } from "svelte";
@@ -120,6 +127,73 @@
   });
   const outcome = $derived(chat.activeId ? chat.outcomes[chat.activeId] : null);
   const permission = $derived(chat.activeId ? chat.permissions[chat.activeId] : undefined);
+
+  /** Bloco que segue a linha do tempo: a explicação do agente entre uma sequência de ações e a próxima. */
+  const isNarration = (block: ThreadBlock<Message> | undefined, next: ThreadBlock<Message> | undefined) =>
+    block?.kind === "message" && block.message.role === "assistant" && !!next && next.kind !== "message";
+  /** A linha do tempo continua depois do bloco `i`. */
+  const railAfter = (i: number) => thread[i + 1]?.kind === "tools" || isNarration(thread[i + 1], thread[i + 2]);
+
+  /** Ações do usuário (cartões "Ação sua") por resposta gravada. */
+  const actionLists = $derived(
+    chat.messages.filter((m) => m.role === "assistant" && m.id > 0).map((m) => ({ id: m.id, items: actionsIn(m.content) })).filter((a) => a.items.length),
+  );
+  const pending = $derived(
+    chat.activeId ? actionLists.reduce((n, a) => n + a.items.filter((_, i) => !marks.done[taskKey(chat.activeId!, a.id, i)]).length, 0) : 0,
+  );
+  const lastAssistant = $derived(chat.messages.findLast((m) => m.role === "assistant"));
+  /** Próximos pedidos sugeridos pela última resposta. */
+  const suggestions = $derived(!turn && lastAssistant ? suggestionsIn(lastAssistant.content) : []);
+  /** Resumo "Retomar daqui": só em conversas com trabalho de verdade. */
+  const recap = $derived.by(() => {
+    const groups = thread.filter((b) => b.kind === "tools");
+    if (turn || groups.length < 3) return null;
+    const delivered =
+      chat.messages
+        .filter((m) => m.role === "assistant")
+        .flatMap((m) => calloutsIn(m.content))
+        .findLast((c) => c.kind === "ok")?.title ?? null;
+    return {
+      steps: groups.length,
+      actions: groups.reduce((n, g) => n + (g.kind === "tools" ? g.items.length : 0), 0),
+      delivered: delivered?.replace(/[*_`]/g, "") || null,
+      files: touchedFiles(chat.messages),
+    };
+  });
+
+  /** Leva a conversa até um elemento e o faz piscar. */
+  function reveal(el: Element | null | undefined) {
+    if (!el || !scroller) return;
+    const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 72;
+    pinned = false;
+    scroller.scrollTo({ top, behavior: "smooth" });
+    el.classList.remove("flash");
+    void (el as HTMLElement).offsetWidth;
+    el.classList.add("flash");
+  }
+  const revealPending = () => {
+    const open = [...(threadEl?.querySelectorAll(".callout.act li.task:not(.done)") ?? [])][0];
+    reveal(open?.closest(".callout") ?? threadEl?.querySelector(".callout.act"));
+  };
+
+  /** Entrada suave dos blocos novos; ao abrir uma conversa, tudo já aparece no lugar. */
+  let animate = $state(false);
+  $effect(() => {
+    void chat.activeId;
+    animate = false;
+    const timer = setTimeout(() => (animate = true), 400);
+    return () => clearTimeout(timer);
+  });
+  function rise(_node: Element, { enabled }: { enabled: boolean }) {
+    if (!enabled || matchMedia("(prefers-reduced-motion: reduce)").matches) return { duration: 0 };
+    return { duration: 460, easing: cubicOut, css: (t: number) => `opacity:${t};transform:translateY(${(1 - t) * 12}px);filter:blur(${(1 - t) * 5}px)` };
+  }
+
+  let input = $state<HTMLTextAreaElement>();
+  function fill(text: string) {
+    draft = text;
+    void tick().then(() => input?.focus());
+  }
   const isAgent = $derived(conversation?.kind === "agent");
   const account = $derived(activeAccount());
   const model = $derived(conversation?.model ?? newModel);
@@ -505,6 +579,13 @@
           <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M4 19h16" /></svg>
         </button>
       {/if}
+      {#if permission?.tool === EXIT_PLAN}
+        <button type="button" class="pend plan" title="Ir até o plano" onclick={() => reveal(threadEl?.querySelector("#plano-pendente"))}><span class="pend-dot"></span>Aguardando sua aprovação</button>
+      {:else if pending}
+        <button type="button" class="pend" title="Ir até o que falta do seu lado" onclick={revealPending}><span class="pend-dot"></span><b>{pending}</b>{pending === 1 ? "pendência sua" : "pendências suas"}</button>
+      {:else if actionLists.length}
+        <span class="pend clear">Tudo resolvido</span>
+      {/if}
       <div class="panels" role="group" aria-label="Painel lateral">
         {#each PANELS as p (p.id)}
           {#if isAgent || !p.needsFolder}
@@ -514,6 +595,7 @@
           {/if}
         {/each}
       </div>
+      {#if turn && !turn.waiting}<div class="progress" aria-hidden="true"></div>{/if}
     </header>
 
     {#if workspace.openFile}
@@ -534,8 +616,12 @@
       </section>
     {/if}
 
-    <div class="scroll" class:below={workspace.openFile !== null} bind:this={scroller} onscroll={onScroll}>
+    <div class="stage" class:below={workspace.openFile !== null}>
+    <div class="scroll" bind:this={scroller} onscroll={onScroll}>
       <div class="thread" bind:this={threadEl}>
+        {#if recap}
+          <Recap {...recap} {pending} onpending={revealPending} />
+        {/if}
         {#if chat.messages.length === 0 && !turn}
           <div class="welcome">
             <h2>{isAgent ? "O que vamos fazer nesta pasta?" : "Como posso ajudar?"}</h2>
@@ -543,12 +629,15 @@
           </div>
         {/if}
 
-        {#each thread as block (block.key)}
+        {#each thread as block, i (block.key)}
+          <div class="blk" in:rise={{ enabled: animate }}>
           {#if block.kind === "todos"}
             <TodoCard todos={block.todos} />
+          {:else if block.kind === "plan"}
+            <PlanRecord tool={block.tool} version={block.version} />
           {:else if block.kind === "tools"}
             {@const live = block.key === liveGroupKey}
-            <ToolGroup items={block.items} {live} since={live ? turn?.toolsSince : null}>
+            <ToolGroup items={block.items} {live} since={live ? turn?.toolsSince : null} rail={railAfter(i)}>
               {#snippet row(item)}
                 {@const tool = item.tool}
                 {#if isAgentTool(tool.name) && tool.id}
@@ -597,16 +686,21 @@
             <div class="notice" role="status"><span></span>{message.content}<span></span></div>
           {:else}
             {@const titles = meta(message, "context")}
-            <div class="assistant">
+            {@const pin = isPinned(chat.activeId, message.id)}
+            <div class="assistant" class:narr={isNarration(block, thread[i + 1])} class:pinned={pin} data-mm={pin ? "Mensagem fixada" : undefined} data-mm-kind="pin">
               {#if titles.length}
                 <div class="context" title={titles.join("\n")}>{contextLabel(titles.length)}</div>
               {/if}
-              <div class="markdown">{@html renderMarkdown(message.content)}</div>
+              <div class="markdown" {@attach callouts({ conversation: chat.activeId, message: message.id, content: message.content, onfill: fill })}>{@html renderMarkdown(message.content)}</div>
               <div class="msg-actions" class:shown={message.id === lastAssistantId && (!turn || turn.waiting)}>
                 <button type="button" onclick={() => copyText(message.content, message.id)}>{copiedId === message.id ? "Copiado" : "Copiar"}</button>
                 {#if !turn && message.id > 0}
                   <button type="button" onclick={() => regenerate(message)}>Regenerar</button>
                   <button type="button" onclick={() => branchAfter(message)}>Ramificar daqui</button>
+                {/if}
+                {#if message.id > 0 && chat.activeId}
+                  {@const id = chat.activeId}
+                  <button type="button" aria-pressed={pin} class:on={pin} onclick={() => togglePin(id, message.id)}>{pin ? "Fixada" : "Fixar"}</button>
                 {/if}
                 {#if message.created_at}
                   <time class="when" datetime={isoDate(message.created_at)} title={fullDate(message.created_at)}>{formatWhen(message.created_at, dayClock.now)}</time>
@@ -637,6 +731,7 @@
             </div>
           {/if}
           {/if}
+          </div>
         {/each}
 
         {#if turn}
@@ -695,7 +790,7 @@
         {#if permission?.tool === "AskUserQuestion"}
           <QuestionCard questions={questionsOf(permission)} onanswer={(answers) => decide(true, false, { answers })} oncancel={() => decide(false, false)} />
         {:else if permission?.tool === "ExitPlanMode"}
-          <PlanCard request={permission} ondecide={(mode) => (mode ? decide(true, false, { nextMode: mode }) : decide(false, false))} />
+          {#key permission.requestId}<PlanCard request={permission} version={planCount(chat.messages) + 1} ondecide={(mode, feedback) => (mode ? decide(true, false, { nextMode: mode }) : decide(false, false, { feedback }))} />{/key}
         {:else if permission}
           <PermissionCard request={permission} ondecide={decide} />
         {/if}
@@ -727,6 +822,8 @@
         {/if}
       </div>
     </div>
+    <Minimap {scroller} root={threadEl} />
+    </div>
 
     <div class="composer-wrap">
       <div class="composer-area">
@@ -741,6 +838,16 @@
           </div>
         {/if}
 
+        {#if suggestions.length && !draft.trim() && !commandMatches.length}
+          <div class="suggest" role="group" aria-label="Sugestões de próximo pedido">
+            {#each suggestions as text, i (text)}
+              <button type="button" class="sg" style={`--i:${i}`} onclick={() => fill(text)}>
+                <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /></svg>
+                {text}
+              </button>
+            {/each}
+          </div>
+        {/if}
         <div class="composer">
           {#if chat.editing}
             <div class="editing">
@@ -773,7 +880,7 @@
             <button type="button" class="tool" aria-label="Anexar arquivos" title="Anexar arquivos" onclick={attach}>
               <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
-            <textarea aria-label="Mensagem" rows="1" placeholder="Digite / para comandos · cole imagens aqui" bind:value={draft} onkeydown={onKeydown} onpaste={onPaste} readonly={rewriting}></textarea>
+            <textarea bind:this={input} aria-label="Mensagem" rows="1" placeholder="Digite / para comandos · cole imagens aqui" bind:value={draft} onkeydown={onKeydown} onpaste={onPaste} readonly={rewriting}></textarea>
             {#if canRewrite || rewriting}
               <button type="button" class="gen" onclick={rewriteDraft} disabled={rewriting}
                 title="Reescreve a mensagem digitada num texto mais claro e organizado (não envia)">
@@ -869,7 +976,18 @@
   main { flex: 1 1 420px; min-width: 0; height: 100%; display: flex; flex-direction: column; }
   aside { flex: 0 0 340px; min-width: 0; height: 100%; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg-side); }
 
-  header { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 4px 16px 4px 20px; border-bottom: 1px solid var(--border); }
+  header { position: relative; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 4px 16px 4px 20px; border-bottom: 1px solid var(--border); }
+  /* Selo do que espera você: ações dos cartões "Ação sua" ou o plano para aprovar. */
+  .pend { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; border: 1px solid var(--warn-line); border-radius: 999px; background: var(--warn-solid); color: var(--warn-text); font-size: 12px; white-space: nowrap; }
+  .pend b { font-variant-numeric: tabular-nums; }
+  .pend.plan { border-color: var(--acc-line); background: var(--acc-solid); color: var(--accent-text); }
+  .pend.clear { border-color: var(--ok-line); background: var(--ok-solid); color: var(--ok-text); }
+  .pend-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: ping 2s var(--ease) infinite; }
+  @keyframes ping { 0% { box-shadow: 0 0 0 0 currentColor; } 80%, 100% { box-shadow: 0 0 0 6px transparent; } }
+  /* Barra fina que corre enquanto o agente trabalha. */
+  .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; overflow: hidden; }
+  .progress::after { content: ""; position: absolute; inset: 0; width: 40%; background: linear-gradient(90deg, transparent, var(--accent-text), var(--accent-2), transparent); animation: run 1.6s var(--inout) infinite; }
+  @keyframes run { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
   .crumb { padding: 0; border: 0; background: transparent; color: var(--muted); white-space: nowrap; }
   .crumb:hover { color: var(--text); }
   .slash { color: var(--faint); }
@@ -879,15 +997,18 @@
   .panels button:hover { color: var(--text); }
   .panels button.on { background: var(--hover); color: #fff; }
 
-  .scroll { flex: 1; overflow-y: auto; padding: 28px 20px 20px; }
+  .stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .scroll { flex: 1; overflow-y: auto; padding: 28px 44px 20px 20px; }
   /* Com um arquivo aberto, o chat fica na faixa de baixo. */
-  .scroll.below { flex: 1 1 0; min-height: 120px; padding-top: 16px; }
+  .stage.below { flex: 1 1 0; min-height: 120px; }
+  .stage.below .scroll { padding-top: 16px; }
   .viewer { flex: 2 1 0; min-height: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--border-strong); }
   .viewer-head { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 8px 0 20px; border-bottom: 1px solid var(--border); background: var(--bg-side); }
   .viewer-head .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
   .viewer-head .info { flex-shrink: 0; font-size: 12px; }
   .no-preview { padding: 20px; }
   .thread { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .blk { display: flex; flex-direction: column; min-width: 0; }
   .welcome { padding: 96px 0 0; text-align: center; display: flex; flex-direction: column; gap: 8px; }
   .welcome h2 { font-family: var(--display); font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
 
@@ -911,13 +1032,23 @@
   .user-wrap:hover .msg-actions, .user-wrap:focus-within .msg-actions, .assistant:hover .msg-actions, .assistant:focus-within .msg-actions, .msg-actions.shown { opacity: 1; }
   .msg-actions button { min-height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; font-size: 12px; color: var(--muted); }
   .msg-actions button:hover { background: var(--hover); color: var(--text); }
+  .msg-actions button.on { color: var(--accent-text); }
+  /* Nas respostas anteriores, as ações flutuam no canto ao passar o mouse. */
+  .assistant > .msg-actions:not(.shown) { position: absolute; top: -16px; right: 4px; z-index: 3; padding: 3px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-2); box-shadow: 0 12px 30px -14px rgba(0, 0, 0, 0.8); transform: translateY(4px) scale(0.97); pointer-events: none; transition: opacity 0.2s var(--ease), transform 0.3s var(--spring); }
+  .assistant:hover > .msg-actions:not(.shown), .assistant:focus-within > .msg-actions:not(.shown) { transform: none; pointer-events: auto; }
   .msg-actions .when { padding: 0 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; transition: opacity 0.12s; }
   /* Na última resposta os botões ficam sempre à vista, mas a hora segue só ao passar o mouse. */
   .msg-actions.shown .when { opacity: 0; }
   .assistant:hover .msg-actions.shown .when, .assistant:focus-within .msg-actions.shown .when { opacity: 1; }
   .editing { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--muted); }
   .editing span { flex: 1; }
-  .assistant { display: flex; flex-direction: column; gap: 10px; min-width: 0; color: var(--text-body); }
+  .assistant { position: relative; display: flex; flex-direction: column; gap: 10px; min-width: 0; color: var(--text-body); border-radius: 14px; transition: box-shadow 0.4s; }
+  /* A explicação entre duas sequências de ações fica na linha do tempo, sob a etapa. */
+  .assistant.narr { padding-left: 36px; }
+  .assistant.narr::before { content: ""; position: absolute; left: 11.5px; top: -16px; bottom: -16px; width: 1px; background: var(--rail); }
+  .assistant.pinned { box-shadow: 0 0 0 1px var(--acc-line), 0 0 0 8px var(--acc-bg); }
+  :global(.flash) { animation: flash 1.2s var(--ease); }
+  @keyframes flash { 30% { box-shadow: 0 0 0 6px rgba(142, 153, 244, 0.25); } }
   .context { align-self: flex-start; padding: 2px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--muted); }
   .notice { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
   .notice span { flex: 1; height: 1px; background: var(--border); }
@@ -955,11 +1086,63 @@
   .markdown :global(table) { border-collapse: collapse; margin-bottom: 12px; display: block; overflow-x: auto; }
   .markdown :global(th), .markdown :global(td) { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
   .markdown :global(blockquote) { margin: 0 0 12px; padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--text-2); }
+  .markdown :global(:not(pre) > code) { cursor: copy; position: relative; }
+  .markdown :global(:not(pre) > code:hover) { box-shadow: 0 0 0 1px var(--acc-line); }
+  .markdown :global(code.copied::after) { content: "Copiado"; position: absolute; left: 50%; bottom: calc(100% + 6px); translate: -50% 0; padding: 4px 7px; border-radius: 6px; background: var(--text); color: var(--bg); font: 500 11px/1 var(--font); white-space: nowrap; pointer-events: none; animation: tip 1.2s var(--ease) forwards; }
+  @keyframes tip { 0% { opacity: 0; transform: translateY(4px); } 15%, 75% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+
+  /* Cartões de destaque ("> [!ENTREGUE]", "> [!ACAO]", "> [!FORA]", "> [!ERRO]"). */
+  .markdown :global(.callout) { --tone: var(--ok); --tone-solid: var(--ok-solid); --tone-line: var(--ok-line); position: relative; isolation: isolate; margin: 4px 0 14px; padding: 14px 16px; border: 1px solid var(--tone-line); border-radius: 14px; background: linear-gradient(var(--tone-solid), var(--tone-solid)) padding-box; animation: callout-in 0.6s var(--ease) both; }
+  .markdown :global(.callout.act) { --tone: var(--warn); --tone-solid: var(--warn-solid); --tone-line: var(--warn-line); }
+  .markdown :global(.callout.note) { --tone: var(--note); --tone-solid: var(--note-bg); --tone-line: var(--note-line); }
+  .markdown :global(.callout.bad) { --tone: var(--bad); --tone-solid: var(--bad-solid); --tone-line: var(--bad-line); }
+  .markdown :global(.callout::before) { content: ""; position: absolute; inset: -1px; z-index: -1; border-radius: inherit; padding: 1px; background: conic-gradient(from var(--ang), transparent 0 70%, var(--tone) 85%, transparent 100%); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); opacity: 0; animation: sweep 1.8s var(--ease) 0.15s; pointer-events: none; }
+  .markdown :global(.co-head) { display: flex; align-items: center; gap: 12px; list-style: none; }
+  .markdown :global(summary.co-head) { cursor: pointer; }
+  .markdown :global(summary.co-head::-webkit-details-marker) { display: none; }
+  .markdown :global(.co-ic) { width: 30px; height: 30px; flex-shrink: 0; display: grid; place-items: center; border-radius: 9px; color: var(--tone); background: color-mix(in oklab, var(--tone) 16%, transparent); }
+  .markdown :global(.co-ic svg) { width: 16px; height: 16px; }
+  .markdown :global(.co-tx) { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .markdown :global(.co-k) { font-size: 10.5px; font-weight: 600; line-height: 1; letter-spacing: 0.1em; text-transform: uppercase; color: var(--tone); }
+  .markdown :global(.co-t) { font-family: var(--display); font-size: 16px; font-weight: 600; line-height: 1.25; color: var(--text); text-wrap: balance; }
+  .markdown :global(.co-chev) { width: 16px; height: 16px; flex-shrink: 0; color: var(--muted); transition: transform 0.35s var(--spring); }
+  .markdown :global(details[open] .co-chev) { transform: rotate(180deg); }
+  .markdown :global(.co-body) { margin-top: 12px; }
+  .markdown :global(.co-body > :last-child) { margin-bottom: 0; }
+  .markdown :global(.co-count) { flex-shrink: 0; padding: 2px 9px; border-radius: 999px; font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--tone); background: color-mix(in oklab, var(--tone) 16%, transparent); font-variant-numeric: tabular-nums; transition: color 0.3s, background 0.3s; }
+  .markdown :global(.co-count.all) { color: var(--ok); background: color-mix(in oklab, var(--ok) 16%, transparent); }
+  .markdown :global(.co-action) { margin-top: 10px; min-height: 30px; padding: 0 12px; border: 1px solid var(--note-line); border-radius: 8px; background: var(--surface); color: var(--note); font-size: 12.5px; }
+  .markdown :global(.co-action:hover) { background: var(--hover); }
+  .markdown :global(.tiles) { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0 0 12px; }
+  .markdown :global(.tile) { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); transition: transform 0.3s var(--spring), border-color 0.2s; }
+  .markdown :global(.tile:hover) { transform: translateY(-2px); border-color: var(--border-strong); }
+  .markdown :global(.tl) { font-size: 11px; color: var(--muted); }
+  .markdown :global(.tv) { font-size: 13.5px; font-weight: 500; color: var(--text); }
+  /* Ações do usuário: cada item vira uma linha marcável. */
+  .markdown :global(.callout.act .co-body > ul), .markdown :global(.callout.act .co-body > ol) { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .markdown :global(li.task) { position: relative; padding: 11px 12px 11px 46px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); transition: border-color 0.2s, background 0.3s; }
+  .markdown :global(li.task:hover) { border-color: var(--warn-line); }
+  .markdown :global(li.task.done) { background: var(--ok-solid); border-color: var(--ok-line); }
+  .markdown :global(li.task.done > :not(.task-box)) { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+  .markdown :global(.task-box) { position: absolute; left: 12px; top: 11px; width: 22px; height: 22px; padding: 0; display: grid; place-items: center; border: 1.5px solid var(--border-strong); border-radius: 7px; background: transparent; color: #0c0e13; transition: background 0.25s, border-color 0.25s, transform 0.35s var(--spring); }
+  .markdown :global(.task-box svg) { width: 13px; height: 13px; stroke-dasharray: 20; stroke-dashoffset: 20; transition: stroke-dashoffset 0.35s var(--ease) 0.08s; }
+  .markdown :global(.task-box[aria-checked="true"]) { border-color: var(--ok); background: var(--ok); transform: scale(1.06); }
+  .markdown :global(.task-box[aria-checked="true"] svg) { stroke-dashoffset: 0; }
+  @keyframes callout-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes sweep { 0% { opacity: 0; --ang: 0deg; } 20%, 80% { opacity: 1; } 100% { opacity: 0; --ang: 360deg; } }
 
   .composer-wrap { padding: 0 20px 12px; display: flex; justify-content: center; }
   .composer-area { position: relative; width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 6px; }
-  .composer { padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface-2); display: flex; flex-direction: column; gap: 8px; }
-  .composer:focus-within { border-color: #4a5298; }
+  .composer { position: relative; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface-2); display: flex; flex-direction: column; gap: 8px; box-shadow: 0 18px 40px -20px rgba(0, 0, 0, 0.8); }
+  /* Em foco, uma luz percorre a borda do campo. */
+  .composer::before { content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; background: conic-gradient(from var(--ang), var(--accent), var(--accent-2), var(--ok), var(--accent)); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); opacity: 0; transition: opacity 0.4s; pointer-events: none; }
+  .composer:focus-within { border-color: transparent; }
+  .composer:focus-within::before { opacity: 1; animation: orbit 4s linear infinite; }
+  @keyframes orbit { to { --ang: 360deg; } }
+  .suggest { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .sg { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: 12.5px; color: var(--text-2); white-space: nowrap; transition: border-color 0.2s, color 0.2s, transform 0.3s var(--spring); animation: callout-in 0.5s var(--ease) both; animation-delay: calc(var(--i) * 80ms); }
+  .sg:hover { border-color: var(--acc-line); color: var(--text); transform: translateY(-2px); }
+  .sg svg { color: var(--accent-text); }
   .composer > .files { padding: 4px 4px 0; }
   .entry { display: flex; align-items: flex-end; gap: 6px; }
   textarea { flex: 1; min-width: 0; max-height: 240px; padding: 6px 2px; border: 0; outline: 0; resize: none; background: transparent; font-size: 14px; line-height: 1.45; field-sizing: content; }

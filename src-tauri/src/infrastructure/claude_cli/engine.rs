@@ -172,7 +172,8 @@ fn permission_response(decision: &PermissionDecision, input: &str) -> Value {
         }
         response
     } else {
-        json!({ "behavior": "deny", "message": DENIED_MESSAGE })
+        let message = decision.feedback.as_deref().map(str::trim).filter(|f| !f.is_empty()).unwrap_or(DENIED_MESSAGE);
+        json!({ "behavior": "deny", "message": message })
     };
     json!({
         "type": "control_response",
@@ -439,6 +440,16 @@ mod tests {
 
         let deny = PermissionDecision::new("r2", false);
         assert_eq!(permission_response(&deny, "{}")["response"]["response"]["behavior"], "deny");
+        assert_eq!(permission_response(&deny, "{}")["response"]["response"]["message"], DENIED_MESSAGE);
+    }
+
+    #[test]
+    fn refusal_with_feedback_tells_the_agent_what_to_change() {
+        let mut deny = PermissionDecision::new("r1", false);
+        deny.feedback = Some("  Passo 2: use a tabela nova.  ".into());
+        assert_eq!(permission_response(&deny, "{}")["response"]["response"]["message"], "Passo 2: use a tabela nova.");
+        deny.feedback = Some("   ".into());
+        assert_eq!(permission_response(&deny, "{}")["response"]["response"]["message"], DENIED_MESSAGE, "texto vazio vale o aviso padrão");
     }
 
     /// Formatos conferidos com o CLI 2.1.323: respostas em `answers`; plano aprovado troca o modo.

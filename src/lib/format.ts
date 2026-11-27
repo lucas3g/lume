@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import { calloutOf, renderCallout } from "./callouts";
 import { highlight } from "./highlight";
 import type { FileView } from "./types";
 
@@ -10,6 +11,11 @@ marked.use({
     code({ text, lang }) {
       const language = (lang ?? "").trim().split(/\s+/)[0].toLowerCase() || null;
       return `<pre><code class="hljs">${highlight(text, language)}</code></pre>\n`;
+    },
+    // "> [!ENTREGUE] Título" e afins viram cartões de destaque; as outras citações seguem normais.
+    blockquote(token) {
+      const callout = calloutOf(token.text);
+      return callout ? renderCallout(callout, (tokens) => this.parser.parse(tokens)) : false;
     },
   },
 });

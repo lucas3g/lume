@@ -52,6 +52,23 @@ disponível nesta versão do Claude Code e pergunte se ele quer o mockup em HTML
 entregue um único bloco de código ```html completo e autossuficiente (CSS e JavaScript embutidos); o aplicativo mostra \
 esse bloco como prévia ao lado da conversa.";
 
+/// Marcações que o chat do aplicativo destaca: o que foi entregue, o que cabe ao usuário, o que
+/// ficou de fora, um erro que parou o trabalho e sugestões de próximo pedido.
+const CALLOUT_GUIDE: &str = "Ao encerrar uma tarefa, destaque as partes importantes da resposta final com blocos de citação \
+marcados (o aplicativo os mostra como cartões). A primeira linha do bloco é a marca seguida de um título curto:\n\
+> [!ENTREGUE] <o que ficou pronto>\n\
+para o resultado. Fatos-chave podem vir como lista `- **Rótulo:** valor` (ex.: `- **PR:** #24`, `- **Versão:** 2.6.0`).\n\
+> [!ACAO] <título>\n\
+para o que só o usuário pode fazer, com cada ação como item de lista.\n\
+> [!FORA] <título>\n\
+para o que ficou de fora ou ressalvas.\n\
+> [!ERRO] <título>\n\
+para uma falha que impediu terminar.\n\
+> [!PROXIMOS]\n\
+com até três itens de lista, cada um um pedido curto que o usuário pode mandar em seguida (o aplicativo os mostra como \
+sugestões, fora do texto). Use os blocos só quando houver esse conteúdo, no máximo um de cada tipo, e escreva o resto \
+da resposta normalmente. Em respostas curtas ou conversas sem tarefa, não use nenhum.";
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TurnSetup {
     pub model: String,
@@ -174,7 +191,8 @@ impl PrepareTurn {
         let earlier = self.earlier_dialogue(conversation)?;
         let rules = [project.as_ref().and_then(project_rules), instructions].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
         let rules = (!rules.is_empty()).then_some(rules);
-        let sections: Vec<String> = [stage.is_none().then(|| if design { DESIGN_GUIDE } else { HTML_GUIDE }.to_owned()), rules.clone(), knowledge.clone(), earlier, context_prompt(&snippets)]
+        let guides = stage.is_none().then(|| format!("{}\n\n{CALLOUT_GUIDE}", if design { DESIGN_GUIDE } else { HTML_GUIDE }));
+        let sections: Vec<String> = [guides, rules.clone(), knowledge.clone(), earlier, context_prompt(&snippets)]
             .into_iter()
             .flatten()
             .collect();
@@ -250,7 +268,9 @@ mod tests {
         assert_eq!(setup.allowed_tools, ["WebSearch", "WebFetch", "Skill"]);
         assert!(setup.design && !setup.artifacts, "oferece o Claude Design sem exigi-lo");
         assert!(setup.denied_skills.is_empty() && setup.mcp_config.is_none() && setup.context_titles.is_empty());
-        assert!(setup.extra_system.unwrap().contains("Claude Design"));
+        let system = setup.extra_system.unwrap();
+        assert!(system.contains("Claude Design"));
+        assert!(system.contains("[!ENTREGUE]") && system.contains("[!ACAO]"), "pede os destaques que o chat mostra como cartões");
     }
 
     #[test]
@@ -302,7 +322,9 @@ mod tests {
         let setup = prepare(&world).prepare(&world.conversation("s1"), "Revise").unwrap();
         assert_eq!(setup.tools, "Read,Bash,Task,ToolSearch", "sem as ferramentas que o papel não usa nem as de edição");
         assert!(setup.context_titles.is_empty(), "trechos de outras etapas só confundiriam o bot");
-        assert!(!setup.extra_system.unwrap_or_default().contains("Claude Design"));
+        let system = setup.extra_system.unwrap_or_default();
+        assert!(!system.contains("Claude Design"));
+        assert!(!system.contains("[!ENTREGUE]"), "a etapa da esteira não escreve para o chat");
         assert!(!setup.design, "a etapa da esteira não ganha o Claude Design da conversa comum");
 
         let agent = Agent { id: "a1".into(), name: "Revisor rigoroso".into(), instructions: "Seja rigoroso.".into(), model: None };

@@ -7,14 +7,14 @@
 @import "@fontsource/jetbrains-mono/700.css";
 
 :root {
-  --bg: #0e0f11;
-  --bg-side: #131417;
-  --surface: #17181c;
-  --surface-2: #1d1f24;
-  --hover: #23252b;
-  --border: #25272d;
-  --border-strong: #33363e;
-  --hairline: #1d1f24;
+  --bg: #0c0e13;
+  --bg-side: #11141a;
+  --surface: #151922;
+  --surface-2: #1b1f29;
+  --hover: #232834;
+  --border: #232937;
+  --border-strong: #313848;
+  --hairline: #1b1f29;
   --text: #ecedef;
   --text-body: #d7d9de;
   --text-2: #b4b8c0;
@@ -24,7 +24,7 @@
   --accent-hover: #6a78e2;
   --accent-text: #a6b0f7;
   --bar: #7b88e6;
-  --bubble: #1d1f24;
+  --bubble: #1b1f29;
   --ok: #58b88a;
   --ok-bg: #16291f;
   --ok-text: #86d3a6;
@@ -36,6 +36,12 @@
   --danger-bg: #2e1b1b;
   --danger-text: #efa49b;
   --off: #4a4e57;
+  /* Destaques do chat: ressalvas (violeta), linha do tempo e brilho do acento. */
+  --accent-2: #a98bf5;
+  --note: #b89dff;
+  --note-bg: #221d36;
+  --note-line: rgba(184, 157, 255, 0.4);
+  --rail: #2a3142;
   /* Cores do tema Dracula para o código, sobre o fundo do próprio app. */
   --code-bg: var(--bg);
   --code-text: #f8f8f2;
@@ -64,7 +70,7 @@
   --bad-solid: #2b1a19;
   --bad-line: rgba(236, 139, 127, 0.6);
   --bad-glow: rgba(236, 139, 127, 0.35);
-  --surface-3: #24262d;
+  --surface-3: #242a37;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --inout: cubic-bezier(0.65, 0, 0.35, 1);
@@ -176,3 +182,8 @@ select.input:disabled { cursor: default; opacity: 0.6; }
 .hljs-deletion { color: var(--code-red); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }
+
+/* Quem pede menos movimento no sistema vê as telas sem animação. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

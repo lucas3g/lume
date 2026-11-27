@@ -300,7 +300,8 @@ pub fn start_isolated_session(app: App<'_>, project_id: String, model: String) -
 }
 
 /// Resposta do usuário a um pedido de autorização; `always` libera a ferramenta na conversa.
-/// `answers` responde às perguntas do agente; `next_mode` é o modo após aprovar um plano.
+/// `answers` responde às perguntas do agente; `next_mode` é o modo após aprovar um plano;
+/// `feedback`, ao recusar, diz ao agente o que mudar.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn decide_permission(
@@ -312,6 +313,7 @@ pub fn decide_permission(
     always: bool,
     answers: Option<Vec<(String, String)>>,
     next_mode: Option<String>,
+    feedback: Option<String>,
 ) -> AppResult<()> {
     if allow && always && !needs_user(&tool) {
         app.conversations.allow_tool(&conversation_id, &tool)?;
@@ -319,7 +321,7 @@ pub fn decide_permission(
     if let (true, Some(mode)) = (allow, &next_mode) {
         app.conversations.set_permission_mode(&conversation_id, mode)?;
     }
-    let decision = PermissionDecision { request_id, allow, answers: answers.unwrap_or_default(), next_mode };
+    let decision = PermissionDecision { request_id, allow, answers: answers.unwrap_or_default(), next_mode, feedback };
     app.running.decide(&conversation_id, decision);
     Ok(())
 }

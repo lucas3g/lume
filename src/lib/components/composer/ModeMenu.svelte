@@ -18,7 +18,8 @@
 </script>
 
 <div class="anchor" use:dismissable={() => (open = false)}>
-  <button type="button" class="trigger" class:on={open} class:risky={current.risky} aria-haspopup="menu" aria-expanded={open} title="Modo de permissão" onclick={() => (open = !open)}>
+  <button type="button" class="trigger" class:on={open} class:risky={current.risky} class:plan={current.id === "plan"} aria-haspopup="menu" aria-expanded={open} title="Modo de permissão" onclick={() => (open = !open)}>
+    {#if current.id === "plan"}<svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14" /></svg>{/if}
     {current.label}
   </button>
 
@@ -43,6 +44,8 @@
   .trigger { min-height: 28px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; font-size: 12.5px; color: var(--text); }
   .trigger:hover, .trigger.on { background: var(--hover); }
   .trigger.risky { color: var(--warn-text); }
+  /* No modo plano o seletor ganha a cor do acento: o agente só planeja até você aprovar. */
+  .trigger.plan { display: inline-flex; align-items: center; gap: 6px; color: var(--accent-text); background: var(--acc-bg); }
   .menu { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 20; width: 300px; padding: 6px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-2); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 1px; }
   .label { padding: 6px 10px; }
   .item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; color: var(--text); }

@@ -69,6 +69,8 @@ export const api = {
     answers?: [string, string][];
     /** Modo da sessão após aprovar um plano. */
     nextMode?: string;
+    /** Ao recusar: o que o agente deve mudar (ex.: ajustes no plano). */
+    feedback?: string;
   }) => invoke<void>("decide_permission", decision),
 
   listTasks: () => invoke<Task[]>("list_tasks"),

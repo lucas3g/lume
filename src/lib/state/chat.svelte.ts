@@ -51,6 +51,7 @@ export interface PermissionRequest {
 export interface DecisionExtras {
   answers?: [string, string][];
   nextMode?: string;
+  feedback?: string;
 }
 
 export const chat = $state({
