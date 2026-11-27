@@ -39,7 +39,7 @@
   import { closeSubagent, loadSubagents, openSubagent, runOf, runsOf, statusLabel, subagents } from "../state/subagents.svelte";
   import { EXIT_PLAN, groupThread, isAgentTool, parseToolUse, planCount, touchedFiles, type ThreadBlock, type ToolUse } from "../tools";
   import { pastedImageFiles, readPastedImage } from "../paste";
-  import { DEFAULT_EFFORT, DEFAULT_MODEL, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
+  import { DEFAULT_EFFORT, DEFAULT_MODEL, MODES, SCOPE_ALL, type Message, type PastedImage, type View } from "../types";
   import { onMount } from "svelte";
   import { dayClock } from "../state/clock.svelte";
 
@@ -468,7 +468,7 @@
     const last = commandMatches.length - 1;
     if (event.key === "ArrowDown") commandIndex = commandIndex >= last ? 0 : commandIndex + 1;
     else if (event.key === "ArrowUp") commandIndex = commandIndex <= 0 ? last : commandIndex - 1;
-    else if (event.key === "Enter" || event.key === "Tab") pickCommand(commandMatches[Math.min(commandIndex, last)].name);
+    else if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) pickCommand(commandMatches[Math.min(commandIndex, last)].name);
     else if (event.key === "Escape") commandsDismissed = true;
     else return false;
     event.preventDefault();
@@ -477,6 +477,14 @@
 
   function onKeydown(event: KeyboardEvent) {
     if (commandKey(event)) return;
+    // Shift+Tab alterna o modo, como no Claude Code; o modo arriscado fica de fora do ciclo.
+    if (event.key === "Tab" && event.shiftKey && !event.isComposing && !event.repeat && isAgent && conversation) {
+      event.preventDefault();
+      const cycle = MODES.filter((m) => !m.risky);
+      const at = cycle.findIndex((m) => m.id === conversation.permission_mode);
+      void setMode(cycle[(at + 1) % cycle.length].id);
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       void submit();

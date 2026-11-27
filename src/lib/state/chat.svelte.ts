@@ -138,11 +138,23 @@ export async function setEffort(effort: string): Promise<void> {
   await api.setConversationEffort(conversation.id, effort);
 }
 
+// Trocas de modo vão ao backend uma de cada vez: com Shift+Tab rápido, a última escolha é a que fica.
+let modeQueue: Promise<unknown> = Promise.resolve();
+
 export async function setMode(mode: string): Promise<void> {
   const conversation = activeConversation();
   if (!conversation) return;
+  const previous = conversation.permission_mode;
   conversation.permission_mode = mode;
-  await api.setConversationMode(conversation.id, mode);
+  const saving = modeQueue.then(() => api.setConversationMode(conversation.id, mode));
+  modeQueue = saving.catch(() => {});
+  try {
+    await saving;
+  } catch (error) {
+    // Falhou: a tela volta ao modo anterior, a menos que outra troca já tenha vindo depois.
+    if (conversation.permission_mode === mode) conversation.permission_mode = previous;
+    throw error;
+  }
 }
 
 export async function setModel(model: string): Promise<void> {
